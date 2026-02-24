@@ -1,0 +1,29 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual env
+venv/
+.pyi-venv/
+
+# Runtime data and local state
+data/
+spider_state.json
+processed_users.json
+run.log
+*.log
+
+# Build artifacts
+dist/
+build/
+*.spec
+*.lpk
+xmonitor-qt6
+xmonitor_qt6.c
+
+# OS/editor
+.DS_Store
+.vscode/
+.idea/
