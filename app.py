@@ -163,17 +163,6 @@ DEFAULT_NOTIFY_REPLY_TEMPLATES = [
 DEFAULT_DM_TEMPLATES = [DM_FOLLOWUP_TEXT]
 DM_CLOSED_FALLBACK_REPLY_TEXT = "大佬您的私信关闭了，如果有需要可以给我私信"
 DM_PASSCODE = os.environ.get("XMONITOR_DM_PASSCODE", "1234")
-RISK_DEFAULT_CONFIG = {
-    "enabled": True,
-    "max_reply_per_hour": 20,
-    "max_reply_per_day": 120,
-    "min_interval_sec": 25,
-    "per_user_cooldown_hours": 24,
-    "max_fail_streak": 4,
-    "cooldown_minutes": 120,
-    "max_risk_score": 75,
-}
-RISK_USER_STATE_TTL_SEC = 7 * 24 * 3600
 PROXY_ENV_KEYS = (
     "XMONITOR_PROXY",
     "ALL_PROXY",
@@ -201,17 +190,6 @@ last_reply_action_ts = 0.0
 last_reply_prepare_refresh_ts = 0.0
 dm_unavailable_cache = {}  # {handle: expire_ts}
 dm_unavailable_cache_lock = threading.Lock()
-risk_lock = threading.Lock()
-risk_config = dict(RISK_DEFAULT_CONFIG)
-risk_action_timestamps = []
-risk_per_user_last_ts = {}
-risk_fail_streak = 0
-risk_cooldown_until = 0.0
-risk_last_action_ts = 0.0
-risk_last_risk_score = 0
-risk_last_block_reason = ""
-risk_total_success = 0
-risk_total_fail = 0
 
 # --- 线程池 (根据任务数动态调整) ---
 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -592,22 +570,6 @@ def monitoring_loop():
 def save_state():
     """保存配置和待处理任务"""
     ensure_data_dir()
-    risk_runtime_for_save = {}
-    risk_cfg_for_save = {}
-    with risk_lock:
-        _prune_risk_state()
-        risk_cfg_for_save = dict(risk_config)
-        risk_runtime_for_save = {
-            "action_timestamps": list(risk_action_timestamps),
-            "per_user_last_ts": dict(risk_per_user_last_ts),
-            "fail_streak": int(risk_fail_streak),
-            "cooldown_until": float(risk_cooldown_until),
-            "last_action_ts": float(risk_last_action_ts),
-            "last_risk_score": int(risk_last_risk_score),
-            "last_block_reason": str(risk_last_block_reason or ""),
-            "total_success": int(risk_total_success),
-            "total_fail": int(risk_total_fail),
-        }
     state = {
         "token": global_token,
         "tasks": monitor_tasks,
@@ -620,8 +582,6 @@ def save_state():
         "content_dedupe": content_dedupe,  # 保存同用户同内容去重缓存
         "notify_reply_templates": notify_reply_templates,  # 保存通知回复模板
         "dm_message_templates": dm_message_templates,  # 保存私信模板
-        "risk_config": risk_cfg_for_save,
-        "risk_runtime": risk_runtime_for_save,
     }
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -632,7 +592,6 @@ def save_state():
 
 def load_state():
     global global_token, monitor_tasks, monitor_active, processed_users, pending_results, notification_monitoring, delegated_account, history_ids, headless_mode, content_dedupe, notify_reply_templates, dm_message_templates
-    global risk_config, risk_action_timestamps, risk_per_user_last_ts, risk_fail_streak, risk_cooldown_until, risk_last_action_ts, risk_last_risk_score, risk_last_block_reason, risk_total_success, risk_total_fail
     ensure_data_dir()
 
     # 1. 加载主状态
@@ -654,39 +613,6 @@ def load_state():
                     data.get("dm_message_templates", []),
                     DEFAULT_DM_TEMPLATES
                 )
-                risk_config = _sanitize_risk_config(data.get("risk_config", {}))
-
-                saved_risk_runtime = data.get("risk_runtime", {})
-                if isinstance(saved_risk_runtime, dict):
-                    risk_action_timestamps = []
-                    for ts in saved_risk_runtime.get("action_timestamps", []):
-                        try:
-                            risk_action_timestamps.append(float(ts))
-                        except Exception:
-                            continue
-                    risk_per_user_last_ts = {}
-                    for h, ts in (saved_risk_runtime.get("per_user_last_ts", {}) or {}).items():
-                        h_norm = normalize_handle(h)
-                        if not h_norm:
-                            continue
-                        try:
-                            risk_per_user_last_ts[h_norm] = float(ts)
-                        except Exception:
-                            continue
-                    risk_fail_streak = _coerce_int(saved_risk_runtime.get("fail_streak", 0), 0, 0, 9999)
-                    try:
-                        risk_cooldown_until = float(saved_risk_runtime.get("cooldown_until", 0.0) or 0.0)
-                    except Exception:
-                        risk_cooldown_until = 0.0
-                    try:
-                        risk_last_action_ts = float(saved_risk_runtime.get("last_action_ts", 0.0) or 0.0)
-                    except Exception:
-                        risk_last_action_ts = 0.0
-                    risk_last_risk_score = _coerce_int(saved_risk_runtime.get("last_risk_score", 0), 0, 0, 100)
-                    risk_last_block_reason = str(saved_risk_runtime.get("last_block_reason", "") or "")
-                    risk_total_success = _coerce_int(saved_risk_runtime.get("total_success", 0), 0, 0, 10**9)
-                    risk_total_fail = _coerce_int(saved_risk_runtime.get("total_fail", 0), 0, 0, 10**9)
-                    _prune_risk_state()
 
                 # 恢复去重ID（完整版）
                 saved_history = data.get("history_ids", [])
@@ -743,7 +669,6 @@ def load_state():
                 logging.info(f"   - 浏览器模式: {'无头' if headless_mode else '有头(调试)'}")
                 logging.info(f"   - 回复模板: {len(notify_reply_templates)} 条")
                 logging.info(f"   - 私信模板: {len(dm_message_templates)} 条")
-                logging.info(f"   - 风控中心: {'启用' if risk_config.get('enabled', True) else '禁用'}")
 
                 if data.get("is_running", False):
                     start_monitor_thread()
@@ -797,262 +722,6 @@ def _get_template_list_and_limit(template_type):
     if template_type == "dm":
         return dm_message_templates, 4000
     return None, None
-
-
-def _coerce_bool(value, default=False):
-    if isinstance(value, bool):
-        return value
-    if value is None:
-        return bool(default)
-    text = str(value).strip().lower()
-    if text in {"1", "true", "yes", "on"}:
-        return True
-    if text in {"0", "false", "no", "off"}:
-        return False
-    return bool(default)
-
-
-def _coerce_int(value, default, min_value=None, max_value=None):
-    try:
-        num = int(value)
-    except Exception:
-        num = int(default)
-    if min_value is not None and num < min_value:
-        num = min_value
-    if max_value is not None and num > max_value:
-        num = max_value
-    return num
-
-
-def _sanitize_risk_config(raw_config):
-    cfg = dict(RISK_DEFAULT_CONFIG)
-    raw = raw_config if isinstance(raw_config, dict) else {}
-    cfg["enabled"] = _coerce_bool(raw.get("enabled", cfg["enabled"]), cfg["enabled"])
-    cfg["max_reply_per_hour"] = _coerce_int(raw.get("max_reply_per_hour", cfg["max_reply_per_hour"]), cfg["max_reply_per_hour"], 1, 500)
-    cfg["max_reply_per_day"] = _coerce_int(raw.get("max_reply_per_day", cfg["max_reply_per_day"]), cfg["max_reply_per_day"], 1, 5000)
-    cfg["min_interval_sec"] = _coerce_int(raw.get("min_interval_sec", cfg["min_interval_sec"]), cfg["min_interval_sec"], 0, 3600)
-    cfg["per_user_cooldown_hours"] = _coerce_int(raw.get("per_user_cooldown_hours", cfg["per_user_cooldown_hours"]), cfg["per_user_cooldown_hours"], 0, 720)
-    cfg["max_fail_streak"] = _coerce_int(raw.get("max_fail_streak", cfg["max_fail_streak"]), cfg["max_fail_streak"], 1, 100)
-    cfg["cooldown_minutes"] = _coerce_int(raw.get("cooldown_minutes", cfg["cooldown_minutes"]), cfg["cooldown_minutes"], 1, 7 * 24 * 60)
-    cfg["max_risk_score"] = _coerce_int(raw.get("max_risk_score", cfg["max_risk_score"]), cfg["max_risk_score"], 20, 100)
-    return cfg
-
-
-def _prune_risk_state(now_ts=None):
-    if now_ts is None:
-        now_ts = time.time()
-    day_ago = now_ts - 86400
-    user_ttl_ago = now_ts - RISK_USER_STATE_TTL_SEC
-
-    global risk_action_timestamps, risk_per_user_last_ts
-    risk_action_timestamps = [ts for ts in risk_action_timestamps if ts >= day_ago]
-    risk_per_user_last_ts = {
-        h: ts for h, ts in risk_per_user_last_ts.items()
-        if ts >= user_ttl_ago
-    }
-
-
-def _get_risk_counts(now_ts=None):
-    if now_ts is None:
-        now_ts = time.time()
-    hour_ago = now_ts - 3600
-    day_ago = now_ts - 86400
-    hour_count = sum(1 for ts in risk_action_timestamps if ts >= hour_ago)
-    day_count = sum(1 for ts in risk_action_timestamps if ts >= day_ago)
-    return hour_count, day_count
-
-
-def _compute_risk_score(now_ts, handle_norm):
-    hour_count, day_count = _get_risk_counts(now_ts)
-    score = 0.0
-
-    max_hour = max(1, int(risk_config.get("max_reply_per_hour", 1)))
-    max_day = max(1, int(risk_config.get("max_reply_per_day", 1)))
-    min_interval = max(0, int(risk_config.get("min_interval_sec", 0)))
-    user_cool_hours = max(0, int(risk_config.get("per_user_cooldown_hours", 0)))
-
-    # 预估加上本次动作后的节奏风险
-    hour_ratio = float(hour_count + 1) / float(max_hour)
-    day_ratio = float(day_count + 1) / float(max_day)
-    if hour_ratio >= 1.0:
-        score += 50
-    elif hour_ratio >= 0.8:
-        score += 30
-    elif hour_ratio >= 0.6:
-        score += 15
-
-    if day_ratio >= 1.0:
-        score += 40
-    elif day_ratio >= 0.85:
-        score += 20
-    elif day_ratio >= 0.7:
-        score += 10
-
-    if min_interval > 0 and risk_last_action_ts > 0:
-        gap = now_ts - risk_last_action_ts
-        if gap < min_interval:
-            score += 10 + min(20, int((min_interval - gap) * 20 / max(1, min_interval)))
-
-    if handle_norm and user_cool_hours > 0:
-        last_ts = float(risk_per_user_last_ts.get(handle_norm, 0.0))
-        if last_ts > 0 and (now_ts - last_ts) < (user_cool_hours * 3600):
-            score += 35
-
-    if risk_fail_streak > 0:
-        score += min(30, risk_fail_streak * 8)
-
-    if risk_cooldown_until > now_ts:
-        score += 50
-
-    return min(100, max(0, int(score)))
-
-
-def _risk_runtime_payload(now_ts=None):
-    if now_ts is None:
-        now_ts = time.time()
-    with risk_lock:
-        _prune_risk_state(now_ts)
-        hour_count, day_count = _get_risk_counts(now_ts)
-        cooldown_left = max(0, int(risk_cooldown_until - now_ts))
-        return {
-            "hour_count": hour_count,
-            "day_count": day_count,
-            "fail_streak": int(risk_fail_streak),
-            "cooldown_until": float(risk_cooldown_until),
-            "cooldown_left_sec": cooldown_left,
-            "last_risk_score": int(risk_last_risk_score),
-            "last_block_reason": str(risk_last_block_reason or ""),
-            "total_success": int(risk_total_success),
-            "total_fail": int(risk_total_fail),
-            "tracked_users": len(risk_per_user_last_ts),
-        }
-
-
-def risk_check_before_action(handle):
-    handle_norm = normalize_handle(handle)
-    now_ts = time.time()
-    with risk_lock:
-        _prune_risk_state(now_ts)
-
-        if not risk_config.get("enabled", True):
-            return True, "", {"risk_score": 0}
-
-        global risk_last_block_reason, risk_last_risk_score, risk_cooldown_until
-
-        if risk_cooldown_until > now_ts:
-            remain = int(risk_cooldown_until - now_ts)
-            risk_last_block_reason = f"风控冷却中，请{remain}s后重试"
-            return False, risk_last_block_reason, {"risk_score": 100}
-
-        max_fail_streak = int(risk_config.get("max_fail_streak", 4))
-        cooldown_minutes = int(risk_config.get("cooldown_minutes", 120))
-        if risk_fail_streak >= max_fail_streak:
-            risk_cooldown_until = now_ts + cooldown_minutes * 60
-            risk_last_block_reason = f"连续失败达到阈值({risk_fail_streak})，进入{cooldown_minutes}分钟冷却"
-            return False, risk_last_block_reason, {"risk_score": 100}
-
-        min_interval = int(risk_config.get("min_interval_sec", 0))
-        if min_interval > 0 and risk_last_action_ts > 0:
-            gap = now_ts - risk_last_action_ts
-            if gap < min_interval:
-                remain = int(min_interval - gap)
-                risk_last_block_reason = f"动作间隔过短，请{remain}s后重试"
-                return False, risk_last_block_reason, {"risk_score": 95}
-
-        user_cooldown_hours = int(risk_config.get("per_user_cooldown_hours", 0))
-        if handle_norm and user_cooldown_hours > 0:
-            last_user_ts = float(risk_per_user_last_ts.get(handle_norm, 0.0))
-            if last_user_ts > 0:
-                gap_user = now_ts - last_user_ts
-                need_gap = user_cooldown_hours * 3600
-                if gap_user < need_gap:
-                    remain = int(need_gap - gap_user)
-                    risk_last_block_reason = f"同用户冷却中，请{remain}s后重试"
-                    return False, risk_last_block_reason, {"risk_score": 90}
-
-        hour_count, day_count = _get_risk_counts(now_ts)
-        if hour_count >= int(risk_config.get("max_reply_per_hour", 20)):
-            risk_last_block_reason = "超过每小时动作上限，已风控拦截"
-            return False, risk_last_block_reason, {"risk_score": 100}
-        if day_count >= int(risk_config.get("max_reply_per_day", 120)):
-            risk_last_block_reason = "超过每日动作上限，已风控拦截"
-            return False, risk_last_block_reason, {"risk_score": 100}
-
-        score = _compute_risk_score(now_ts, handle_norm)
-        risk_last_risk_score = score
-        if score >= int(risk_config.get("max_risk_score", 75)):
-            risk_last_block_reason = f"风险分过高({score})，本次自动拦截"
-            return False, risk_last_block_reason, {"risk_score": score}
-
-        risk_last_block_reason = ""
-        return True, "", {"risk_score": score}
-
-
-def risk_mark_action_start(handle, risk_score=0):
-    handle_norm = normalize_handle(handle)
-    now_ts = time.time()
-    with risk_lock:
-        _prune_risk_state(now_ts)
-        global risk_last_action_ts, risk_last_risk_score
-        risk_action_timestamps.append(now_ts)
-        risk_last_action_ts = now_ts
-        risk_last_risk_score = int(risk_score or 0)
-        if handle_norm:
-            risk_per_user_last_ts[handle_norm] = now_ts
-
-
-def risk_record_action_result(success, error_msg=""):
-    now_ts = time.time()
-    with risk_lock:
-        _prune_risk_state(now_ts)
-        global risk_fail_streak, risk_cooldown_until, risk_last_block_reason, risk_total_success, risk_total_fail
-
-        if success:
-            risk_fail_streak = 0
-            risk_total_success += 1
-            return
-
-        risk_total_fail += 1
-        risk_fail_streak += 1
-        err_text = str(error_msg or "").strip()
-        if err_text:
-            risk_last_block_reason = err_text[:180]
-        if risk_fail_streak >= int(risk_config.get("max_fail_streak", 4)):
-            cool_mins = int(risk_config.get("cooldown_minutes", 120))
-            risk_cooldown_until = now_ts + cool_mins * 60
-            risk_last_block_reason = f"连续失败达到阈值({risk_fail_streak})，自动冷却{cool_mins}分钟"
-            log_to_ui("warn", f"🛡️ 风控已触发冷却: {risk_last_block_reason}")
-
-
-def risk_update_config(payload):
-    if not isinstance(payload, dict):
-        payload = {}
-    with risk_lock:
-        global risk_config
-        merged = dict(risk_config)
-        for key in RISK_DEFAULT_CONFIG.keys():
-            if key in payload:
-                merged[key] = payload.get(key)
-        risk_config = _sanitize_risk_config(merged)
-    return dict(risk_config)
-
-
-def risk_reset_runtime(clear_history=True):
-    with risk_lock:
-        global risk_action_timestamps, risk_per_user_last_ts
-        global risk_fail_streak, risk_cooldown_until, risk_last_action_ts, risk_last_risk_score
-        global risk_last_block_reason, risk_total_success, risk_total_fail
-
-        if clear_history:
-            risk_action_timestamps = []
-            risk_per_user_last_ts = {}
-            risk_total_success = 0
-            risk_total_fail = 0
-        risk_fail_streak = 0
-        risk_cooldown_until = 0.0
-        risk_last_action_ts = 0.0
-        risk_last_risk_score = 0
-        risk_last_block_reason = ""
 
 # --- 日志 ---
 logging.basicConfig(level=logging.INFO)
@@ -4144,7 +3813,6 @@ def index(): return render_template('index.html')
 @app.route('/api/state')
 def state():
     with data_lock:
-        risk_runtime = _risk_runtime_payload()
         return jsonify({
             "token": global_token,
             "tasks": list(monitor_tasks),
@@ -4155,8 +3823,6 @@ def state():
             "headless_mode": headless_mode,
             "notify_reply_templates": list(notify_reply_templates),
             "dm_message_templates": list(dm_message_templates),
-            "risk_config": dict(risk_config),
-            "risk_runtime": risk_runtime,
         })
 
 @app.route('/api/task/add', methods=['POST'])
@@ -4258,56 +3924,13 @@ def notify_reply():
     if not target:
         return jsonify({"status": "err", "msg": "通知记录不存在"}), 404
 
-    risk_ok, risk_reason, risk_meta = risk_check_before_action(target.get("handle", ""))
-    if not risk_ok:
-        log_to_ui("warn", f"🛡️ 风控拦截回复: {risk_reason}")
-        return jsonify({"status": "err", "msg": f"风控拦截: {risk_reason}"}), 429
-
-    risk_mark_action_start(target.get("handle", ""), risk_meta.get("risk_score", 0))
     ok, err = send_notification_reply(target, message, dm_message=dm_message)
     if not ok:
-        risk_record_action_result(False, err)
         log_to_ui("warn", f"⚠️ 通知回复失败: {err}")
         return jsonify({"status": "err", "msg": err}), 500
 
-    risk_record_action_result(True, "")
     log_to_ui("success", f"✅ 已发送通知回复: {target.get('handle', '')} -> {message[:30]}")
-    return jsonify({"status": "ok", "risk_runtime": _risk_runtime_payload()})
-
-
-@app.route('/api/risk_center')
-def risk_center_state():
-    return jsonify({
-        "status": "ok",
-        "risk_config": dict(risk_config),
-        "risk_runtime": _risk_runtime_payload(),
-    })
-
-
-@app.route('/api/risk_center/update', methods=['POST'])
-def risk_center_update():
-    payload = request.json if isinstance(request.json, dict) else {}
-    new_cfg = risk_update_config(payload)
-    save_state()
-    log_to_ui("info", "🛡️ 风控中心配置已更新")
-    return jsonify({
-        "status": "ok",
-        "risk_config": new_cfg,
-        "risk_runtime": _risk_runtime_payload(),
-    })
-
-
-@app.route('/api/risk_center/reset', methods=['POST'])
-def risk_center_reset():
-    clear_history = _coerce_bool(request.json.get('clear_history', True) if isinstance(request.json, dict) else True, True)
-    risk_reset_runtime(clear_history=clear_history)
-    save_state()
-    log_to_ui("info", "🛡️ 风控运行态已重置")
-    return jsonify({
-        "status": "ok",
-        "risk_config": dict(risk_config),
-        "risk_runtime": _risk_runtime_payload(),
-    })
+    return jsonify({"status": "ok"})
 
 
 @app.route('/api/template/add', methods=['POST'])
@@ -4458,11 +4081,7 @@ def up():
         pass
     with data_lock:
         tasks_copy = list(monitor_tasks)
-    return jsonify({
-        "new_items": n,
-        "tasks": tasks_copy,
-        "risk_runtime": _risk_runtime_payload(),
-    })
+    return jsonify({"new_items": n, "tasks": tasks_copy})
 
 if __name__ == '__main__':
     # 清理残留浏览器进程

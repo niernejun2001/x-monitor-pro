@@ -196,8 +196,7 @@
         }
 
         /* 输入框 */
-        input[type="text"],
-        input[type="number"] {
+        input[type="text"] {
             width: 100%;
             padding: 14px 18px;
             background: var(--bg-secondary);
@@ -209,15 +208,13 @@
             margin-bottom: 12px;
         }
 
-        input[type="text"]:focus,
-        input[type="number"]:focus {
+        input[type="text"]:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
         }
 
-        input[type="text"]::placeholder,
-        input[type="number"]::placeholder {
+        input[type="text"]::placeholder {
             color: var(--text-secondary);
         }
 
@@ -481,39 +478,6 @@
 
         .template-editor-actions button {
             flex: 1;
-        }
-
-        .risk-grid {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            margin-top: 10px;
-        }
-
-        .risk-item label {
-            display: block;
-            font-size: 12px;
-            color: var(--text-secondary);
-            margin-bottom: 6px;
-        }
-
-        .risk-item input[type="number"] {
-            margin-bottom: 0;
-            padding: 10px 12px;
-            font-size: 12px;
-            border-radius: 8px;
-        }
-
-        .risk-runtime {
-            margin-top: 12px;
-            font-size: 12px;
-            color: var(--text-secondary);
-            line-height: 1.5;
-            padding: 10px 12px;
-            border: 1px solid var(--border);
-            border-radius: 8px;
-            background: var(--bg-secondary);
-            white-space: pre-wrap;
         }
 
         /* 任务列表 */
@@ -930,63 +894,6 @@
                         </div>
                     </div>
                 </div>
-
-                <div class="card" style="margin-top:20px;">
-                    <div class="card-header">
-                        <div class="card-header-icon control">🛡️</div>
-                        <h3>风控中心</h3>
-                    </div>
-                    <div class="card-body">
-                        <label class="switch-container" onclick="event.stopPropagation()">
-                            <div class="switch">
-                                <input type="checkbox" id="riskEnabledCheckbox">
-                                <span class="switch-slider"></span>
-                            </div>
-                            <div class="switch-label">
-                                <div class="switch-label-title">启用风控拦截</div>
-                                <div class="switch-label-desc">自动限制高频回复、连续失败和同用户重复触达</div>
-                            </div>
-                        </label>
-
-                        <div class="risk-grid">
-                            <div class="risk-item">
-                                <label>每小时上限</label>
-                                <input type="number" id="riskMaxHour" min="1" max="500">
-                            </div>
-                            <div class="risk-item">
-                                <label>每日上限</label>
-                                <input type="number" id="riskMaxDay" min="1" max="5000">
-                            </div>
-                            <div class="risk-item">
-                                <label>最小动作间隔(秒)</label>
-                                <input type="number" id="riskMinInterval" min="0" max="3600">
-                            </div>
-                            <div class="risk-item">
-                                <label>同用户冷却(小时)</label>
-                                <input type="number" id="riskUserCooldown" min="0" max="720">
-                            </div>
-                            <div class="risk-item">
-                                <label>连续失败阈值</label>
-                                <input type="number" id="riskMaxFailStreak" min="1" max="100">
-                            </div>
-                            <div class="risk-item">
-                                <label>触发后冷却(分钟)</label>
-                                <input type="number" id="riskCooldownMins" min="1" max="10080">
-                            </div>
-                            <div class="risk-item" style="grid-column: span 2;">
-                                <label>风险分拦截阈值</label>
-                                <input type="number" id="riskScoreThreshold" min="20" max="100">
-                            </div>
-                        </div>
-
-                        <div class="risk-runtime" id="riskRuntimeText">风控运行状态加载中...</div>
-
-                        <div class="template-editor-actions" style="margin-top:10px;">
-                            <button class="btn-primary btn-sm" onclick="saveRiskConfig()">💾 保存风控配置</button>
-                            <button class="btn-ghost btn-sm" onclick="resetRiskRuntime()">♻️ 重置计数</button>
-                        </div>
-                    </div>
-                </div>
             </div>
 
             <!-- 右侧面板 -->
@@ -1071,8 +978,6 @@
         let notifyReplyTemplates = [];
         let dmMessageTemplates = [];
         const templateEditState = { reply: -1, dm: -1 };
-        let riskConfig = {};
-        let riskRuntime = {};
 
         window.onload = () => fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';
@@ -1080,7 +985,6 @@
             document.getElementById('headlessCheckbox').checked = d.headless_mode !== false;
             document.getElementById('delegatedAccount').value = d.delegated_account || '';
             syncTemplatesFromPayload(d);
-            syncRiskFromPayload(d);
             renderTasks(d.tasks);
             if(d.is_running) setStatus(true);
 
@@ -1186,108 +1090,6 @@
                         alert(account ? `✅ 已设置委派账户: ${account}` : '✅ 已清除委派账户');
                     }
                 });
-        }
-
-        function toInt(value, fallback) {
-            const n = parseInt(value, 10);
-            return Number.isFinite(n) ? n : fallback;
-        }
-
-        function formatDuration(totalSec) {
-            let s = Math.max(0, toInt(totalSec, 0));
-            const h = Math.floor(s / 3600);
-            s -= h * 3600;
-            const m = Math.floor(s / 60);
-            s -= m * 60;
-            if(h > 0) return `${h}小时${m}分${s}秒`;
-            if(m > 0) return `${m}分${s}秒`;
-            return `${s}秒`;
-        }
-
-        function syncRiskFromPayload(payload) {
-            const cfg = payload && payload.risk_config ? payload.risk_config : {};
-            riskConfig = {
-                enabled: cfg.enabled !== false,
-                max_reply_per_hour: toInt(cfg.max_reply_per_hour, 20),
-                max_reply_per_day: toInt(cfg.max_reply_per_day, 120),
-                min_interval_sec: toInt(cfg.min_interval_sec, 25),
-                per_user_cooldown_hours: toInt(cfg.per_user_cooldown_hours, 24),
-                max_fail_streak: toInt(cfg.max_fail_streak, 4),
-                cooldown_minutes: toInt(cfg.cooldown_minutes, 120),
-                max_risk_score: toInt(cfg.max_risk_score, 75),
-            };
-            if(payload && payload.risk_runtime) {
-                riskRuntime = payload.risk_runtime;
-            }
-
-            document.getElementById('riskEnabledCheckbox').checked = !!riskConfig.enabled;
-            document.getElementById('riskMaxHour').value = riskConfig.max_reply_per_hour;
-            document.getElementById('riskMaxDay').value = riskConfig.max_reply_per_day;
-            document.getElementById('riskMinInterval').value = riskConfig.min_interval_sec;
-            document.getElementById('riskUserCooldown').value = riskConfig.per_user_cooldown_hours;
-            document.getElementById('riskMaxFailStreak').value = riskConfig.max_fail_streak;
-            document.getElementById('riskCooldownMins').value = riskConfig.cooldown_minutes;
-            document.getElementById('riskScoreThreshold').value = riskConfig.max_risk_score;
-            renderRiskRuntime();
-        }
-
-        function renderRiskRuntime() {
-            const box = document.getElementById('riskRuntimeText');
-            if(!box) return;
-            const rt = riskRuntime || {};
-            const cooldownLeft = toInt(rt.cooldown_left_sec, 0);
-            const blockReason = String(rt.last_block_reason || '').trim();
-            const lines = [
-                `近1小时动作: ${toInt(rt.hour_count, 0)} / ${toInt(riskConfig.max_reply_per_hour, 0)}`,
-                `近24小时动作: ${toInt(rt.day_count, 0)} / ${toInt(riskConfig.max_reply_per_day, 0)}`,
-                `连续失败: ${toInt(rt.fail_streak, 0)} / ${toInt(riskConfig.max_fail_streak, 0)}`,
-                `最近风险分: ${toInt(rt.last_risk_score, 0)} / ${toInt(riskConfig.max_risk_score, 0)}`,
-                cooldownLeft > 0 ? `冷却剩余: ${formatDuration(cooldownLeft)}` : '冷却状态: 正常',
-                `累计成功/失败: ${toInt(rt.total_success, 0)} / ${toInt(rt.total_fail, 0)}`,
-            ];
-            if(blockReason) lines.push(`最近拦截原因: ${blockReason}`);
-            box.textContent = lines.join('\n');
-        }
-
-        function saveRiskConfig() {
-            const payload = {
-                enabled: document.getElementById('riskEnabledCheckbox').checked,
-                max_reply_per_hour: toInt(document.getElementById('riskMaxHour').value, 20),
-                max_reply_per_day: toInt(document.getElementById('riskMaxDay').value, 120),
-                min_interval_sec: toInt(document.getElementById('riskMinInterval').value, 25),
-                per_user_cooldown_hours: toInt(document.getElementById('riskUserCooldown').value, 24),
-                max_fail_streak: toInt(document.getElementById('riskMaxFailStreak').value, 4),
-                cooldown_minutes: toInt(document.getElementById('riskCooldownMins').value, 120),
-                max_risk_score: toInt(document.getElementById('riskScoreThreshold').value, 75),
-            };
-            fetch('/api/risk_center/update', {
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify(payload)
-            }).then(r=>r.json()).then(d => {
-                if(d.status === 'ok') {
-                    syncRiskFromPayload(d);
-                    alert('✅ 风控配置已保存');
-                } else {
-                    alert(`保存失败: ${d.msg || '未知错误'}`);
-                }
-            }).catch(() => alert('网络异常，保存失败'));
-        }
-
-        function resetRiskRuntime() {
-            if(!confirm('确定重置风控计数和冷却状态吗？')) return;
-            fetch('/api/risk_center/reset', {
-                method:'POST',
-                headers:{'Content-Type':'application/json'},
-                body:JSON.stringify({clear_history:true})
-            }).then(r=>r.json()).then(d => {
-                if(d.status === 'ok') {
-                    syncRiskFromPayload(d);
-                    alert('✅ 风控运行状态已重置');
-                } else {
-                    alert(`重置失败: ${d.msg || '未知错误'}`);
-                }
-            }).catch(() => alert('网络异常，重置失败'));
         }
 
         function getTemplateArray(type) {
@@ -1677,10 +1479,6 @@
             fetch('/api/updates').then(r=>r.json()).then(d => {
                 d.new_items.forEach(i => addRow(i, true));
                 if(d.tasks) renderTasks(d.tasks);
-                if(d.risk_runtime) {
-                    riskRuntime = d.risk_runtime;
-                    renderRiskRuntime();
-                }
             });
         }, 1000);
     </script>
