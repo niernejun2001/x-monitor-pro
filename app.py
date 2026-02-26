@@ -129,6 +129,10 @@ NOTIFICATION_TRACE_MAX_ARTICLES = 12
 NOTIFICATION_TRACE_TEXT_LEN = 120
 NOTIFICATION_REFRESH_INTERVAL_MIN_SEC = 25
 NOTIFICATION_REFRESH_INTERVAL_MAX_SEC = 55
+REPLY_ACTION_GAP_MIN_SEC = 2.6
+REPLY_ACTION_GAP_MAX_SEC = 5.4
+REPLY_PREPARE_REFRESH_MIN_GAP_SEC = 18.0
+DM_UNAVAILABLE_CACHE_TTL_SEC = 12 * 3600
 CONTENT_DEDUPE_TTL_SEC = 72 * 3600
 CONTENT_DEDUPE_MAX_ENTRIES = 40000
 MAINTENANCE_INTERVAL_MIN_SEC = 40 * 60
@@ -157,6 +161,7 @@ DEFAULT_NOTIFY_REPLY_TEMPLATES = [
     '大佬 我给您私信介绍了',
 ]
 DEFAULT_DM_TEMPLATES = [DM_FOLLOWUP_TEXT]
+DM_CLOSED_FALLBACK_REPLY_TEXT = "大佬您的私信关闭了，如果有需要可以给我私信"
 DM_PASSCODE = os.environ.get("XMONITOR_DM_PASSCODE", "1234")
 PROXY_ENV_KEYS = (
     "XMONITOR_PROXY",
@@ -174,12 +179,17 @@ global_browser_dir = None
 browser_initialized = False
 
 reply_action_lock = threading.Lock()
+reply_rate_limit_lock = threading.Lock()
 reply_work_tab = None
 reply_work_tab_lock = threading.Lock()
 dm_passcode_warmed = False
 dm_passcode_lock = threading.Lock()
 notify_reply_templates = list(DEFAULT_NOTIFY_REPLY_TEMPLATES)
 dm_message_templates = list(DEFAULT_DM_TEMPLATES)
+last_reply_action_ts = 0.0
+last_reply_prepare_refresh_ts = 0.0
+dm_unavailable_cache = {}  # {handle: expire_ts}
+dm_unavailable_cache_lock = threading.Lock()
 
 # --- 线程池 (根据任务数动态调整) ---
 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -2846,6 +2856,64 @@ def ensure_reply_work_tab(force_recreate=False):
     return tab
 
 
+def _wait_first_visible(tab, selectors, timeout=3.0, poll=0.12):
+    """轮询选择器并返回首个可见元素。"""
+    deadline = time.time() + max(0.2, float(timeout))
+    while time.time() < deadline:
+        for selector in selectors:
+            try:
+                cand = tab.ele(selector, timeout=0)
+            except Exception:
+                cand = None
+            try:
+                if cand and cand.states.is_displayed:
+                    return cand
+            except Exception:
+                continue
+        time.sleep(poll)
+    return None
+
+
+def _throttle_reply_action_if_needed():
+    """限制回复动作速率，降低账号风控概率。"""
+    global last_reply_action_ts
+    now = time.time()
+    jitter_gap = random.uniform(REPLY_ACTION_GAP_MIN_SEC, REPLY_ACTION_GAP_MAX_SEC)
+    wait_sec = 0.0
+    with reply_rate_limit_lock:
+        elapsed = now - last_reply_action_ts
+        if elapsed < jitter_gap:
+            wait_sec = jitter_gap - elapsed
+        if wait_sec > 0:
+            time.sleep(wait_sec)
+        last_reply_action_ts = time.time()
+    if wait_sec > 0.25:
+        log_to_ui("debug", f"🕒 发送前节流等待 {wait_sec:.2f}s（风控保护）")
+
+
+def _is_dm_unavailable_cached(handle):
+    """检查某用户私信不可达缓存。"""
+    handle_norm = normalize_handle(handle)
+    if not handle_norm:
+        return False
+    now = time.time()
+    with dm_unavailable_cache_lock:
+        expire_ts = dm_unavailable_cache.get(handle_norm, 0.0)
+        if expire_ts > now:
+            return True
+        if handle_norm in dm_unavailable_cache:
+            dm_unavailable_cache.pop(handle_norm, None)
+    return False
+
+
+def _mark_dm_unavailable(handle):
+    handle_norm = normalize_handle(handle)
+    if not handle_norm:
+        return
+    with dm_unavailable_cache_lock:
+        dm_unavailable_cache[handle_norm] = time.time() + DM_UNAVAILABLE_CACHE_TTL_SEC
+
+
 def _get_status_link_from_item(item, matched_status_handle=None, matched_status_id=None):
     status_id = str(matched_status_id or item.get("status_id") or "").strip()
     status_handle = normalize_handle(matched_status_handle or item.get("status_handle") or "")
@@ -2882,7 +2950,7 @@ def _click_share_copy_link(tab, target_article, fallback_link):
             tab.run_js('arguments[0].click()', share_btn)
         except Exception:
             return fallback_link, "点击分享按钮失败"
-    time.sleep(0.6)
+    _ = _wait_first_visible(tab, ['css:[role="menuitem"]', 'css:div[role="menu"]'], timeout=1.4, poll=0.1)
 
     copy_btn = None
     copy_keyword_list = ["复制链接", "copy link", "link to post", "link to tweet"]
@@ -2913,7 +2981,6 @@ def _click_share_copy_link(tab, target_article, fallback_link):
             tab.run_js('arguments[0].click()', copy_btn)
         except Exception:
             return fallback_link, "点击复制链接按钮失败"
-    time.sleep(0.4)
 
     # X 菜单复制通常写入系统剪贴板，自动读取常被权限限制；这里稳妥回退为已识别链接
     return fallback_link, ""
@@ -3142,6 +3209,8 @@ def _open_dm_editor_for_handle(tab, handle):
     handle_norm = normalize_handle(handle)
     if not handle_norm:
         return None, "缺少目标用户handle"
+    if _is_dm_unavailable_cached(handle_norm):
+        return None, "该用户当前不可私信（缓存命中）"
 
     dm_btn_selectors = [
         'css:[data-testid="sendDMFromProfile"]',
@@ -3215,26 +3284,27 @@ def _open_dm_editor_for_handle(tab, handle):
                 tab.wait.ele_displayed('tag:main', timeout=8)
             except Exception:
                 pass
-            time.sleep(1.0)
+            time.sleep(random.uniform(0.45, 0.85))
         elif attempt == 1:
             # 第一次失败后，优先处理可能拦截流程的 passcode
             handled = _handle_dm_passcode_prompt(tab)
             if handled:
-                time.sleep(0.7)
+                time.sleep(random.uniform(0.35, 0.7))
             tab.get(f"https://x.com/{handle_norm}")
             try:
                 tab.wait.ele_displayed('tag:main', timeout=6)
             except Exception:
                 pass
-            time.sleep(0.9)
+            time.sleep(random.uniform(0.4, 0.8))
         else:
             try:
                 tab.refresh()
-                time.sleep(1.0)
+                time.sleep(random.uniform(0.5, 1.0))
             except Exception:
                 pass
 
         if _has_cannot_dm_hint():
+            _mark_dm_unavailable(handle_norm)
             return None, "该用户当前不可私信（平台限制或对方未开放私信）"
 
         dm_btn = _find_dm_btn()
@@ -3248,14 +3318,14 @@ def _open_dm_editor_for_handle(tab, handle):
                 tab.run_js('arguments[0].click()', dm_btn)
             except Exception:
                 continue
-        time.sleep(1.0)
+        time.sleep(random.uniform(0.45, 0.95))
 
         handled_after_click = _handle_dm_passcode_prompt(tab)
         if handled_after_click:
             # 输入 passcode 后通常会回到资料页，需要再次点击私信按钮
             try:
                 tab.get(f"https://x.com/{handle_norm}")
-                time.sleep(0.9)
+                time.sleep(random.uniform(0.4, 0.8))
             except Exception:
                 pass
             dm_btn_retry = _find_dm_btn()
@@ -3267,15 +3337,17 @@ def _open_dm_editor_for_handle(tab, handle):
                         tab.run_js('arguments[0].click()', dm_btn_retry)
                     except Exception:
                         pass
-                time.sleep(0.9)
+                time.sleep(random.uniform(0.4, 0.8))
 
         editor = _find_editor(timeout_each=2.0)
         if editor:
             return editor, ""
         if _has_cannot_dm_hint():
+            _mark_dm_unavailable(handle_norm)
             return None, "该用户当前不可私信（平台限制或对方未开放私信）"
 
     if _has_cannot_dm_hint():
+        _mark_dm_unavailable(handle_norm)
         return None, "该用户当前不可私信（平台限制或对方未开放私信）"
     return None, "未打开私信输入框（可能被 Passcode 或页面状态打断）"
 
@@ -3420,6 +3492,7 @@ def _send_dm_message(tab, text):
 
 def send_notification_reply(item, message, dm_message=""):
     """针对通知记录发送回复。"""
+    global last_reply_prepare_refresh_ts
     if not global_token.strip():
         return False, "请先配置并验证 auth_token 后再回复"
 
@@ -3430,6 +3503,13 @@ def send_notification_reply(item, message, dm_message=""):
     handle_hint = item.get("handle", "")
 
     with reply_action_lock:
+        _throttle_reply_action_if_needed()
+        flow_started_at = time.perf_counter()
+        stage_marks = {}
+
+        def _mark(stage_name):
+            stage_marks[stage_name] = time.perf_counter() - flow_started_at
+
         try:
             tab = ensure_reply_work_tab()
         except Exception as e:
@@ -3438,73 +3518,193 @@ def send_notification_reply(item, message, dm_message=""):
         try:
             log_to_ui("info", f"💬 开始执行通知回复(复用全局浏览器): {handle_hint} -> status {status_id}")
 
-            tab.get("https://x.com/notifications")
-            log_to_ui("debug", "💬 已打开通知页，准备定位目标通知卡片")
             try:
-                tab.wait.ele_displayed('tag:article', timeout=8)
+                current_url = str(tab.url or "")
+            except Exception:
+                current_url = ""
+            if "x.com/notifications" not in current_url:
+                tab.get("https://x.com/notifications")
+            log_to_ui("debug", "💬 已进入通知页，准备定位目标通知卡片")
+            try:
+                tab.wait.ele_displayed('tag:article', timeout=5)
             except Exception:
                 pass
-            time.sleep(1.0)
 
-            def _prepare_notifications_view():
-                # 新通知有时尚未渲染，先刷新再定位
+            def _prepare_notifications_view(force_refresh=False):
+                """准备通知视图；默认不刷新，仅在必要时刷新。"""
+                did_refresh = False
+                if force_refresh:
+                    now_ts = time.time()
+                    should_refresh = (now_ts - last_reply_prepare_refresh_ts) >= REPLY_PREPARE_REFRESH_MIN_GAP_SEC
+                    if should_refresh:
+                        try:
+                            tab.refresh()
+                            did_refresh = True
+                            last_reply_prepare_refresh_ts = now_ts
+                            time.sleep(random.uniform(0.45, 0.95))
+                        except Exception:
+                            pass
+                    else:
+                        log_to_ui("debug", "💬 跳过重复刷新通知页（风控保护）")
+
                 try:
-                    tab.refresh()
-                    time.sleep(random.uniform(0.8, 1.6))
-                except Exception:
-                    pass
-                try:
-                    tabs = tab.eles('css:[role="tab"]', timeout=1.2)
+                    tabs = tab.eles('css:[role="tab"]', timeout=0.9)
                     for notify_tab in tabs:
                         tab_text = (notify_tab.text or "").strip().lower()
-                        if tab_text in {'全部', 'all'}:
+                        if tab_text not in {'全部', 'all'}:
+                            continue
+                        is_selected = (notify_tab.attr('aria-selected') or '').lower() == 'true'
+                        if not is_selected:
                             try:
                                 notify_tab.click()
                             except Exception:
                                 tab.run_js('arguments[0].click()', notify_tab)
-                            time.sleep(0.7)
-                            break
-                except Exception:
-                    pass
-                try:
-                    tab.run_js('window.scrollTo(0, 0);')
+                            time.sleep(random.uniform(0.2, 0.45))
+                        break
                 except Exception:
                     pass
 
-            _prepare_notifications_view()
-            log_to_ui("debug", "💬 已刷新通知页并切到全部，开始定位目标通知卡片")
+                if force_refresh or did_refresh:
+                    try:
+                        tab.run_js('window.scrollTo(0, 0);')
+                    except Exception:
+                        pass
+
+            def _match_target_card():
+                """在通知页匹配目标卡片并返回匹配结果。"""
+                target_article = None
+                target_reply_btn = None
+                target_score = 0
+                required_score = 260 if status_id else 120
+                for attempt in range(4):
+                    if attempt == 3 and not target_article:
+                        _prepare_notifications_view(force_refresh=True)
+                        log_to_ui("debug", "💬 匹配未命中，执行一次刷新后重试")
+                    target_article, target_reply_btn, target_score = _match_notification_card_for_reply(
+                        tab,
+                        status_id,
+                        item.get("handle", ""),
+                        item.get("content", "")
+                    )
+                    if target_article and target_reply_btn and target_score >= required_score:
+                        break
+                    try:
+                        if attempt < 2:
+                            tab.run_js('window.scrollBy(0, 640);')
+                        else:
+                            tab.run_js('window.scrollTo(0, 0);')
+                        time.sleep(random.uniform(0.22, 0.5))
+                    except Exception:
+                        pass
+
+                if not target_article:
+                    return None, None, 0, None, None, "未在通知页定位到目标评论卡片"
+
+                if target_score < required_score:
+                    return None, None, target_score, None, None, f"通知卡片匹配置信度不足(score={target_score})，已阻止误回复"
+
+                try:
+                    matched_handle, matched_status_id = _extract_notification_status_info(target_article)
+                except Exception:
+                    matched_handle, matched_status_id = None, None
+
+                return target_article, target_reply_btn, target_score, matched_handle, matched_status_id, ""
+
+            def _send_reply_from_button(target_reply_btn, target_score, reply_text):
+                """点击卡片左下角回复并发送文本。"""
+                try:
+                    tab.run_js('arguments[0].scrollIntoView({block:"center"});', target_reply_btn)
+                except Exception:
+                    pass
+
+                try:
+                    target_reply_btn.click()
+                except Exception:
+                    tab.run_js('arguments[0].click()', target_reply_btn)
+                log_to_ui("debug", f"💬 已点击通知卡片左下角回复按钮(score={target_score})，等待回复输入框")
+
+                editor_selectors = [
+                    'css:[data-testid="tweetTextarea_0"] [role="textbox"]',
+                    'css:[data-testid="tweetTextarea_0"]',
+                    'css:div[role="textbox"][contenteditable="true"]',
+                ]
+                editor = _wait_first_visible(tab, editor_selectors, timeout=4.2, poll=0.1)
+                if not editor:
+                    return False, "未弹出回复输入框"
+
+                typed_ok = False
+                try:
+                    editor.click()
+                except Exception:
+                    pass
+
+                try:
+                    editor.input(reply_text, clear=True)
+                    typed_ok = True
+                except Exception:
+                    try:
+                        tab.run_js(
+                            """
+                            const el = arguments[0];
+                            const text = arguments[1];
+                            el.focus();
+                            if (el.textContent !== undefined) el.textContent = '';
+                            document.execCommand('insertText', false, text);
+                            el.dispatchEvent(new Event('input', {bubbles: true}));
+                            """,
+                            editor,
+                            reply_text,
+                        )
+                        typed_ok = True
+                    except Exception:
+                        typed_ok = False
+                if not typed_ok:
+                    return False, "输入回复内容失败"
+                log_to_ui("debug", "💬 已填充回复内容")
+
+                send_btn = None
+                send_selectors = [
+                    'css:[data-testid="tweetButton"]',
+                    'css:button[data-testid="tweetButton"]',
+                    'css:[data-testid="tweetButtonInline"]',
+                ]
+                for selector in send_selectors:
+                    try:
+                        candidates = tab.eles(selector, timeout=1.0)
+                    except Exception:
+                        candidates = []
+                    for candidate in candidates:
+                        try:
+                            if candidate and candidate.states.is_displayed:
+                                disabled = (candidate.attr('aria-disabled') or '').lower()
+                                if disabled != 'true':
+                                    send_btn = candidate
+                                    break
+                        except Exception:
+                            continue
+                    if send_btn:
+                        break
+
+                if not send_btn:
+                    return False, "未找到可点击的右下角回复按钮"
+
+                time.sleep(random.uniform(0.2, 0.45))
+                try:
+                    send_btn.click()
+                except Exception:
+                    tab.run_js('arguments[0].click()', send_btn)
+                log_to_ui("debug", "💬 已点击右下角回复按钮")
+                time.sleep(random.uniform(0.45, 0.9))
+                return True, ""
+
+            _prepare_notifications_view(force_refresh=False)
+            log_to_ui("debug", "💬 已准备通知视图，开始定位目标通知卡片")
 
             # 在通知页中定位目标通知卡片（只点该卡片左下角回复）
-            target_article = None
-            target_reply_btn = None
-            target_score = 0
-            for attempt in range(5):
-                if attempt == 2 and not target_article:
-                    _prepare_notifications_view()
-                    log_to_ui("debug", "💬 首轮未命中，已再次刷新通知页后重试匹配")
-                target_article, target_reply_btn, target_score = _match_notification_card_for_reply(
-                    tab,
-                    status_id,
-                    item.get("handle", ""),
-                    item.get("content", "")
-                )
-                required_score = 260 if status_id else 120
-                if target_article and target_reply_btn and target_score >= required_score:
-                    break
-                try:
-                    tab.run_js('window.scrollBy(0, 720);')
-                    time.sleep(0.7)
-                except Exception:
-                    pass
-            if not target_article:
-                return False, "未在通知页定位到目标评论卡片"
-            required_score = 260 if status_id else 120
-            if target_score < required_score:
-                return False, f"通知卡片匹配置信度不足(score={target_score})，已阻止误回复"
-            try:
-                matched_handle, matched_status_id = _extract_notification_status_info(target_article)
-            except Exception:
-                matched_handle, matched_status_id = None, None
+            target_article, target_reply_btn, target_score, matched_handle, matched_status_id, match_err = _match_target_card()
+            if match_err:
+                return False, match_err
+            _mark("match_card")
             log_to_ui(
                 "debug",
                 f"💬 已定位通知卡片 score={target_score}, status_id={matched_status_id}, handle={matched_handle or ''}"
@@ -3516,110 +3716,59 @@ def send_notification_reply(item, message, dm_message=""):
                 log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
             if not share_link:
                 return False, "无法确定要发送的链接"
+            _mark("prepare_share_link")
             log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
 
-            try:
-                tab.run_js('arguments[0].scrollIntoView({block:\"center\"});', target_reply_btn)
-            except Exception:
-                pass
-
-            try:
-                target_reply_btn.click()
-            except Exception:
-                tab.run_js('arguments[0].click()', target_reply_btn)
-            log_to_ui("debug", f"💬 已点击通知卡片左下角回复按钮(score={target_score})，等待回复输入框")
-            time.sleep(0.9)
-
-            editor = None
-            editor_selectors = [
-                'css:[data-testid="tweetTextarea_0"] [role="textbox"]',
-                'css:[data-testid="tweetTextarea_0"]',
-                'css:div[role="textbox"][contenteditable="true"]',
-            ]
-            for selector in editor_selectors:
-                try:
-                    candidate = tab.ele(selector, timeout=4)
-                    if candidate and candidate.states.is_displayed:
-                        editor = candidate
-                        break
-                except Exception:
-                    continue
-            if not editor:
-                return False, "未弹出回复输入框"
-
-            typed_ok = False
-            try:
-                editor.click()
-            except Exception:
-                pass
-
-            try:
-                editor.input(message, clear=True)
-                typed_ok = True
-            except Exception:
-                try:
-                    tab.run_js(
-                        """
-                        const el = arguments[0];
-                        const text = arguments[1];
-                        el.focus();
-                        if (el.textContent !== undefined) el.textContent = '';
-                        document.execCommand('insertText', false, text);
-                        el.dispatchEvent(new Event('input', {bubbles: true}));
-                        """,
-                        editor,
-                        message,
-                    )
-                    typed_ok = True
-                except Exception:
-                    typed_ok = False
-
-            if not typed_ok:
-                return False, "输入回复内容失败"
-            log_to_ui("debug", "💬 已填充回复内容")
-
-            # 右下角“回复”按钮
-            send_btn = None
-            send_selectors = [
-                'css:[data-testid="tweetButton"]',
-                'css:button[data-testid="tweetButton"]',
-                'css:[data-testid="tweetButtonInline"]',
-            ]
-            for selector in send_selectors:
-                try:
-                    candidates = tab.eles(selector, timeout=2)
-                except Exception:
-                    candidates = []
-                for candidate in candidates:
-                    try:
-                        if candidate and candidate.states.is_displayed:
-                            disabled = (candidate.attr('aria-disabled') or '').lower()
-                            if disabled != 'true':
-                                send_btn = candidate
-                                break
-                    except Exception:
-                        continue
-                if send_btn:
-                    break
-
-            if not send_btn:
-                return False, "未找到可点击的右下角回复按钮"
-
-            try:
-                send_btn.click()
-            except Exception:
-                tab.run_js('arguments[0].click()', send_btn)
-            log_to_ui("debug", "💬 已点击右下角回复按钮")
-
-            time.sleep(1.8)
+            ok_reply, err_reply = _send_reply_from_button(target_reply_btn, target_score, message)
+            if not ok_reply:
+                return False, err_reply
+            _mark("send_reply")
 
             dm_editor, dm_err = _open_dm_editor_for_handle(tab, item.get("handle", ""))
             if not dm_editor:
+                dm_err_text = str(dm_err or "")
+                dm_closed = any(k in dm_err_text for k in [
+                    "不可私信",
+                    "未开放私信",
+                    "无法接收私信",
+                    "无法向该用户发送私信",
+                    "不能给该用户发私信",
+                    "当前不可私信",
+                ])
+                if dm_closed:
+                    _mark("dm_open_failed")
+                    log_to_ui("warn", "⚠️ 目标用户未开启私信，准备发送补充评论后结束私信流程")
+                    try:
+                        now_url = str(tab.url or "")
+                    except Exception:
+                        now_url = ""
+                    if "x.com/notifications" not in now_url:
+                        tab.get("https://x.com/notifications")
+                    _prepare_notifications_view(force_refresh=True)
+                    fb_article, fb_reply_btn, fb_score, _, _, fb_match_err = _match_target_card()
+                    if fb_match_err:
+                        return False, f"用户不可私信，且补充评论失败: {fb_match_err}"
+                    ok_fb, err_fb = _send_reply_from_button(fb_reply_btn, fb_score, DM_CLOSED_FALLBACK_REPLY_TEXT)
+                    if not ok_fb:
+                        return False, f"用户不可私信，且补充评论失败: {err_fb}"
+                    _mark("fallback_reply")
+                    total_cost = time.perf_counter() - flow_started_at
+                    log_to_ui(
+                        "debug",
+                        f"⏱️ 回复流程耗时(私信关闭): 匹配{stage_marks.get('match_card', 0):.2f}s, "
+                        f"链接{stage_marks.get('prepare_share_link', 0):.2f}s, "
+                        f"首评{stage_marks.get('send_reply', 0):.2f}s, 补评{stage_marks.get('fallback_reply', 0):.2f}s, "
+                        f"总计{total_cost:.2f}s"
+                    )
+                    log_to_ui("info", "💬 用户私信关闭，已发送补充评论并结束私信发送流程")
+                    return True, ""
                 return False, f"打开私信失败: {dm_err}"
+            _mark("open_dm")
 
             ok_dm_1, err_dm_1 = _send_dm_message(tab, share_link)
             if not ok_dm_1:
                 return False, f"发送私信链接失败: {err_dm_1}"
+            _mark("send_dm_link")
             log_to_ui("debug", "📨 已发送私信链接")
 
             dm_text = str(dm_message or "").strip()
@@ -3628,7 +3777,17 @@ def send_notification_reply(item, message, dm_message=""):
             ok_dm_2, err_dm_2 = _send_dm_message(tab, dm_text)
             if not ok_dm_2:
                 return False, f"发送私信文案失败: {err_dm_2}"
+            _mark("send_dm_text")
             log_to_ui("debug", "📨 已发送私信文案")
+
+            total_cost = time.perf_counter() - flow_started_at
+            log_to_ui(
+                "debug",
+                f"⏱️ 回复流程耗时: 匹配{stage_marks.get('match_card', 0):.2f}s, "
+                f"链接{stage_marks.get('prepare_share_link', 0):.2f}s, 首评{stage_marks.get('send_reply', 0):.2f}s, "
+                f"开私信{stage_marks.get('open_dm', 0):.2f}s, 发链接{stage_marks.get('send_dm_link', 0):.2f}s, "
+                f"发文案{stage_marks.get('send_dm_text', 0):.2f}s, 总计{total_cost:.2f}s"
+            )
 
             return True, ""
         except Exception as e:
@@ -3636,8 +3795,13 @@ def send_notification_reply(item, message, dm_message=""):
         finally:
             # 无论成功/失败都回到通知页，且保持当前工作标签页不关闭，避免重复 Passcode 校验
             try:
-                tab.get("https://x.com/notifications")
-                time.sleep(0.6)
+                final_url = str(tab.url or "")
+            except Exception:
+                final_url = ""
+            try:
+                if "x.com/notifications" not in final_url:
+                    tab.get("https://x.com/notifications")
+                    time.sleep(random.uniform(0.3, 0.7))
             except Exception:
                 pass
 
