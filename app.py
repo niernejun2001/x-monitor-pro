@@ -825,6 +825,38 @@ def get_free_port():
         s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         return s.getsockname()[1]
 
+
+def is_port_available(port, host='127.0.0.1'):
+    """检查端口是否可绑定。"""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((host, int(port)))
+        return True
+    except Exception:
+        return False
+
+
+def resolve_server_port():
+    """
+    解析服务端口：
+    - 设置了 XMONITOR_PORT: 优先使用该端口；不可用则回退随机端口
+    - 未设置: 默认使用随机可用端口，避免冲突
+    """
+    env_port = str(os.environ.get("XMONITOR_PORT", "")).strip()
+    if env_port:
+        try:
+            preferred = int(env_port)
+            if not (1 <= preferred <= 65535):
+                raise ValueError("out_of_range")
+            if is_port_available(preferred):
+                return preferred, "env"
+            logging.warning(f"配置端口不可用，自动回退随机端口: {preferred}")
+        except Exception:
+            logging.warning(f"无效的 XMONITOR_PORT={env_port}，自动回退随机端口")
+
+    return get_free_port(), "random"
+
 # --- 爬虫核心 ---
 def init_browser_options(port, user_data_path):
     co = ChromiumOptions()
@@ -3881,8 +3913,13 @@ if __name__ == '__main__':
     print("🚀 X Monitor V10.4 (通知监控版) 启动中...")
     print("=" * 60)
     load_state()
+    server_port, port_source = resolve_server_port()
     print("=" * 60)
-    print(f"✅ 服务已启动: http://127.0.0.1:5000")
+    print(f"✅ 服务已启动: http://127.0.0.1:{server_port}")
+    if port_source == "random":
+        print("🔀 启动端口模式: 随机可用端口")
+    else:
+        print(f"📌 启动端口模式: 指定端口(XMONITOR_PORT={server_port})")
     print(f"📂 数据目录: {DATA_DIR}")
     print("=" * 60)
 
@@ -3892,7 +3929,7 @@ if __name__ == '__main__':
         log = flask_logging.getLogger('werkzeug')
         log.setLevel(flask_logging.ERROR)
 
-        app.run(host='0.0.0.0', port=5000, debug=False)
+        app.run(host='0.0.0.0', port=server_port, debug=False)
     except KeyboardInterrupt:
         print("\n🛑 正在停止服务...")
         save_state()
