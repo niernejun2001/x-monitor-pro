@@ -15,3 +15,8 @@ dist/
 spider_state.json
 processed_users.json
 run.log
+
+# Build/output artifacts that should not be versioned
+*.lpk
+xmonitor-qt6
+debug_view.jpg
