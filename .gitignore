@@ -1,0 +1,17 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+venv/
+.pyi-venv/
+
+data/
+out/
+dist/
+.lzc-cli-build*/
+
+spider_state.json
+processed_users.json
+run.log

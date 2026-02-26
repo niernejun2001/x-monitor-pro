@@ -1,0 +1,17 @@
+{
+  "manifest_version": 3,
+  "name": "Twitter Reply Jumper",
+  "version": "1.1",
+  "description": "Quickly navigate to any Twitter user's replies page.",
+  "permissions": [
+    "activeTab"
+  ],
+  "action": {
+    "default_popup": "popup.html"
+  },
+  "icons": {
+      "16": "images/icon16.png",
+      "48": "images/icon48.png",
+      "128": "images/icon128.png"
+  }
+}

@@ -1,0 +1,1415 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>X Monitor Pro - 智能监控系统</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-card: #1a1a25;
+            --bg-hover: #252535;
+            --accent: #00d4ff;
+            --accent-glow: rgba(0, 212, 255, 0.3);
+            --success: #00ff88;
+            --danger: #ff4466;
+            --warning: #ffaa00;
+            --text-primary: #ffffff;
+            --text-secondary: #8888aa;
+            --border: #2a2a3a;
+        }
+
+        body {
+            font-family: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            overflow-x: hidden;
+        }
+
+        /* 背景动画 */
+        body::before {
+            content: '';
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background:
+                radial-gradient(ellipse at 20% 20%, rgba(0, 212, 255, 0.08) 0%, transparent 50%),
+                radial-gradient(ellipse at 80% 80%, rgba(0, 255, 136, 0.05) 0%, transparent 50%),
+                radial-gradient(ellipse at 50% 50%, rgba(255, 68, 102, 0.03) 0%, transparent 50%);
+            pointer-events: none;
+            z-index: -1;
+        }
+
+        .container {
+            max-width: 1500px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+
+        /* 头部 */
+        .header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 30px;
+            background: linear-gradient(135deg, var(--bg-card) 0%, var(--bg-secondary) 100%);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            margin-bottom: 25px;
+            position: relative;
+            overflow: hidden;
+        }
+
+        .header::before {
+            content: '';
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            height: 2px;
+            background: linear-gradient(90deg, var(--accent), var(--success), var(--accent));
+            animation: gradientMove 3s linear infinite;
+        }
+
+        @keyframes gradientMove {
+            0% { background-position: 0% 50%; }
+            100% { background-position: 200% 50%; }
+        }
+
+        .logo {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+        }
+
+        .logo-icon {
+            width: 50px;
+            height: 50px;
+            background: linear-gradient(135deg, var(--accent), var(--success));
+            border-radius: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 24px;
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+
+        .logo-text h1 {
+            font-size: 24px;
+            font-weight: 700;
+            background: linear-gradient(90deg, var(--accent), var(--success));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            background-clip: text;
+        }
+
+        .logo-text span {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        .status-badge {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 12px 24px;
+            background: var(--bg-secondary);
+            border-radius: 30px;
+            border: 1px solid var(--border);
+        }
+
+        .status-dot {
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            background: var(--danger);
+            box-shadow: 0 0 10px var(--danger);
+            animation: pulse 2s infinite;
+        }
+
+        .status-dot.running {
+            background: var(--success);
+            box-shadow: 0 0 10px var(--success);
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* 主布局 */
+        .main-grid {
+            display: grid;
+            grid-template-columns: 380px 1fr;
+            gap: 25px;
+        }
+
+        /* 卡片样式 */
+        .card {
+            background: var(--bg-card);
+            border-radius: 16px;
+            border: 1px solid var(--border);
+            overflow: hidden;
+            transition: all 0.3s ease;
+        }
+
+        .card:hover {
+            border-color: var(--accent);
+            box-shadow: 0 0 30px rgba(0, 212, 255, 0.1);
+        }
+
+        .card-header {
+            padding: 20px;
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .card-header-icon {
+            width: 36px;
+            height: 36px;
+            border-radius: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 18px;
+        }
+
+        .card-header-icon.control { background: linear-gradient(135deg, #667eea, #764ba2); }
+        .card-header-icon.target { background: linear-gradient(135deg, #f093fb, #f5576c); }
+        .card-header-icon.result { background: linear-gradient(135deg, #4facfe, #00f2fe); }
+
+        .card-header h3 {
+            font-size: 16px;
+            font-weight: 600;
+        }
+
+        .card-body {
+            padding: 20px;
+        }
+
+        /* 输入框 */
+        input[type="text"] {
+            width: 100%;
+            padding: 14px 18px;
+            background: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            color: var(--text-primary);
+            font-size: 14px;
+            transition: all 0.3s ease;
+            margin-bottom: 12px;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
+        }
+
+        input[type="text"]::placeholder {
+            color: var(--text-secondary);
+        }
+
+        /* 按钮 */
+        button {
+            cursor: pointer;
+            border: none;
+            padding: 12px 24px;
+            border-radius: 10px;
+            font-weight: 600;
+            font-size: 14px;
+            transition: all 0.3s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--accent), #0099cc);
+            color: white;
+            box-shadow: 0 4px 15px rgba(0, 212, 255, 0.3);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0, 212, 255, 0.4);
+        }
+
+        .btn-success {
+            background: linear-gradient(135deg, var(--success), #00cc66);
+            color: #000;
+            box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+        }
+
+        .btn-success:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(0, 255, 136, 0.4);
+        }
+
+        .btn-danger {
+            background: linear-gradient(135deg, var(--danger), #cc0033);
+            color: white;
+            box-shadow: 0 4px 15px rgba(255, 68, 102, 0.3);
+        }
+
+        .btn-danger:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 25px rgba(255, 68, 102, 0.4);
+        }
+
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+        }
+
+        .btn-ghost:hover {
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        .btn-sm {
+            padding: 8px 16px;
+            font-size: 12px;
+            border-radius: 8px;
+        }
+
+        button:disabled {
+            opacity: 0.4;
+            cursor: not-allowed;
+            transform: none !important;
+        }
+
+        .btn-group {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        /* 开关 */
+        .switch-container {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            margin-bottom: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .switch-container:hover {
+            background: var(--bg-hover);
+        }
+
+        .switch {
+            position: relative;
+            width: 50px;
+            height: 26px;
+        }
+
+        .switch input {
+            opacity: 0;
+            width: 0;
+            height: 0;
+        }
+
+        .switch-slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: var(--border);
+            border-radius: 26px;
+            transition: 0.3s;
+        }
+
+        .switch-slider::before {
+            position: absolute;
+            content: "";
+            height: 20px;
+            width: 20px;
+            left: 3px;
+            bottom: 3px;
+            background: white;
+            border-radius: 50%;
+            transition: 0.3s;
+        }
+
+        .switch input:checked + .switch-slider {
+            background: var(--success);
+        }
+
+        .switch input:checked + .switch-slider::before {
+            transform: translateX(24px);
+        }
+
+        .switch-label {
+            flex: 1;
+        }
+
+        .switch-label-title {
+            font-size: 14px;
+            font-weight: 500;
+            margin-bottom: 3px;
+        }
+
+        .switch-label-desc {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+
+        /* 委派账户输入区 */
+        .delegated-section {
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            margin-top: 10px;
+        }
+
+        .delegated-section label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            margin-bottom: 8px;
+            display: block;
+        }
+
+        .template-manager {
+            margin-top: 20px;
+        }
+
+        .template-section {
+            padding: 12px;
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            background: var(--bg-secondary);
+            margin-bottom: 12px;
+        }
+
+        .template-section:last-child {
+            margin-bottom: 0;
+        }
+
+        .template-section h4 {
+            font-size: 13px;
+            margin-bottom: 8px;
+            color: var(--text-primary);
+        }
+
+        .template-input {
+            width: 100%;
+            margin-bottom: 8px !important;
+            padding: 10px 12px !important;
+            border-radius: 8px !important;
+            font-size: 12px !important;
+        }
+
+        .template-textarea {
+            width: 100%;
+            min-height: 90px;
+            resize: vertical;
+            padding: 10px 12px;
+            border-radius: 8px;
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            font-size: 12px;
+            line-height: 1.5;
+            margin-bottom: 8px;
+        }
+
+        .template-textarea:focus {
+            outline: none;
+            border-color: var(--accent);
+            box-shadow: 0 0 16px rgba(0, 212, 255, 0.2);
+        }
+
+        .template-list {
+            list-style: none;
+            margin-top: 10px;
+            max-height: 200px;
+            overflow-y: auto;
+            border-top: 1px solid var(--border);
+            padding-top: 8px;
+        }
+
+        .template-list li {
+            padding: 8px;
+            margin-bottom: 6px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-primary);
+            display: flex;
+            gap: 8px;
+            justify-content: space-between;
+            align-items: flex-start;
+        }
+
+        .template-text {
+            font-size: 12px;
+            color: var(--text-primary);
+            line-height: 1.4;
+            white-space: pre-wrap;
+            word-break: break-word;
+            flex: 1;
+        }
+
+        .template-actions {
+            display: flex;
+            gap: 6px;
+            flex-shrink: 0;
+        }
+
+        /* 任务列表 */
+        .task-list {
+            max-height: 280px;
+            overflow-y: auto;
+        }
+
+        .task-item {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 15px;
+            background: var(--bg-secondary);
+            border-radius: 10px;
+            margin-bottom: 8px;
+            transition: all 0.3s ease;
+        }
+
+        .task-item:hover {
+            background: var(--bg-hover);
+        }
+
+        .task-info {
+            flex: 1;
+            overflow: hidden;
+        }
+
+        .task-url {
+            font-size: 13px;
+            color: var(--accent);
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .task-time {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin-top: 3px;
+        }
+
+        .task-delete {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            background: transparent;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            color: var(--text-secondary);
+            font-size: 16px;
+        }
+
+        .task-delete:hover {
+            background: var(--danger);
+            border-color: var(--danger);
+            color: white;
+        }
+
+        /* 结果表格 */
+        .result-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px 20px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .result-count {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+        }
+
+        .result-count-num {
+            background: var(--accent);
+            color: #000;
+            padding: 4px 12px;
+            border-radius: 20px;
+            font-weight: 700;
+            font-size: 13px;
+        }
+
+        .result-actions {
+            display: flex;
+            align-items: center;
+            justify-content: flex-end;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .result-filter {
+            width: 220px;
+            margin-bottom: 0 !important;
+            padding: 8px 12px !important;
+            font-size: 12px !important;
+            border-radius: 8px !important;
+        }
+
+        .table-container {
+            max-height: 450px;
+            overflow-y: auto;
+            padding: 15px;
+        }
+
+        .table-container.resizable {
+            height: 280px;
+            min-height: 220px;
+            max-height: 75vh;
+            resize: vertical;
+            overflow: auto;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th {
+            text-align: left;
+            padding: 12px 15px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            border-bottom: 1px solid var(--border);
+        }
+
+        td {
+            padding: 15px;
+            font-size: 13px;
+            border-bottom: 1px solid var(--border);
+            vertical-align: middle;
+        }
+
+        tr:hover td {
+            background: var(--bg-hover);
+        }
+
+        .user-link {
+            color: var(--accent);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .user-link:hover {
+            text-decoration: underline;
+        }
+
+        .user-info-cell {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .action-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .reply-template-select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .dm-template-select {
+            width: 100%;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: var(--bg-secondary);
+            color: var(--text-primary);
+            font-size: 12px;
+        }
+
+        .action-btn-row {
+            display: flex;
+            gap: 6px;
+        }
+
+        .btn-reply {
+            background: linear-gradient(135deg, #ffaa00, #ff7a00);
+            color: #000;
+            box-shadow: 0 4px 15px rgba(255, 170, 0, 0.25);
+        }
+
+        .btn-reply:hover {
+            transform: translateY(-1px);
+            box-shadow: 0 6px 22px rgba(255, 170, 0, 0.35);
+        }
+
+        .content-cell {
+            max-width: 400px;
+            line-height: 1.5;
+        }
+
+        .source-badge {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            padding: 5px 10px;
+            border-radius: 20px;
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .source-badge.notify {
+            background: rgba(0, 212, 255, 0.15);
+            color: var(--accent);
+        }
+
+        .source-badge.tweet {
+            background: rgba(0, 255, 136, 0.15);
+            color: var(--success);
+        }
+
+        .row-enter {
+            animation: rowSlide 0.5s ease;
+        }
+
+        @keyframes rowSlide {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        /* 滚动条美化 */
+        ::-webkit-scrollbar {
+            width: 8px;
+            height: 8px;
+        }
+
+        ::-webkit-scrollbar-track {
+            background: var(--bg-secondary);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb {
+            background: var(--border);
+            border-radius: 4px;
+        }
+
+        ::-webkit-scrollbar-thumb:hover {
+            background: var(--text-secondary);
+        }
+
+        /* 响应式 */
+        @media (max-width: 1200px) {
+            .main-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        @media (max-width: 768px) {
+            .result-header {
+                align-items: flex-start;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .result-actions {
+                width: 100%;
+                justify-content: flex-start;
+            }
+
+            .result-filter {
+                width: 100%;
+            }
+        }
+
+        /* 空状态 */
+        .empty-state {
+            text-align: center;
+            padding: 60px 20px;
+            color: var(--text-secondary);
+        }
+
+        .empty-state-icon {
+            font-size: 48px;
+            margin-bottom: 15px;
+            opacity: 0.5;
+        }
+
+        .empty-state-text {
+            font-size: 14px;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- 头部 -->
+        <div class="header">
+            <div class="logo">
+                <div class="logo-icon">🛸</div>
+                <div class="logo-text">
+                    <h1>X Monitor Pro</h1>
+                    <span>智能评论监控系统 v11.0</span>
+                </div>
+            </div>
+            <div class="status-badge">
+                <div class="status-dot" id="statusDot"></div>
+                <span id="statusText">系统待机</span>
+            </div>
+        </div>
+
+        <!-- 主内容 -->
+        <div class="main-grid">
+            <!-- 左侧面板 -->
+            <div class="left-panel">
+                <!-- 控制台 -->
+                <div class="card">
+                    <div class="card-header">
+                        <div class="card-header-icon control">⚡</div>
+                        <h3>控制中心</h3>
+                    </div>
+                    <div class="card-body">
+                        <input type="text" id="token" placeholder="🔑 粘贴 Auth Token...">
+                        <div class="btn-group">
+                            <button class="btn-success" id="startBtn" onclick="toggle(true)">
+                                <span>▶</span> 启动监控
+                            </button>
+                            <button class="btn-danger" id="stopBtn" onclick="toggle(false)" disabled>
+                                <span>⏹</span> 停止
+                            </button>
+                        </div>
+
+                        <label class="switch-container" onclick="event.stopPropagation()">
+                            <div class="switch">
+                                <input type="checkbox" id="notifCheckbox" onchange="toggleNotificationMonitoring()">
+                                <span class="switch-slider"></span>
+                            </div>
+                            <div class="switch-label">
+                                <div class="switch-label-title">📬 通知监控</div>
+                                <div class="switch-label-desc">实时扫描通知页面中的@提及</div>
+                            </div>
+                        </label>
+
+                        <label class="switch-container" onclick="event.stopPropagation()">
+                            <div class="switch">
+                                <input type="checkbox" id="headlessCheckbox" onchange="toggleHeadlessMode()" checked>
+                                <span class="switch-slider"></span>
+                            </div>
+                            <div class="switch-label">
+                                <div class="switch-label-title">🖥️ 无头模式</div>
+                                <div class="switch-label-desc">关闭后显示浏览器窗口(调试用)</div>
+                            </div>
+                        </label>
+
+                        <div class="delegated-section">
+                            <label>委派账户（可选）</label>
+                            <input type="text" id="delegatedAccount" placeholder="@username" style="margin-bottom:10px;">
+                            <button class="btn-primary btn-sm" onclick="saveDelegatedAccount()" style="width:100%;">
+                                💾 保存账户配置
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 监控目标 -->
+                <div class="card" style="margin-top:20px;">
+                    <div class="card-header">
+                        <div class="card-header-icon target">🎯</div>
+                        <h3>监控目标</h3>
+                    </div>
+                    <div class="card-body">
+                        <input type="text" id="newUrl" placeholder="📎 粘贴推文链接...">
+                        <button class="btn-primary" onclick="addTask()" style="width:100%;">
+                            <span>➕</span> 添加监控
+                        </button>
+                        <div class="task-list" id="taskList" style="margin-top:15px;"></div>
+                    </div>
+                </div>
+
+                <div class="card template-manager">
+                    <div class="card-header">
+                        <div class="card-header-icon result">🧩</div>
+                        <h3>文案管理</h3>
+                    </div>
+                    <div class="card-body">
+                        <div class="template-section">
+                            <h4>评论回复文案</h4>
+                            <input type="text" id="replyTemplateInput" class="template-input" placeholder="输入评论回复文案...">
+                            <button class="btn-primary btn-sm" onclick="addTemplate('reply')" style="width:100%;">➕ 添加评论文案</button>
+                            <ul id="replyTemplateList" class="template-list"></ul>
+                        </div>
+
+                        <div class="template-section">
+                            <h4>私信文案</h4>
+                            <textarea id="dmTemplateInput" class="template-textarea" placeholder="输入私信文案..."></textarea>
+                            <button class="btn-primary btn-sm" onclick="addTemplate('dm')" style="width:100%;">➕ 添加私信文案</button>
+                            <ul id="dmTemplateList" class="template-list"></ul>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 右侧面板 -->
+            <div class="right-panel">
+                <!-- 通知结果 -->
+                <div class="card" style="margin-bottom: 20px;">
+                    <div class="result-header">
+                        <div class="result-count">
+                            <div class="card-header-icon" style="background: linear-gradient(135deg, #00d4ff, #0099cc);">📬</div>
+                            <h3 style="font-size:16px;">通知捕获</h3>
+                            <span class="result-count-num" id="notifyCount">0</span>
+                        </div>
+                        <div class="result-actions">
+                            <input type="text" id="notifyFilterInput" class="result-filter" list="notifyFilterOptions" placeholder="筛选 @用户 / 关键词" oninput="applyResultFilter('notify')">
+                            <datalist id="notifyFilterOptions"></datalist>
+                            <button class="btn-ghost btn-sm" onclick="clearResults('notify')">🗑️ 清空</button>
+                        </div>
+                    </div>
+
+                    <div class="table-container resizable">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th width="70">时间</th>
+                                    <th width="130">用户信息</th>
+                                    <th>评论内容</th>
+                                    <th width="330">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="notifyTableBody"></tbody>
+                        </table>
+                        <div class="empty-state" id="notifyEmptyState">
+                            <div class="empty-state-icon">📬</div>
+                            <div class="empty-state-text">暂无通知捕获</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 推文结果 -->
+                <div class="card">
+                    <div class="result-header">
+                        <div class="result-count">
+                            <div class="card-header-icon" style="background: linear-gradient(135deg, #00ff88, #00cc66);">💬</div>
+                            <h3 style="font-size:16px;">推文捕获</h3>
+                            <span class="result-count-num" id="tweetCount">0</span>
+                        </div>
+                        <div class="result-actions">
+                            <input type="text" id="tweetFilterInput" class="result-filter" list="tweetFilterOptions" placeholder="筛选 @用户 / 关键词" oninput="applyResultFilter('tweet')">
+                            <datalist id="tweetFilterOptions"></datalist>
+                            <button class="btn-ghost btn-sm" onclick="clearResults('tweet')">🗑️ 清空</button>
+                            <button class="btn-ghost btn-sm" onclick="clearBlocklist()">⛔ 清空黑名单</button>
+                        </div>
+                    </div>
+
+                    <div class="table-container resizable">
+                        <table>
+                            <thead>
+                                <tr>
+                                    <th width="70">时间</th>
+                                    <th width="110">用户</th>
+                                    <th>评论内容</th>
+                                    <th width="90">操作</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tweetTableBody"></tbody>
+                        </table>
+                        <div class="empty-state" id="tweetEmptyState">
+                            <div class="empty-state-icon">💬</div>
+                            <div class="empty-state-text">暂无推文捕获</div>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const tableBodyIds = { notify: 'notifyTableBody', tweet: 'tweetTableBody' };
+        const filterInputIds = { notify: 'notifyFilterInput', tweet: 'tweetFilterInput' };
+        const filterOptionIds = { notify: 'notifyFilterOptions', tweet: 'tweetFilterOptions' };
+        let notifyReplyTemplates = [];
+        let dmMessageTemplates = [];
+
+        window.onload = () => fetch('/api/state').then(r=>r.json()).then(d=>{
+            document.getElementById('token').value = d.token || '';
+            document.getElementById('notifCheckbox').checked = d.notification_monitoring || false;
+            document.getElementById('headlessCheckbox').checked = d.headless_mode !== false;
+            document.getElementById('delegatedAccount').value = d.delegated_account || '';
+            syncTemplatesFromPayload(d);
+            renderTasks(d.tasks);
+            if(d.is_running) setStatus(true);
+
+            if(d.pending && d.pending.length > 0) {
+                d.pending.forEach(item => addRow(item, false));
+            }
+
+            refreshFilterOptions('notify');
+            refreshFilterOptions('tweet');
+            applyResultFilter('notify');
+            applyResultFilter('tweet');
+        });
+
+        function escapeHtml(str) {
+            return String(str || '')
+                .replace(/&/g, '&amp;')
+                .replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;')
+                .replace(/"/g, '&quot;')
+                .replace(/'/g, '&#39;');
+        }
+
+        function escapeAttr(str) {
+            return escapeHtml(str).replace(/`/g, '&#96;');
+        }
+
+        function setStatus(run) {
+            document.getElementById('startBtn').disabled = run;
+            document.getElementById('stopBtn').disabled = !run;
+            document.getElementById('token').disabled = run;
+
+            const dot = document.getElementById('statusDot');
+            const text = document.getElementById('statusText');
+
+            if(run) {
+                dot.classList.add('running');
+                text.textContent = '运行中';
+                text.style.color = 'var(--success)';
+            } else {
+                dot.classList.remove('running');
+                text.textContent = '已停止';
+                text.style.color = 'var(--danger)';
+            }
+        }
+
+        function renderTasks(t) {
+            const div = document.getElementById('taskList');
+            if(!t || t.length === 0) {
+                div.innerHTML = '<div style="text-align:center; padding:30px; color:var(--text-secondary); font-size:13px;">暂无监控任务</div>';
+                return;
+            }
+            div.innerHTML = t.map(x => `
+                <div class="task-item">
+                    <div class="task-info">
+                        <div class="task-url">${x.url.split('status/')[1] || x.url}</div>
+                        <div class="task-time">上次检查: ${x.last_check}</div>
+                    </div>
+                    <button class="task-delete" onclick="delTask('${x.url}')">✕</button>
+                </div>`).join('');
+        }
+
+        function addTask() {
+            const u = document.getElementById('newUrl').value;
+            if(!u) return;
+            fetch('/api/task/add', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:u})})
+                .then(r=>r.json()).then(d=>{ renderTasks(d.tasks); document.getElementById('newUrl').value=''; });
+        }
+
+        function delTask(u) {
+            fetch('/api/task/remove', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({url:u})})
+                .then(r=>r.json()).then(d=>renderTasks(d.tasks));
+        }
+
+        function toggle(s) {
+            const t = document.getElementById('token').value;
+            if(s && !t) return alert('请先输入 Token');
+            fetch(s?'/api/start':'/api/stop', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({token:t})})
+                .then(r=>r.json()).then(d => { if(d.status==='ok') setStatus(s); });
+        }
+
+        function toggleNotificationMonitoring() {
+            const enabled = document.getElementById('notifCheckbox').checked;
+            fetch('/api/toggle_notification', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:enabled})})
+                .then(r=>r.json());
+        }
+
+        function toggleHeadlessMode() {
+            const enabled = document.getElementById('headlessCheckbox').checked;
+            fetch('/api/toggle_headless', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({enabled:enabled})})
+                .then(r=>r.json()).then(d => {
+                    if(d.status === 'ok') {
+                        const modeText = enabled ? '无头模式' : '有头模式(调试)';
+                        alert(`🖥️ 已切换为${modeText}\n⚠️ 需要重启监控才能生效`);
+                    }
+                });
+        }
+
+        function saveDelegatedAccount() {
+            const account = document.getElementById('delegatedAccount').value.trim();
+            fetch('/api/set_delegated_account', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({account:account})})
+                .then(r=>r.json()).then(d => {
+                    if(d.status === 'ok') {
+                        alert(account ? `✅ 已设置委派账户: ${account}` : '✅ 已清除委派账户');
+                    }
+                });
+        }
+
+        function getTemplateArray(type) {
+            return type === 'reply' ? notifyReplyTemplates : dmMessageTemplates;
+        }
+
+        function getTemplateTypeName(type) {
+            return type === 'reply' ? '评论回复' : '私信';
+        }
+
+        function syncTemplatesFromPayload(payload) {
+            notifyReplyTemplates = Array.isArray(payload.notify_reply_templates) ? payload.notify_reply_templates.slice() : [];
+            dmMessageTemplates = Array.isArray(payload.dm_message_templates) ? payload.dm_message_templates.slice() : [];
+            renderTemplateManager();
+        }
+
+        function renderTemplateManager() {
+            renderTemplateList('reply', 'replyTemplateList');
+            renderTemplateList('dm', 'dmTemplateList');
+            refreshNotifyTemplateSelects();
+        }
+
+        function renderTemplateList(type, listId) {
+            const list = document.getElementById(listId);
+            const templates = getTemplateArray(type);
+            if(!list) return;
+            if(!templates.length) {
+                list.innerHTML = '<li><div class="template-text" style="color:var(--text-secondary);">暂无模板</div></li>';
+                return;
+            }
+            list.innerHTML = templates.map((tpl, idx) => `
+                <li>
+                    <div class="template-text">${escapeHtml(tpl)}</div>
+                    <div class="template-actions">
+                        <button class="btn-ghost btn-sm" onclick="editTemplate('${type}', ${idx})">✏️ 修改</button>
+                        <button class="btn-danger btn-sm" onclick="deleteTemplate('${type}', ${idx})">🗑️ 删除</button>
+                    </div>
+                </li>
+            `).join('');
+        }
+
+        function handleTemplateApiResponse(d, failPrefix) {
+            if(!d || d.status !== 'ok') {
+                alert(`${failPrefix}: ${(d && d.msg) ? d.msg : '未知错误'}`);
+                return false;
+            }
+            syncTemplatesFromPayload(d);
+            return true;
+        }
+
+        function addTemplate(type) {
+            const isReply = type === 'reply';
+            const input = document.getElementById(isReply ? 'replyTemplateInput' : 'dmTemplateInput');
+            if(!input) return;
+            const content = (input.value || '').trim();
+            if(!content) {
+                alert(`请输入${getTemplateTypeName(type)}文案`);
+                return;
+            }
+            fetch('/api/template/add', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type, content})
+            }).then(r => r.json()).then(d => {
+                if(handleTemplateApiResponse(d, '添加模板失败')) {
+                    input.value = '';
+                }
+            }).catch(() => {
+                alert('网络异常，添加模板失败');
+            });
+        }
+
+        function editTemplate(type, index) {
+            const templates = getTemplateArray(type);
+            if(index < 0 || index >= templates.length) return;
+            const current = templates[index];
+            const next = window.prompt(`修改${getTemplateTypeName(type)}文案:`, current);
+            if(next === null) return;
+            const content = next.trim();
+            if(!content) {
+                alert('模板内容不能为空');
+                return;
+            }
+            fetch('/api/template/update', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type, index, content})
+            }).then(r => r.json()).then(d => {
+                handleTemplateApiResponse(d, '修改模板失败');
+            }).catch(() => {
+                alert('网络异常，修改模板失败');
+            });
+        }
+
+        function deleteTemplate(type, index) {
+            const templates = getTemplateArray(type);
+            if(index < 0 || index >= templates.length) return;
+            if(!confirm(`确定删除这条${getTemplateTypeName(type)}文案吗？`)) return;
+            fetch('/api/template/delete', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({type, index})
+            }).then(r => r.json()).then(d => {
+                handleTemplateApiResponse(d, '删除模板失败');
+            }).catch(() => {
+                alert('网络异常，删除模板失败');
+            });
+        }
+
+        function buildTemplateOptionHtml(templates) {
+            return templates.map(t => {
+                const optionValue = escapeAttr(t);
+                const optionText = escapeHtml(String(t).replace(/\s+/g, ' ').trim());
+                return `<option value="${optionValue}">${optionText}</option>`;
+            }).join('');
+        }
+
+        function updateSelectOptions(select, templates, placeholderText) {
+            if(!select) return;
+            const selectedValue = select.value || '';
+            const optionsHtml = buildTemplateOptionHtml(templates);
+            select.innerHTML = `<option value="">${escapeHtml(placeholderText)}</option>${optionsHtml}`;
+            if(selectedValue && templates.includes(selectedValue)) {
+                select.value = selectedValue;
+            }
+        }
+
+        function refreshNotifyTemplateSelects() {
+            const rows = getTableRows('notify');
+            rows.forEach(row => {
+                updateSelectOptions(row.querySelector('.reply-template-select'), notifyReplyTemplates, '选择回复内容...');
+                updateSelectOptions(row.querySelector('.dm-template-select'), dmMessageTemplates, '选择私信内容...');
+            });
+        }
+
+        function markDone(key, btn) {
+            const row = btn.closest('tr');
+            const handle = row ? (row.getAttribute('data-handle') || '') : '';
+            if(row) row.style.opacity = '0.3';
+
+            fetch('/api/mark_done', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({key:key, handle:handle})})
+                .then(r=>r.json()).then(d => {
+                    if(d.status === 'ok') {
+                        setTimeout(() => {
+                            if(row) row.remove();
+                            refreshFilterOptions('notify');
+                            refreshFilterOptions('tweet');
+                            updateResultCount();
+                        }, 300);
+                    }
+                });
+        }
+
+        function markDoneFromButton(btn) {
+            const row = btn.closest('tr');
+            const key = row ? (row.getAttribute('data-key') || '') : '';
+            if(!key) return;
+            markDone(key, btn);
+        }
+
+        function sendNotifyReply(btn) {
+            const row = btn.closest('tr');
+            const key = row ? (row.getAttribute('data-key') || '') : '';
+            const handle = row ? (row.getAttribute('data-handle') || '') : '';
+            const replySelect = row ? row.querySelector('.reply-template-select') : null;
+            const dmSelect = row ? row.querySelector('.dm-template-select') : null;
+            const message = replySelect ? (replySelect.value || '').trim() : '';
+            const dmMessage = dmSelect ? (dmSelect.value || '').trim() : '';
+            if(!key || !message) {
+                alert('请先选择回复内容');
+                return;
+            }
+            if(!dmMessage) {
+                alert('请先选择私信内容');
+                return;
+            }
+
+            btn.disabled = true;
+            const oldText = btn.textContent;
+            btn.textContent = '发送中...';
+
+            fetch('/api/notify_reply', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({key:key, message:message, dm_message:dmMessage})
+            }).then(r=>r.json()).then(d => {
+                if(d.status === 'ok') {
+                    alert(`✅ 已回复 ${handle || ''}`);
+                } else {
+                    alert(`回复失败: ${d.msg || '未知错误'}`);
+                }
+            }).catch(() => {
+                alert('网络异常，回复失败');
+            }).finally(() => {
+                btn.disabled = false;
+                btn.textContent = oldText;
+            });
+        }
+
+        function clearResults(type) {
+            const typeText = type === 'notify' ? '通知' : '推文';
+            if(!confirm(`确定要清空所有${typeText}捕获结果吗？`)) return;
+            fetch('/api/clear_results', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({type: type})})
+                .then(r=>r.json()).then(d => {
+                    if(d.status === 'ok') {
+                        if(type === 'notify') {
+                            document.getElementById('notifyTableBody').innerHTML = '';
+                        } else {
+                            document.getElementById('tweetTableBody').innerHTML = '';
+                        }
+                        refreshFilterOptions(type);
+                        applyResultFilter(type);
+                    }
+                });
+        }
+
+        function clearBlocklist() {
+            if(!confirm('确定要清空黑名单吗？')) return;
+            fetch('/api/clear_blocklist', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({})})
+                .then(r=>r.json()).then(d => {
+                    if(d.status === 'ok') {
+                        alert('✅ 已清空黑名单');
+                    }
+                });
+        }
+
+        function getTableRows(type) {
+            return Array.from(document.getElementById(tableBodyIds[type]).children);
+        }
+
+        function refreshFilterOptions(type) {
+            const datalist = document.getElementById(filterOptionIds[type]);
+            const input = document.getElementById(filterInputIds[type]);
+            if(!datalist || !input) return;
+
+            const values = new Set();
+            getTableRows(type).forEach(row => {
+                const handle = (row.getAttribute('data-handle') || '').trim();
+                if(handle) values.add(handle);
+            });
+            if(input.value.trim()) values.add(input.value.trim());
+
+            datalist.innerHTML = '';
+            Array.from(values).sort((a, b) => a.localeCompare(b, 'zh-Hans-CN')).forEach(value => {
+                const option = document.createElement('option');
+                option.value = value;
+                datalist.appendChild(option);
+            });
+        }
+
+        function applyResultFilter(type) {
+            const input = document.getElementById(filterInputIds[type]);
+            if(!input) return;
+
+            const query = input.value.trim().toLowerCase();
+            getTableRows(type).forEach(row => {
+                const handle = (row.getAttribute('data-handle') || '').toLowerCase();
+                const content = (row.querySelector('.content-cell')?.textContent || '').toLowerCase();
+                const matched = !query || handle.includes(query) || content.includes(query);
+                row.style.display = matched ? '' : 'none';
+            });
+            updateResultCount();
+        }
+
+        function updateResultCount() {
+            const notifyRows = getTableRows('notify');
+            const tweetRows = getTableRows('tweet');
+            const notifyVisibleCount = notifyRows.filter(row => row.style.display !== 'none').length;
+            const tweetVisibleCount = tweetRows.filter(row => row.style.display !== 'none').length;
+            const notifyFilterActive = document.getElementById(filterInputIds.notify).value.trim() !== '';
+            const tweetFilterActive = document.getElementById(filterInputIds.tweet).value.trim() !== '';
+
+            document.getElementById('notifyCount').textContent = notifyFilterActive ? `${notifyVisibleCount}/${notifyRows.length}` : `${notifyRows.length}`;
+            document.getElementById('tweetCount').textContent = tweetFilterActive ? `${tweetVisibleCount}/${tweetRows.length}` : `${tweetRows.length}`;
+            document.getElementById('notifyEmptyState').style.display = notifyVisibleCount > 0 ? 'none' : 'block';
+            document.getElementById('tweetEmptyState').style.display = tweetVisibleCount > 0 ? 'none' : 'block';
+        }
+
+        function addRow(i, animate=true) {
+            if(document.querySelector(`tr[data-key="${i.key}"]`)) return;
+
+            const tr = document.createElement('tr');
+            if(animate) tr.className = 'row-enter';
+            tr.setAttribute('data-handle', i.handle);
+            tr.setAttribute('data-key', i.key);
+
+            const isNotify = i.source === '通知页面';
+            const safeHandle = escapeHtml(i.handle || '');
+            const handlePath = escapeAttr((i.handle || '').replace('@', ''));
+            const userCellHtml = isNotify
+                ? `<div class="user-info-cell">
+                        <a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank">${safeHandle}</a>
+                   </div>`
+                : `<a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank">${safeHandle}</a>`;
+            const replyOptions = buildTemplateOptionHtml(notifyReplyTemplates);
+            const dmOptions = buildTemplateOptionHtml(dmMessageTemplates);
+            const actionHtml = isNotify
+                ? `<div class="action-stack">
+                        <select class="reply-template-select">
+                            <option value="">选择回复内容...</option>
+                            ${replyOptions}
+                        </select>
+                        <select class="dm-template-select">
+                            <option value="">选择私信内容...</option>
+                            ${dmOptions}
+                        </select>
+                        <div class="action-btn-row">
+                            <button class="btn-reply btn-sm" onclick="sendNotifyReply(this)">↩ 回复</button>
+                            <button class="btn-primary btn-sm" onclick="markDoneFromButton(this)">✅ 已处理</button>
+                        </div>
+                   </div>`
+                : `<button class="btn-primary btn-sm" onclick="markDoneFromButton(this)">✅ 已处理</button>`;
+
+            tr.innerHTML = `
+                <td style="color:var(--text-secondary)">${escapeHtml(i.time || '')}</td>
+                <td>${userCellHtml}</td>
+                <td class="content-cell">${escapeHtml(i.content || '')}</td>
+                <td>${actionHtml}</td>
+            `;
+
+            if(isNotify) {
+                document.getElementById('notifyTableBody').prepend(tr);
+            } else {
+                document.getElementById('tweetTableBody').prepend(tr);
+            }
+            const type = isNotify ? 'notify' : 'tweet';
+            refreshFilterOptions(type);
+            applyResultFilter(type);
+        }
+
+        setInterval(() => {
+            fetch('/api/updates').then(r=>r.json()).then(d => {
+                d.new_items.forEach(i => addRow(i, true));
+                if(d.tasks) renderTasks(d.tasks);
+            });
+        }, 1000);
+    </script>
+</body>
+</html>

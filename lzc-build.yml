@@ -1,0 +1,35 @@
+# lzc-build.yml - X Monitor Pro 构建配置
+
+# 构建脚本:
+# - 如果本机 Docker daemon 可用，则构建镜像
+# - 如果不可用，则跳过构建，直接使用 lzc-manifest.yml 中配置的镜像地址打包
+buildscript: |
+  if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+    docker build -t xmonitor-pro:latest .
+  else
+    echo "[warn] docker daemon unavailable, skip local image build"
+  fi
+
+# manifest 文件路径
+manifest: ./lzc-manifest.yml
+
+# 打包内容目录 (空目录，因为所有内容在 Docker 镜像中)
+contentdir: ./dist
+
+# LPK 包输出路径
+pkgout: ./out
+
+# 应用图标 (需要创建一个 png 图标)
+icon: ./lzc-icon.png
+
+# 开发依赖配置
+devshell:
+  routes:
+    - /=http://127.0.0.1:5000
+  dependencies:
+    - python3
+    - py3-pip
+    - chromium
+    - chromium-chromedriver
+  setupscript: |
+    pip install flask DrissionPage

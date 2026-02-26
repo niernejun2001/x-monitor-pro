@@ -1,0 +1,6 @@
+flask==2.3.3
+requests==2.31.0
+PyQt6==6.6.1
+PyQt6-WebEngine==6.6.0
+DrissionPage==3.0.35
+chromium==130.0.6723.71
