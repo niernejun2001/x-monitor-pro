@@ -471,6 +471,15 @@
             flex-shrink: 0;
         }
 
+        .template-editor-actions {
+            display: flex;
+            gap: 8px;
+        }
+
+        .template-editor-actions button {
+            flex: 1;
+        }
+
         /* 任务列表 */
         .task-list {
             max-height: 280px;
@@ -867,14 +876,20 @@
                         <div class="template-section">
                             <h4>评论回复文案</h4>
                             <input type="text" id="replyTemplateInput" class="template-input" placeholder="输入评论回复文案...">
-                            <button class="btn-primary btn-sm" onclick="addTemplate('reply')" style="width:100%;">➕ 添加评论文案</button>
+                            <div class="template-editor-actions">
+                                <button class="btn-primary btn-sm" id="replyTemplateSubmitBtn" onclick="submitTemplate('reply')">➕ 添加评论文案</button>
+                                <button class="btn-ghost btn-sm" id="replyTemplateCancelBtn" onclick="cancelTemplateEdit('reply')" style="display:none;">取消修改</button>
+                            </div>
                             <ul id="replyTemplateList" class="template-list"></ul>
                         </div>
 
                         <div class="template-section">
                             <h4>私信文案</h4>
                             <textarea id="dmTemplateInput" class="template-textarea" placeholder="输入私信文案..."></textarea>
-                            <button class="btn-primary btn-sm" onclick="addTemplate('dm')" style="width:100%;">➕ 添加私信文案</button>
+                            <div class="template-editor-actions">
+                                <button class="btn-primary btn-sm" id="dmTemplateSubmitBtn" onclick="submitTemplate('dm')">➕ 添加私信文案</button>
+                                <button class="btn-ghost btn-sm" id="dmTemplateCancelBtn" onclick="cancelTemplateEdit('dm')" style="display:none;">取消修改</button>
+                            </div>
                             <ul id="dmTemplateList" class="template-list"></ul>
                         </div>
                     </div>
@@ -962,6 +977,7 @@
         const filterOptionIds = { notify: 'notifyFilterOptions', tweet: 'tweetFilterOptions' };
         let notifyReplyTemplates = [];
         let dmMessageTemplates = [];
+        const templateEditState = { reply: -1, dm: -1 };
 
         window.onload = () => fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';
@@ -1084,15 +1100,67 @@
             return type === 'reply' ? '评论回复' : '私信';
         }
 
+        function getTemplateInput(type) {
+            return document.getElementById(type === 'reply' ? 'replyTemplateInput' : 'dmTemplateInput');
+        }
+
+        function getTemplateSubmitBtn(type) {
+            return document.getElementById(type === 'reply' ? 'replyTemplateSubmitBtn' : 'dmTemplateSubmitBtn');
+        }
+
+        function getTemplateCancelBtn(type) {
+            return document.getElementById(type === 'reply' ? 'replyTemplateCancelBtn' : 'dmTemplateCancelBtn');
+        }
+
+        function applyTemplateEditUi(type) {
+            const isEdit = templateEditState[type] >= 0;
+            const submitBtn = getTemplateSubmitBtn(type);
+            const cancelBtn = getTemplateCancelBtn(type);
+            if(submitBtn) {
+                submitBtn.textContent = isEdit
+                    ? '💾 保存修改'
+                    : (type === 'reply' ? '➕ 添加评论文案' : '➕ 添加私信文案');
+            }
+            if(cancelBtn) {
+                cancelBtn.style.display = isEdit ? 'inline-flex' : 'none';
+            }
+        }
+
+        function startTemplateEdit(type, index, content) {
+            templateEditState[type] = index;
+            const input = getTemplateInput(type);
+            if(input) {
+                input.value = content || '';
+                input.focus();
+                try {
+                    if(typeof input.setSelectionRange === 'function') {
+                        input.setSelectionRange(input.value.length, input.value.length);
+                    }
+                } catch (_) {}
+            }
+            applyTemplateEditUi(type);
+        }
+
+        function cancelTemplateEdit(type) {
+            templateEditState[type] = -1;
+            const input = getTemplateInput(type);
+            if(input) input.value = '';
+            applyTemplateEditUi(type);
+        }
+
         function syncTemplatesFromPayload(payload) {
             notifyReplyTemplates = Array.isArray(payload.notify_reply_templates) ? payload.notify_reply_templates.slice() : [];
             dmMessageTemplates = Array.isArray(payload.dm_message_templates) ? payload.dm_message_templates.slice() : [];
+            if(templateEditState.reply >= notifyReplyTemplates.length) templateEditState.reply = -1;
+            if(templateEditState.dm >= dmMessageTemplates.length) templateEditState.dm = -1;
             renderTemplateManager();
         }
 
         function renderTemplateManager() {
             renderTemplateList('reply', 'replyTemplateList');
             renderTemplateList('dm', 'dmTemplateList');
+            applyTemplateEditUi('reply');
+            applyTemplateEditUi('dm');
             refreshNotifyTemplateSelects();
         }
 
@@ -1124,15 +1192,31 @@
             return true;
         }
 
-        function addTemplate(type) {
-            const isReply = type === 'reply';
-            const input = document.getElementById(isReply ? 'replyTemplateInput' : 'dmTemplateInput');
+        function submitTemplate(type) {
+            const input = getTemplateInput(type);
             if(!input) return;
             const content = (input.value || '').trim();
             if(!content) {
                 alert(`请输入${getTemplateTypeName(type)}文案`);
                 return;
             }
+
+            const editingIndex = templateEditState[type];
+            if(editingIndex >= 0) {
+                fetch('/api/template/update', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({type, index: editingIndex, content})
+                }).then(r => r.json()).then(d => {
+                    if(handleTemplateApiResponse(d, '修改模板失败')) {
+                        cancelTemplateEdit(type);
+                    }
+                }).catch(() => {
+                    alert('网络异常，修改模板失败');
+                });
+                return;
+            }
+
             fetch('/api/template/add', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -1140,6 +1224,7 @@
             }).then(r => r.json()).then(d => {
                 if(handleTemplateApiResponse(d, '添加模板失败')) {
                     input.value = '';
+                    applyTemplateEditUi(type);
                 }
             }).catch(() => {
                 alert('网络异常，添加模板失败');
@@ -1149,23 +1234,7 @@
         function editTemplate(type, index) {
             const templates = getTemplateArray(type);
             if(index < 0 || index >= templates.length) return;
-            const current = templates[index];
-            const next = window.prompt(`修改${getTemplateTypeName(type)}文案:`, current);
-            if(next === null) return;
-            const content = next.trim();
-            if(!content) {
-                alert('模板内容不能为空');
-                return;
-            }
-            fetch('/api/template/update', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({type, index, content})
-            }).then(r => r.json()).then(d => {
-                handleTemplateApiResponse(d, '修改模板失败');
-            }).catch(() => {
-                alert('网络异常，修改模板失败');
-            });
+            startTemplateEdit(type, index, templates[index]);
         }
 
         function deleteTemplate(type, index) {
@@ -1177,7 +1246,9 @@
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({type, index})
             }).then(r => r.json()).then(d => {
-                handleTemplateApiResponse(d, '删除模板失败');
+                if(handleTemplateApiResponse(d, '删除模板失败')) {
+                    cancelTemplateEdit(type);
+                }
             }).catch(() => {
                 alert('网络异常，删除模板失败');
             });

@@ -20,14 +20,36 @@ app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # --- 配置文件路径（自动检测环境）---
+def get_default_user_data_dir():
+    """返回当前用户默认数据目录。"""
+    xdg_data_home = str(os.environ.get("XDG_DATA_HOME", "")).strip()
+    if xdg_data_home:
+        root = os.path.abspath(os.path.expanduser(xdg_data_home))
+    else:
+        root = os.path.join(os.path.expanduser("~"), ".local", "share")
+    return os.path.join(root, "x-monitor-pro")
+
+
 def get_data_dir():
     """根据运行环境自动选择数据目录"""
+    # 显式配置优先
+    custom_data_dir = str(os.environ.get("XMONITOR_DATA_DIR", "")).strip()
+    if custom_data_dir:
+        return os.path.abspath(os.path.expanduser(custom_data_dir))
+
     # 检查是否在 Docker 容器中
     if os.path.exists('/.dockerenv') or os.environ.get('DOCKER_ENV'):
         return "/app/data"
-    else:
-        # 非 Docker 环境，使用项目内固定绝对路径，避免 Qt 从任意 cwd 启动时丢状态
+
+    # 兼容模式：显式要求继续使用项目内 data 目录
+    use_project_data = str(os.environ.get("XMONITOR_USE_PROJECT_DATA", "0")).strip().lower() in {
+        "1", "true", "yes", "on"
+    }
+    if use_project_data:
         return os.path.join(BASE_DIR, "data")
+
+    # 默认：每个用户独立数据目录，避免跨机器路径问题
+    return get_default_user_data_dir()
 
 DATA_DIR = get_data_dir()
 STATE_FILE = os.path.join(DATA_DIR, "spider_state.json")
@@ -37,6 +59,7 @@ BROWSER_PROFILE_DIR = os.environ.get(
     "XMONITOR_BROWSER_PROFILE_DIR",
     os.path.join(DATA_DIR, "chromium-profile")
 )
+BROWSER_PROFILE_DIR = os.path.abspath(os.path.expanduser(BROWSER_PROFILE_DIR))
 BROWSER_PROFILE_PERSIST = str(
     os.environ.get("XMONITOR_PERSIST_BROWSER_PROFILE", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -53,9 +76,6 @@ def ensure_data_dir():
 def migrate_legacy_state_files():
     """迁移历史版本写在项目根目录的数据文件到 data/ 目录。"""
     try:
-        legacy_state = os.path.join(BASE_DIR, "spider_state.json")
-        legacy_processed = os.path.join(BASE_DIR, "processed_users.json")
-
         def sync_if_newer(legacy_file, target_file, label):
             if legacy_file == target_file or not os.path.exists(legacy_file):
                 return
@@ -63,8 +83,19 @@ def migrate_legacy_state_files():
                 shutil.copy2(legacy_file, target_file)
                 logging.info(f"📦 已同步{label}: {legacy_file} -> {target_file}")
 
-        sync_if_newer(legacy_state, STATE_FILE, "状态文件")
-        sync_if_newer(legacy_processed, PROCESSED_FILE, "黑名单文件")
+        legacy_state_candidates = [
+            os.path.join(BASE_DIR, "spider_state.json"),
+            os.path.join(BASE_DIR, "data", "spider_state.json"),
+        ]
+        legacy_processed_candidates = [
+            os.path.join(BASE_DIR, "processed_users.json"),
+            os.path.join(BASE_DIR, "data", "processed_users.json"),
+        ]
+
+        for legacy_state in legacy_state_candidates:
+            sync_if_newer(legacy_state, STATE_FILE, "状态文件")
+        for legacy_processed in legacy_processed_candidates:
+            sync_if_newer(legacy_processed, PROCESSED_FILE, "黑名单文件")
     except Exception as e:
         logging.warning(f"迁移历史数据文件失败: {e}")
 
