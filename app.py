@@ -266,6 +266,57 @@ PROXY_ENV_KEYS = (
     "http_proxy",
 )
 CONTENT_FILTER_BLOCKED_MENTIONS = ("@manateelazycat",)
+INTENT_FORCE_NOTIFY_KEYWORDS = (
+    "懒猫微服",
+    "lazycat.cloud",
+    "lazycat",
+    "懒猫 ai 算力舱",
+    "懒猫ai算力舱",
+    "ai算力舱",
+    "算力舱",
+    "lc-03",
+    "lc03",
+    "lc-02",
+    "lc02",
+    "lzcos",
+    "微服操作系统",
+    "懒猫 ai 浏览器",
+    "懒猫ai浏览器",
+    "ai 浏览器",
+    "私有云",
+    "内网穿透",
+    "询价",
+    "报价",
+    "价格",
+    "多少钱",
+    "怎么卖",
+    "购买",
+    "下单",
+    "采购",
+    "试用",
+    "演示",
+    "部署",
+    "联系",
+    "微信",
+    "vx",
+    "whatsapp",
+    "quote",
+    "pricing",
+    "price",
+    "buy",
+    "purchase",
+)
+INTENT_NON_TARGET_TOPIC_KEYWORDS = (
+    "防晕车",
+    "防晕车模式",
+    "晕车模式",
+    "动作传感器",
+    "macbook",
+    "苹果系统",
+    "辅助功能",
+    "vehicle motion cues",
+    "motion sickness",
+)
 LLM_FILTER_ENABLED = str(
     os.environ.get("XMONITOR_LLM_FILTER_ENABLED", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -1715,16 +1766,48 @@ def _score_to_intent_level(score):
     return "noise"
 
 
+def _find_keyword_hits(text_lower, keywords):
+    hits = []
+    src = str(text_lower or "").lower()
+    if not src:
+        return hits
+    for kw in keywords:
+        kw_norm = str(kw or "").strip().lower()
+        if kw_norm and kw_norm in src and kw_norm not in hits:
+            hits.append(kw_norm)
+    return hits
+
+
 def _rule_based_intent_analysis(content):
     text = _normalize_content_for_filter(content)
     if not text:
-        return {"intent_score": 0, "intent_level": "noise", "signals": ["empty_content"]}
+        return {
+            "intent_score": 0,
+            "intent_level": "noise",
+            "signals": ["empty_content"],
+            "force_notify": False,
+            "block_intent": False,
+            "force_keywords": [],
+            "non_target_keywords": [],
+        }
     if _is_emoji_only_content(text):
-        return {"intent_score": 0, "intent_level": "noise", "signals": ["emoji_only"]}
+        return {
+            "intent_score": 0,
+            "intent_level": "noise",
+            "signals": ["emoji_only"],
+            "force_notify": False,
+            "block_intent": False,
+            "force_keywords": [],
+            "non_target_keywords": [],
+        }
 
     lower = text.lower()
     score = 8
     signals = []
+    force_keywords = _find_keyword_hits(lower, INTENT_FORCE_NOTIFY_KEYWORDS)
+    non_target_keywords = _find_keyword_hits(lower, INTENT_NON_TARGET_TOPIC_KEYWORDS)
+    single_digit_one = bool(re.fullmatch(r"[1１]+", text))
+    force_notify = bool(force_keywords or single_digit_one)
 
     high_keywords = [
         "询价", "报价", "价格", "多少钱", "怎么卖", "购买", "下单", "采购", "试用",
@@ -1745,7 +1828,7 @@ def _rule_based_intent_analysis(content):
             score += 12
             signals.append(f"kw:{kw}")
 
-    if re.fullmatch(r"[1１]+", text):
+    if single_digit_one:
         score += 42
         signals.append("single_digit_interest")
     if re.search(r"(加|留|联系).{0,4}(微信|vx|v|whatsapp)", text, re.IGNORECASE):
@@ -1759,28 +1842,55 @@ def _rule_based_intent_analysis(content):
 
     score = int(max(0, min(100, score)))
     level = _score_to_intent_level(score)
+
+    if force_keywords:
+        signals.append("force_keyword_hit")
+    if force_notify:
+        score = max(score, 85)
+        level = "high"
+    if non_target_keywords and not force_notify:
+        signals.append("non_target_topic")
+        score = min(score, 18)
+        level = "noise"
+
     if not signals and len(text) <= 3:
         level = "noise"
         score = min(score, 15)
         signals.append("very_short_text")
-    return {"intent_score": score, "intent_level": level, "signals": signals}
+
+    return {
+        "intent_score": score,
+        "intent_level": level,
+        "signals": signals,
+        "force_notify": bool(force_notify),
+        "block_intent": bool(non_target_keywords and not force_notify),
+        "force_keywords": force_keywords[:10],
+        "non_target_keywords": non_target_keywords[:10],
+    }
 
 
-def _llm_intent_analysis(content, *, base_url=None, api_key=None, model=None, timeout_sec=None):
-    prompt = (
+def _build_intent_analysis_prompt(content):
+    force_kw_text = "、".join(INTENT_FORCE_NOTIFY_KEYWORDS)
+    block_kw_text = "、".join(INTENT_NON_TARGET_TOPIC_KEYWORDS)
+    return (
         "你是销售线索意向识别器。请严格输出JSON对象，不要输出任何解释文本。\n"
         "字段:\n"
         "- intent_score: 0-100\n"
         "- intent_level: high|medium|low|noise\n"
         "- is_intent_user: true/false\n"
+        "- force_notify: true/false\n"
         "- buying_signals: string[]\n"
         "- reason: string\n\n"
-        "判定要点:\n"
-        "1) 明确询价/报价/购买/部署/演示/联系方式 => high或medium\n"
-        "2) 功能咨询/了解详情 => medium或low\n"
-        "3) 纯闲聊、纯表情、无意义灌水 => noise\n"
+        "硬规则(必须遵守):\n"
+        f"1) 如果评论命中以下关键词，或评论内容是“1”，必须判定为意向并 force_notify=true：{force_kw_text}\n"
+        f"2) 如果评论主要在讨论以下话题，且未命中第1条，则判定为非意向(noise/low)：{block_kw_text}\n"
+        "3) 其余再按购买意向强弱评分。\n"
         f"评论内容: {content}"
     )
+
+
+def _llm_intent_analysis(content, *, base_url=None, api_key=None, model=None, timeout_sec=None):
+    prompt = _build_intent_analysis_prompt(content)
     result_obj, _ = _call_openai_compatible_json(
         "You are a strict JSON intent classifier.",
         prompt,
@@ -1816,11 +1926,17 @@ def _llm_intent_analysis(content, *, base_url=None, api_key=None, model=None, ti
         raw_signals = [raw_signals] if raw_signals else []
     buying_signals = [str(x).strip() for x in raw_signals if str(x).strip()][:8]
     reason = str(result_obj.get("reason", "") or "").strip()
+    force_notify_raw = result_obj.get("force_notify", False)
+    if isinstance(force_notify_raw, str):
+        force_notify = force_notify_raw.strip().lower() in {"1", "true", "yes", "y"}
+    else:
+        force_notify = bool(force_notify_raw)
 
     return {
         "intent_score": score,
         "intent_level": level,
         "is_intent_user": bool(is_intent_user),
+        "force_notify": bool(force_notify),
         "buying_signals": buying_signals,
         "reason": reason,
     }
@@ -1832,22 +1948,46 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     rule_score = int(rule_result.get("intent_score", 0))
     rule_level = str(rule_result.get("intent_level", "noise"))
     rule_signals = list(rule_result.get("signals", []))
+    rule_force_notify = bool(rule_result.get("force_notify", False))
+    rule_block_intent = bool(rule_result.get("block_intent", False))
 
     result = {
         "content": text,
         "intent_score": rule_score,
         "intent_level": rule_level,
-        "is_intent_user": rule_score >= 50,
+        "is_intent_user": bool(rule_force_notify or rule_score >= 50),
+        "force_notify": bool(rule_force_notify),
+        "block_intent": bool(rule_block_intent),
         "signals": list(rule_signals),
         "reason": "rule_only",
         "rule_score": rule_score,
         "rule_level": rule_level,
+        "rule_force_notify": bool(rule_force_notify),
+        "rule_force_keywords": list(rule_result.get("force_keywords", [])),
+        "rule_non_target_keywords": list(rule_result.get("non_target_keywords", [])),
         "llm_used": False,
         "llm_score": None,
         "llm_level": "",
         "llm_reason": "",
         "llm_error": "",
     }
+
+    # 硬规则：命中强意向词时，无条件判定意向并优先播报
+    if rule_force_notify:
+        result["intent_score"] = max(int(result["intent_score"]), 85)
+        result["intent_level"] = "high"
+        result["is_intent_user"] = True
+        result["force_notify"] = True
+        result["reason"] = "force_notify_rule"
+        return result
+
+    # 非目标技术讨论：默认不判定意向，且不走LLM避免误报
+    if rule_block_intent:
+        result["intent_score"] = min(int(result["intent_score"]), 18)
+        result["intent_level"] = "noise"
+        result["is_intent_user"] = False
+        result["reason"] = "non_target_topic_rule"
+        return result
 
     if not _llm_runtime_ready(base_url=base_url, model=model):
         return result
@@ -1870,6 +2010,7 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     llm_level = str(llm_result.get("intent_level", "noise"))
     llm_reason = str(llm_result.get("reason", "") or "").strip()
     llm_signals = list(llm_result.get("buying_signals", []))
+    llm_force_notify = bool(llm_result.get("force_notify", False))
 
     blended_score = int(round(max(rule_score, (rule_score * 0.35 + llm_score * 0.65))))
     blended_score = max(0, min(100, blended_score))
@@ -1884,7 +2025,8 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     result.update({
         "intent_score": blended_score,
         "intent_level": blended_level,
-        "is_intent_user": bool(blended_score >= 50 or llm_result.get("is_intent_user", False)),
+        "is_intent_user": bool(blended_score >= 50 or llm_result.get("is_intent_user", False) or llm_force_notify),
+        "force_notify": bool(llm_force_notify),
         "signals": merged_signals[:12],
         "reason": llm_reason or "rule_llm_blended",
         "llm_used": True,
