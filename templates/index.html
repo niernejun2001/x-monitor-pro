@@ -1102,6 +1102,9 @@
         let notifyVoicePlaying = false;
         let notifyVoiceTimer = null;
         const notifyVoiceQueue = [];
+        const notifyIntentQueue = [];
+        let notifyIntentBusy = false;
+        let notifyRowSeq = 0;
 
         function pickNotifyVoice() {
             if (!('speechSynthesis' in window)) return null;
@@ -1400,6 +1403,65 @@
                 api_key: (document.getElementById('llmApiKey').value || '').trim() || 'EMPTY',
                 timeout_sec: timeoutSec
             };
+        }
+
+        function isIntentVoiceModeEnabled() {
+            const enabledEl = document.getElementById('llmFilterEnabled');
+            return !!(enabledEl && enabledEl.checked);
+        }
+
+        function enqueueNotifyIntentCheck(item) {
+            if(!item || item.source !== '通知页面') return;
+            notifyIntentQueue.push({
+                content: String(item.content || '').trim()
+            });
+            processNotifyIntentQueue();
+        }
+
+        function processNotifyIntentQueue() {
+            if(notifyIntentBusy) return;
+            if(!notifyIntentQueue.length) return;
+
+            const task = notifyIntentQueue.shift();
+            const content = String(task.content || '').trim();
+            if(!content) {
+                processNotifyIntentQueue();
+                return;
+            }
+
+            if(!isIntentVoiceModeEnabled()) {
+                announceNewNotifyByVoice(false, content);
+                processNotifyIntentQueue();
+                return;
+            }
+
+            const payload = collectLlmRuntimePayload();
+            if(!payload.base_url || !payload.model) {
+                // 配置不完整时，回退普通播报
+                announceNewNotifyByVoice(false, content);
+                processNotifyIntentQueue();
+                return;
+            }
+
+            notifyIntentBusy = true;
+            fetch('/api/llm_filter/analyze', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({...payload, content})
+            }).then(r => r.json()).then(d => {
+                if(d.status !== 'ok') return;
+                const a = d.analysis || {};
+                const isIntent = !!a.is_intent_user || (Number(a.intent_score || 0) >= 50);
+                if(isIntent) {
+                    announceNewNotifyByVoice(false, content);
+                }
+            }).catch(() => {
+                // 分析失败时不打断流程，回退普通播报
+                announceNewNotifyByVoice(false, content);
+            }).finally(() => {
+                notifyIntentBusy = false;
+                processNotifyIntentQueue();
+            });
         }
 
         function setLlmIntentResult(text, isError=false) {
@@ -1861,6 +1923,31 @@
             document.getElementById('tweetEmptyState').style.display = tweetVisibleCount > 0 ? 'none' : 'block';
         }
 
+        function parseTimeCellToSec(text) {
+            const m = String(text || '').trim().match(/^(\d{1,2}):(\d{1,2}):(\d{1,2})$/);
+            if(!m) return -1;
+            const hh = Number(m[1] || 0);
+            const mm = Number(m[2] || 0);
+            const ss = Number(m[3] || 0);
+            return hh * 3600 + mm * 60 + ss;
+        }
+
+        function sortNotifyRowsByLatest() {
+            const tbody = document.getElementById('notifyTableBody');
+            if(!tbody) return;
+            const rows = Array.from(tbody.children);
+            if(rows.length <= 1) return;
+            rows.sort((a, b) => {
+                const ta = parseTimeCellToSec(a.children?.[0]?.textContent || '');
+                const tb = parseTimeCellToSec(b.children?.[0]?.textContent || '');
+                if(tb !== ta) return tb - ta;
+                const sa = Number(a.getAttribute('data-seq') || 0);
+                const sb = Number(b.getAttribute('data-seq') || 0);
+                return sb - sa;
+            });
+            rows.forEach(row => tbody.appendChild(row));
+        }
+
         function addRow(i, animate=true) {
             if(document.querySelector(`tr[data-key="${i.key}"]`)) return false;
 
@@ -1909,6 +1996,7 @@
             `;
 
             if(isNotify) {
+                tr.setAttribute('data-seq', String(++notifyRowSeq));
                 document.getElementById('notifyTableBody').prepend(tr);
                 const replySelect = tr.querySelector('.reply-template-select');
                 const dmSelect = tr.querySelector('.dm-template-select');
@@ -1917,6 +2005,7 @@
                 if(replySelect && savedReplyText) replySelect.value = savedReplyText;
                 if(dmSelect && savedDmText) dmSelect.value = savedDmText;
                 applyNotifyReplyState(tr, isReplied, i.notify_reply_time || i.reply_time || '');
+                sortNotifyRowsByLatest();
             } else {
                 document.getElementById('tweetTableBody').prepend(tr);
             }
@@ -1928,16 +2017,12 @@
 
         setInterval(() => {
             fetch('/api/updates').then(r=>r.json()).then(d => {
-                const notifyContents = [];
                 d.new_items.forEach(i => {
                     addRow(i, true);
                     if(i && i.source === '通知页面') {
-                        notifyContents.push(String(i.content || '').trim());
+                        enqueueNotifyIntentCheck(i);
                     }
                 });
-                if(notifyContents.length > 0) {
-                    notifyContents.forEach(content => announceNewNotifyByVoice(false, content));
-                }
                 if(d.tasks) renderTasks(d.tasks);
             });
         }, 1000);

@@ -1592,6 +1592,21 @@ def _call_openai_compatible_json(
             continue
 
     if last_err is not None and not data:
+        # 兼容 Ollama 仅暴露 /api/chat 的场景：OpenAI兼容路由404时自动回退
+        fallback_allowed = (
+            int(getattr(last_err, "code", 0) or 0) == 404
+            or ("404 page not found" in str(last_err_body or "").lower())
+        )
+        if fallback_allowed:
+            native_obj, native_raw = _call_ollama_native_json(
+                system_prompt,
+                user_prompt,
+                base_url=base_url,
+                model=model_name,
+                timeout_sec=timeout_val,
+            )
+            return native_obj, native_raw
+
         err_text = f"HTTP {getattr(last_err, 'code', 'error')}"
         if last_err_body:
             err_text = f"{err_text}: {last_err_body[:220]}"
@@ -1606,6 +1621,57 @@ def _call_openai_compatible_json(
     except Exception:
         content_text = ""
 
+    return _parse_json_object_from_text(content_text), content_text
+
+
+def _guess_ollama_native_endpoint(base_url):
+    base = str(base_url or LLM_FILTER_BASE_URL or "").strip().rstrip("/")
+    if not base:
+        return ""
+    if base.endswith("/v1/chat/completions"):
+        base = base[: -len("/v1/chat/completions")]
+    elif base.endswith("/chat/completions"):
+        base = base[: -len("/chat/completions")]
+    elif base.endswith("/v1"):
+        base = base[: -len("/v1")]
+    return f"{base}/api/chat"
+
+
+def _call_ollama_native_json(system_prompt, user_prompt, *, base_url=None, model=None, timeout_sec=None):
+    endpoint = _guess_ollama_native_endpoint(base_url)
+    model_name = str(model if model is not None else LLM_FILTER_MODEL or "").strip()
+    if not endpoint:
+        raise ValueError("Ollama endpoint 未配置")
+    if not model_name:
+        raise ValueError("LLM 模型名未配置")
+
+    try:
+        timeout_val = float(timeout_sec if timeout_sec is not None else LLM_FILTER_TIMEOUT_SEC)
+    except Exception:
+        timeout_val = float(LLM_FILTER_TIMEOUT_SEC)
+    timeout_val = max(2.0, min(30.0, timeout_val))
+
+    payload = {
+        "model": model_name,
+        "stream": False,
+        "format": "json",
+        "messages": [
+            {"role": "system", "content": str(system_prompt or "").strip()},
+            {"role": "user", "content": str(user_prompt or "").strip()},
+        ],
+    }
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+        raw_resp = resp.read().decode("utf-8", errors="ignore")
+
+    data = json.loads(raw_resp or "{}")
+    msg = data.get("message") or {}
+    content_text = str(msg.get("content") or "")
     return _parse_json_object_from_text(content_text), content_text
 
 
