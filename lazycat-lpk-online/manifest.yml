@@ -1,0 +1,41 @@
+lzc-sdk-version: 0.1
+package: cloud.lazycat.app.xmonitor
+version: 1.1.65
+name: X Monitor Pro
+description: X/Twitter 评论监控工具（在线版）
+author: shou
+homepage: https://developer.lazycat.cloud/
+
+locales:
+  zh:
+    name: X Monitor Pro
+    description: X/Twitter 评论监控工具（在线版）
+  zh_CN:
+    name: X Monitor Pro
+    description: X/Twitter 评论监控工具（在线版）
+  en:
+    name: X Monitor Pro
+    description: X/Twitter comment monitoring tool (online)
+
+application:
+  subdomain: xmonitor
+  background_task: true
+  routes:
+    - /=http://xmonitor:5000
+
+services:
+  xmonitor:
+    image: registry.lazycat.cloud/nierenjun/shoxk8s/x-monitor-pro:9b18c0947ce91588
+    environment:
+      - TZ=Asia/Shanghai
+      - PYTHONUNBUFFERED=1
+      - XMONITOR_PORT=5000
+      - XMONITOR_DATA_DIR=/app/data
+      - XMONITOR_PERSIST_BROWSER_PROFILE=1
+      - XMONITOR_FORCE_HEADLESS=1
+    shm_size: 1g
+    health_check:
+      test_url: http://localhost:5000/api/state
+      start_period: 60s
+    binds:
+      - /lzcapp/var/data:/app/data

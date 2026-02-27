@@ -69,17 +69,27 @@ class ExternalLinkPage(QWebEnginePage):
 
     def acceptNavigationRequest(self, url, nav_type, is_main_frame):
         if nav_type == QWebEnginePage.NavigationType.NavigationTypeLinkClicked:
-            host = (url.host() or "").lower()
-            if host and host not in {"127.0.0.1", "localhost"}:
-                QDesktopServices.openUrl(url)
+            if self._open_external_url(url):
                 return False
         return super().acceptNavigationRequest(url, nav_type, is_main_frame)
 
     def createWindow(self, _window_type):
         # 处理 target="_blank" / window.open
         popup_page = ExternalLinkPage(self.profile(), self)
-        popup_page.urlChanged.connect(QDesktopServices.openUrl)
+        popup_page.urlChanged.connect(popup_page._open_external_url)
         return popup_page
+
+    def _open_external_url(self, url):
+        """只将外部 http(s) 链接交给系统浏览器，忽略 about:blank 等临时页面。"""
+        scheme = (url.scheme() or "").lower()
+        if scheme not in {"http", "https"}:
+            return False
+
+        host = (url.host() or "").lower()
+        if host and host not in {"127.0.0.1", "localhost"}:
+            QDesktopServices.openUrl(url)
+            return True
+        return False
 
 
 class XMonitorGUI(QMainWindow):

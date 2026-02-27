@@ -21,7 +21,7 @@ python app.py
 ## 主要功能
 
 - 通知捕获与评论回复
-- 私信发送（含 passcode 自动处理）
+- 私信发送
 - 评论模板与私信模板管理（增删改）
 - 单浏览器多标签复用，降低风控与切换成本
 
@@ -30,4 +30,3 @@ python app.py
 - `app.py`: 后端主程序
 - `templates/index.html`: 前端页面
 - `twitter-reply-jumper/`: 扩展相关代码
-

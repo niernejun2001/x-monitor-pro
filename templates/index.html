@@ -196,7 +196,8 @@
         }
 
         /* 输入框 */
-        input[type="text"] {
+        input[type="text"],
+        input[type="password"] {
             width: 100%;
             padding: 14px 18px;
             background: var(--bg-secondary);
@@ -208,13 +209,15 @@
             margin-bottom: 12px;
         }
 
-        input[type="text"]:focus {
+        input[type="text"]:focus,
+        input[type="password"]:focus {
             outline: none;
             border-color: var(--accent);
             box-shadow: 0 0 20px rgba(0, 212, 255, 0.2);
         }
 
-        input[type="text"]::placeholder {
+        input[type="text"]::placeholder,
+        input[type="password"]::placeholder {
             color: var(--text-secondary);
         }
 
@@ -385,8 +388,78 @@
             display: block;
         }
 
-        .template-manager {
-            margin-top: 20px;
+        .llm-filter-section {
+            padding: 15px;
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            margin-top: 10px;
+            border: 1px solid var(--border);
+        }
+
+        .llm-filter-title {
+            font-size: 13px;
+            font-weight: 600;
+            margin-bottom: 10px;
+        }
+
+        .llm-filter-note {
+            font-size: 11px;
+            color: var(--text-secondary);
+            margin: -6px 0 8px 0;
+        }
+
+        .llm-result-box {
+            margin-top: 10px;
+            border: 1px solid var(--border);
+            background: var(--bg-primary);
+            border-radius: 8px;
+            padding: 10px;
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.6;
+            min-height: 58px;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .control-tabs {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 14px;
+            flex-wrap: wrap;
+        }
+
+        .control-tab-btn {
+            flex: 1;
+            min-width: 96px;
+            background: var(--bg-secondary);
+            color: var(--text-secondary);
+            border: 1px solid var(--border);
+            border-radius: 10px;
+            padding: 8px 10px;
+            font-size: 12px;
+            font-weight: 600;
+            transition: all 0.2s ease;
+        }
+
+        .control-tab-btn:hover {
+            color: var(--text-primary);
+            border-color: var(--accent);
+        }
+
+        .control-tab-btn.active {
+            background: linear-gradient(135deg, rgba(0, 212, 255, 0.22), rgba(0, 153, 204, 0.16));
+            color: var(--text-primary);
+            border-color: rgba(0, 212, 255, 0.5);
+            box-shadow: 0 0 0 1px rgba(0, 212, 255, 0.18) inset;
+        }
+
+        .control-panel {
+            display: none;
+        }
+
+        .control-panel.active {
+            display: block;
         }
 
         .template-section {
@@ -680,6 +753,23 @@
             box-shadow: 0 6px 22px rgba(255, 170, 0, 0.35);
         }
 
+        .btn-reply.done {
+            background: linear-gradient(135deg, #00ff88, #00cc66);
+            color: #001b0f;
+            box-shadow: 0 4px 15px rgba(0, 255, 136, 0.3);
+        }
+
+        .reply-state {
+            font-size: 11px;
+            color: var(--text-secondary);
+            line-height: 1.2;
+        }
+
+        .reply-state.done {
+            color: var(--success);
+            font-weight: 600;
+        }
+
         .content-cell {
             max-width: 400px;
             line-height: 1.5;
@@ -803,94 +893,122 @@
         <div class="main-grid">
             <!-- 左侧面板 -->
             <div class="left-panel">
-                <!-- 控制台 -->
+                <!-- 控制与配置 -->
                 <div class="card">
                     <div class="card-header">
                         <div class="card-header-icon control">⚡</div>
-                        <h3>控制中心</h3>
+                        <h3>控制与配置</h3>
                     </div>
                     <div class="card-body">
-                        <input type="text" id="token" placeholder="🔑 粘贴 Auth Token...">
-                        <div class="btn-group">
-                            <button class="btn-success" id="startBtn" onclick="toggle(true)">
-                                <span>▶</span> 启动监控
-                            </button>
-                            <button class="btn-danger" id="stopBtn" onclick="toggle(false)" disabled>
-                                <span>⏹</span> 停止
-                            </button>
+                        <div class="control-tabs">
+                            <button type="button" class="control-tab-btn active" data-panel="control" onclick="switchControlPanel('control', this)">控制中心</button>
+                            <button type="button" class="control-tab-btn" data-panel="task" onclick="switchControlPanel('task', this)">监控目标</button>
+                            <button type="button" class="control-tab-btn" data-panel="template" onclick="switchControlPanel('template', this)">文案管理</button>
                         </div>
 
-                        <label class="switch-container" onclick="event.stopPropagation()">
-                            <div class="switch">
-                                <input type="checkbox" id="notifCheckbox" onchange="toggleNotificationMonitoring()">
-                                <span class="switch-slider"></span>
+                        <div class="control-panel active" id="controlPanel-control">
+                            <input type="text" id="token" placeholder="🔑 粘贴 Auth Token...">
+                            <div class="btn-group">
+                                <button class="btn-success" id="startBtn" onclick="toggle(true)">
+                                    <span>▶</span> 启动监控
+                                </button>
+                                <button class="btn-danger" id="stopBtn" onclick="toggle(false)" disabled>
+                                    <span>⏹</span> 停止
+                                </button>
                             </div>
-                            <div class="switch-label">
-                                <div class="switch-label-title">📬 通知监控</div>
-                                <div class="switch-label-desc">实时扫描通知页面中的@提及</div>
-                            </div>
-                        </label>
-
-                        <label class="switch-container" onclick="event.stopPropagation()">
-                            <div class="switch">
-                                <input type="checkbox" id="headlessCheckbox" onchange="toggleHeadlessMode()" checked>
-                                <span class="switch-slider"></span>
-                            </div>
-                            <div class="switch-label">
-                                <div class="switch-label-title">🖥️ 无头模式</div>
-                                <div class="switch-label-desc">关闭后显示浏览器窗口(调试用)</div>
-                            </div>
-                        </label>
-
-                        <div class="delegated-section">
-                            <label>委派账户（可选）</label>
-                            <input type="text" id="delegatedAccount" placeholder="@username" style="margin-bottom:10px;">
-                            <button class="btn-primary btn-sm" onclick="saveDelegatedAccount()" style="width:100%;">
-                                💾 保存账户配置
+                            <button class="btn-primary btn-sm" type="button" onclick="testNotifyVoice()" style="width:100%; margin-top:10px;">
+                                🔊 测试通知声音
                             </button>
-                        </div>
-                    </div>
-                </div>
 
-                <!-- 监控目标 -->
-                <div class="card" style="margin-top:20px;">
-                    <div class="card-header">
-                        <div class="card-header-icon target">🎯</div>
-                        <h3>监控目标</h3>
-                    </div>
-                    <div class="card-body">
-                        <input type="text" id="newUrl" placeholder="📎 粘贴推文链接...">
-                        <button class="btn-primary" onclick="addTask()" style="width:100%;">
-                            <span>➕</span> 添加监控
-                        </button>
-                        <div class="task-list" id="taskList" style="margin-top:15px;"></div>
-                    </div>
-                </div>
+                            <label class="switch-container" onclick="event.stopPropagation()">
+                                <div class="switch">
+                                    <input type="checkbox" id="notifCheckbox" onchange="toggleNotificationMonitoring()">
+                                    <span class="switch-slider"></span>
+                                </div>
+                                <div class="switch-label">
+                                    <div class="switch-label-title">📬 通知监控</div>
+                                    <div class="switch-label-desc">实时扫描通知页面中的@提及</div>
+                                </div>
+                            </label>
 
-                <div class="card template-manager">
-                    <div class="card-header">
-                        <div class="card-header-icon result">🧩</div>
-                        <h3>文案管理</h3>
-                    </div>
-                    <div class="card-body">
-                        <div class="template-section">
-                            <h4>评论回复文案</h4>
-                            <input type="text" id="replyTemplateInput" class="template-input" placeholder="输入评论回复文案...">
-                            <div class="template-editor-actions">
-                                <button class="btn-primary btn-sm" id="replyTemplateSubmitBtn" onclick="submitTemplate('reply')">➕ 添加评论文案</button>
-                                <button class="btn-ghost btn-sm" id="replyTemplateCancelBtn" onclick="cancelTemplateEdit('reply')" style="display:none;">取消修改</button>
+                            <label class="switch-container" onclick="event.stopPropagation()">
+                                <div class="switch">
+                                    <input type="checkbox" id="headlessCheckbox" onchange="toggleHeadlessMode()" checked>
+                                    <span class="switch-slider"></span>
+                                </div>
+                                <div class="switch-label">
+                                    <div class="switch-label-title">🖥️ 无头模式</div>
+                                    <div class="switch-label-desc">关闭后显示浏览器窗口(调试用)</div>
+                                </div>
+                            </label>
+
+                            <div class="delegated-section">
+                                <label>委派账户（可选）</label>
+                                <input type="text" id="delegatedAccount" placeholder="@username" style="margin-bottom:10px;">
+                                <button class="btn-primary btn-sm" onclick="saveDelegatedAccount()" style="width:100%;">
+                                    💾 保存账户配置
+                                </button>
                             </div>
-                            <ul id="replyTemplateList" class="template-list"></ul>
+
+                            <div class="llm-filter-section">
+                                <div class="llm-filter-title">🤖 LLM 内容过滤（OpenAI兼容）</div>
+                                <div class="llm-filter-note">用于补充规则过滤，识别噪声评论与意向评论。</div>
+
+                                <label class="switch-container" onclick="event.stopPropagation()" style="margin-bottom:10px;">
+                                    <div class="switch">
+                                        <input type="checkbox" id="llmFilterEnabled">
+                                        <span class="switch-slider"></span>
+                                    </div>
+                                    <div class="switch-label">
+                                        <div class="switch-label-title">启用 LLM 过滤</div>
+                                        <div class="switch-label-desc">规则未命中时调用小模型判定</div>
+                                    </div>
+                                </label>
+
+                                <input type="text" id="llmBaseUrl" placeholder="https://ollama-ai.shou.heiyu.space/v1">
+                                <input type="text" id="llmModel" placeholder="模型名，例如 qwen2.5:7b">
+                                <input type="password" id="llmApiKey" placeholder="API Key（无则填 EMPTY）">
+                                <input type="text" id="llmTimeoutSec" placeholder="超时秒数（2-30）" value="8">
+                                <div class="template-editor-actions">
+                                    <button class="btn-primary btn-sm" onclick="saveLlmFilterConfig()">💾 保存配置</button>
+                                    <button class="btn-ghost btn-sm" onclick="testLlmFilterModel()">🧪 测试模型</button>
+                                </div>
+                                <textarea id="llmIntentInput" class="template-textarea" placeholder="输入评论内容进行意向分析，例如：1 询价"></textarea>
+                                <button class="btn-primary btn-sm" onclick="analyzeCommentIntentByLlm()" style="width:100%;">
+                                    🔍 分析评论意向
+                                </button>
+                                <div id="llmIntentResult" class="llm-result-box">等待测试或分析...</div>
+                            </div>
                         </div>
 
-                        <div class="template-section">
-                            <h4>私信文案</h4>
-                            <textarea id="dmTemplateInput" class="template-textarea" placeholder="输入私信文案..."></textarea>
-                            <div class="template-editor-actions">
-                                <button class="btn-primary btn-sm" id="dmTemplateSubmitBtn" onclick="submitTemplate('dm')">➕ 添加私信文案</button>
-                                <button class="btn-ghost btn-sm" id="dmTemplateCancelBtn" onclick="cancelTemplateEdit('dm')" style="display:none;">取消修改</button>
+                        <div class="control-panel" id="controlPanel-task">
+                            <input type="text" id="newUrl" placeholder="📎 粘贴推文链接...">
+                            <button class="btn-primary" onclick="addTask()" style="width:100%;">
+                                <span>➕</span> 添加监控
+                            </button>
+                            <div class="task-list" id="taskList" style="margin-top:15px;"></div>
+                        </div>
+
+                        <div class="control-panel" id="controlPanel-template">
+                            <div class="template-section">
+                                <h4>评论回复文案</h4>
+                                <input type="text" id="replyTemplateInput" class="template-input" placeholder="输入评论回复文案...">
+                                <div class="template-editor-actions">
+                                    <button class="btn-primary btn-sm" id="replyTemplateSubmitBtn" onclick="submitTemplate('reply')">➕ 添加评论文案</button>
+                                    <button class="btn-ghost btn-sm" id="replyTemplateCancelBtn" onclick="cancelTemplateEdit('reply')" style="display:none;">取消修改</button>
+                                </div>
+                                <ul id="replyTemplateList" class="template-list"></ul>
                             </div>
-                            <ul id="dmTemplateList" class="template-list"></ul>
+
+                            <div class="template-section">
+                                <h4>私信文案</h4>
+                                <textarea id="dmTemplateInput" class="template-textarea" placeholder="输入私信文案..."></textarea>
+                                <div class="template-editor-actions">
+                                    <button class="btn-primary btn-sm" id="dmTemplateSubmitBtn" onclick="submitTemplate('dm')">➕ 添加私信文案</button>
+                                    <button class="btn-ghost btn-sm" id="dmTemplateCancelBtn" onclick="cancelTemplateEdit('dm')" style="display:none;">取消修改</button>
+                                </div>
+                                <ul id="dmTemplateList" class="template-list"></ul>
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -978,12 +1096,148 @@
         let notifyReplyTemplates = [];
         let dmMessageTemplates = [];
         const templateEditState = { reply: -1, dm: -1 };
+        const notifyVoiceText = '来客了，快点来接客了';
+        let lastNotifyVoiceAt = 0;
+        let cachedNotifyVoice = null;
+        let notifyVoicePlaying = false;
+        let notifyVoiceTimer = null;
+        const notifyVoiceQueue = [];
 
-        window.onload = () => fetch('/api/state').then(r=>r.json()).then(d=>{
+        function pickNotifyVoice() {
+            if (!('speechSynthesis' in window)) return null;
+            const voices = window.speechSynthesis.getVoices() || [];
+            if (!voices.length) return null;
+
+            const femaleKeys = ['female', 'woman', 'girl', '女', 'xiaoxiao', 'xiaoyi', 'xiaohan', 'xiaomo', 'tingting', 'siri'];
+            const zhVoices = voices.filter(v => (v.lang || '').toLowerCase().includes('zh'));
+            const scored = (zhVoices.length ? zhVoices : voices).map(v => {
+                const name = `${v.name || ''} ${(v.lang || '')}`.toLowerCase();
+                let score = 0;
+                if ((v.lang || '').toLowerCase().includes('zh-cn')) score += 6;
+                if ((v.lang || '').toLowerCase().includes('zh')) score += 3;
+                if (femaleKeys.some(k => name.includes(k))) score += 8;
+                if ((v.name || '').toLowerCase().includes('natural')) score += 2;
+                return { v, score };
+            }).sort((a, b) => b.score - a.score);
+            return scored.length ? scored[0].v : null;
+        }
+
+        function preloadNotifyVoice() {
+            cachedNotifyVoice = pickNotifyVoice();
+        }
+
+        function buildNotifyVoiceText(contentText='') {
+            const raw = String(contentText || '').replace(/\s+/g, ' ').trim();
+            if(!raw) return notifyVoiceText;
+            const maxLen = 80;
+            const clipped = raw.length > maxLen ? `${raw.slice(0, maxLen)}...` : raw;
+            return `${notifyVoiceText}，评论内容：${clipped}`;
+        }
+
+        function _playNotifyVoiceOnce(contentText = '', done = null) {
+            const speakText = buildNotifyVoiceText(contentText);
+
+            if ('speechSynthesis' in window) {
+                try {
+                    const utter = new SpeechSynthesisUtterance(speakText);
+                    utter.lang = 'zh-CN';
+                    // 偏温柔女声 + 稍微更有感染力
+                    utter.rate = 1.08;
+                    utter.pitch = 1.2;
+                    utter.volume = 1.0;
+                    if (!cachedNotifyVoice) cachedNotifyVoice = pickNotifyVoice();
+                    if (cachedNotifyVoice) utter.voice = cachedNotifyVoice;
+                    utter.onend = () => { if (typeof done === 'function') done(); };
+                    utter.onerror = () => { if (typeof done === 'function') done(); };
+                    window.speechSynthesis.speak(utter);
+                    return;
+                } catch (_) {}
+            }
+
+            // 语音不可用时，退化为短提示音
+            try {
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (!AudioCtx) return;
+                const ctx = new AudioCtx();
+                const osc = ctx.createOscillator();
+                const gain = ctx.createGain();
+                osc.type = 'sine';
+                osc.frequency.value = 880;
+                gain.gain.value = 0.0001;
+                osc.connect(gain);
+                gain.connect(ctx.destination);
+                const t = ctx.currentTime;
+                gain.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
+                gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
+                osc.start(t);
+                osc.stop(t + 0.2);
+            } catch (_) {}
+            if (typeof done === 'function') done();
+        }
+
+        function processNotifyVoiceQueue() {
+            if (notifyVoicePlaying) return;
+            if (!notifyVoiceQueue.length) return;
+
+            notifyVoicePlaying = true;
+            const item = notifyVoiceQueue.shift();
+            const now = Date.now();
+            const gapMs = item.force ? 0 : Math.max(0, 1200 - (now - lastNotifyVoiceAt));
+
+            if (notifyVoiceTimer) {
+                clearTimeout(notifyVoiceTimer);
+                notifyVoiceTimer = null;
+            }
+
+            notifyVoiceTimer = setTimeout(() => {
+                _playNotifyVoiceOnce(item.contentText, () => {
+                    lastNotifyVoiceAt = Date.now();
+                    notifyVoicePlaying = false;
+                    processNotifyVoiceQueue();
+                });
+            }, gapMs);
+        }
+
+        function announceNewNotifyByVoice(force = false, contentText = '') {
+            const cleanText = String(contentText || '').trim();
+            notifyVoiceQueue.push({ force: !!force, contentText: cleanText });
+            processNotifyVoiceQueue();
+        }
+
+        function testNotifyVoice() {
+            announceNewNotifyByVoice(true, '这是一条测试评论内容');
+        }
+
+        function switchControlPanel(panelKey, btn) {
+            document.querySelectorAll('.control-panel').forEach(panel => panel.classList.remove('active'));
+            const targetPanel = document.getElementById(`controlPanel-${panelKey}`);
+            if(targetPanel) targetPanel.classList.add('active');
+
+            document.querySelectorAll('.control-tab-btn').forEach(tabBtn => tabBtn.classList.remove('active'));
+            if(btn) {
+                btn.classList.add('active');
+            } else {
+                const targetBtn = document.querySelector(`.control-tab-btn[data-panel="${panelKey}"]`);
+                if(targetBtn) targetBtn.classList.add('active');
+            }
+        }
+
+        window.onload = () => {
+            preloadNotifyVoice();
+            if ('speechSynthesis' in window && typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
+                window.speechSynthesis.onvoiceschanged = () => preloadNotifyVoice();
+            }
+            switchControlPanel('control');
+            fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';
             document.getElementById('notifCheckbox').checked = d.notification_monitoring || false;
             document.getElementById('headlessCheckbox').checked = d.headless_mode !== false;
             document.getElementById('delegatedAccount').value = d.delegated_account || '';
+            document.getElementById('llmFilterEnabled').checked = !!d.llm_filter_enabled;
+            document.getElementById('llmBaseUrl').value = d.llm_filter_base_url || '';
+            document.getElementById('llmModel').value = d.llm_filter_model || '';
+            document.getElementById('llmApiKey').value = d.llm_filter_api_key || '';
+            document.getElementById('llmTimeoutSec').value = d.llm_filter_timeout_sec || 8;
             syncTemplatesFromPayload(d);
             renderTasks(d.tasks);
             if(d.is_running) setStatus(true);
@@ -996,7 +1250,8 @@
             refreshFilterOptions('tweet');
             applyResultFilter('notify');
             applyResultFilter('tweet');
-        });
+            });
+        };
 
         function escapeHtml(str) {
             return String(str || '')
@@ -1077,7 +1332,13 @@
                 .then(r=>r.json()).then(d => {
                     if(d.status === 'ok') {
                         const modeText = enabled ? '无头模式' : '有头模式(调试)';
-                        alert(`🖥️ 已切换为${modeText}\n⚠️ 需要重启监控才能生效`);
+                        if(d.auto_restarted) {
+                            alert(`🖥️ 已切换为${modeText}\n✅ 监控已自动重启`);
+                        } else {
+                            alert(`🖥️ 已切换为${modeText}`);
+                        }
+                    } else {
+                        alert(`切换失败: ${d.msg || '未知错误'}`);
                     }
                 });
         }
@@ -1090,6 +1351,124 @@
                         alert(account ? `✅ 已设置委派账户: ${account}` : '✅ 已清除委派账户');
                     }
                 });
+        }
+
+        function saveLlmFilterConfig() {
+            const enabled = document.getElementById('llmFilterEnabled').checked;
+            const baseUrl = document.getElementById('llmBaseUrl').value.trim();
+            const model = document.getElementById('llmModel').value.trim();
+            const apiKey = document.getElementById('llmApiKey').value.trim() || 'EMPTY';
+            let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
+            if(Number.isNaN(timeoutSec)) timeoutSec = 8;
+            timeoutSec = Math.max(2, Math.min(30, timeoutSec));
+            document.getElementById('llmTimeoutSec').value = timeoutSec;
+
+            if(enabled && (!baseUrl || !model)) {
+                alert('启用 LLM 过滤时，Base URL 和模型名不能为空');
+                return;
+            }
+
+            fetch('/api/set_llm_filter_config', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body:JSON.stringify({
+                    enabled: enabled,
+                    base_url: baseUrl,
+                    model: model,
+                    api_key: apiKey,
+                    timeout_sec: timeoutSec
+                })
+            }).then(r=>r.json()).then(d => {
+                if(d.status === 'ok') {
+                    alert(`✅ LLM过滤配置已保存${enabled ? '并启用' : '（当前禁用）'}`);
+                } else {
+                    alert(`保存失败: ${d.msg || '未知错误'}`);
+                }
+            }).catch(() => {
+                alert('网络异常，保存失败');
+            });
+        }
+
+        function collectLlmRuntimePayload() {
+            let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
+            if(Number.isNaN(timeoutSec)) timeoutSec = 8;
+            timeoutSec = Math.max(2, Math.min(30, timeoutSec));
+            document.getElementById('llmTimeoutSec').value = timeoutSec;
+            return {
+                base_url: document.getElementById('llmBaseUrl').value.trim(),
+                model: document.getElementById('llmModel').value.trim(),
+                api_key: (document.getElementById('llmApiKey').value || '').trim() || 'EMPTY',
+                timeout_sec: timeoutSec
+            };
+        }
+
+        function setLlmIntentResult(text, isError=false) {
+            const box = document.getElementById('llmIntentResult');
+            if(!box) return;
+            box.style.color = isError ? 'var(--danger)' : 'var(--text-secondary)';
+            box.textContent = String(text || '');
+        }
+
+        function testLlmFilterModel() {
+            const payload = collectLlmRuntimePayload();
+            if(!payload.base_url || !payload.model) {
+                setLlmIntentResult('请先填写 Base URL 和模型名', true);
+                return;
+            }
+            setLlmIntentResult('正在测试模型连通性...');
+            fetch('/api/llm_filter/test', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify(payload)
+            }).then(r => r.json()).then(d => {
+                if(d.status === 'ok') {
+                    const msg = [
+                        `模型可用: ${d.model || '-'}`,
+                        `延迟: ${d.latency_ms || 0}ms`,
+                        `接口: ${d.endpoint || '-'}`,
+                    ].join('\n');
+                    setLlmIntentResult(msg, false);
+                } else {
+                    setLlmIntentResult(`测试失败: ${d.msg || '未知错误'}`, true);
+                }
+            }).catch(() => {
+                setLlmIntentResult('网络异常，模型测试失败', true);
+            });
+        }
+
+        function analyzeCommentIntentByLlm() {
+            const payload = collectLlmRuntimePayload();
+            const content = (document.getElementById('llmIntentInput').value || '').trim();
+            if(!content) {
+                setLlmIntentResult('请输入要分析的评论内容', true);
+                return;
+            }
+            setLlmIntentResult('正在分析评论意向...');
+            fetch('/api/llm_filter/analyze', {
+                method: 'POST',
+                headers: {'Content-Type':'application/json'},
+                body: JSON.stringify({...payload, content})
+            }).then(r => r.json()).then(d => {
+                if(d.status !== 'ok') {
+                    setLlmIntentResult(`分析失败: ${d.msg || '未知错误'}`, true);
+                    return;
+                }
+                const a = d.analysis || {};
+                const signals = Array.isArray(a.signals) ? a.signals.join(', ') : '';
+                const lines = [
+                    `意向等级: ${a.intent_level || '-'} (${a.intent_score ?? 0}分)`,
+                    `是否意向用户: ${a.is_intent_user ? '是' : '否'}`,
+                    `规则分: ${a.rule_score ?? '-'} | LLM分: ${a.llm_score ?? '-'}`,
+                    `识别信号: ${signals || '-'}`,
+                    `判定依据: ${a.reason || '-'}`,
+                ];
+                if(a.llm_error) {
+                    lines.push(`LLM异常: ${a.llm_error}`);
+                }
+                setLlmIntentResult(lines.join('\n'), false);
+            }).catch(() => {
+                setLlmIntentResult('网络异常，评论分析失败', true);
+            });
         }
 
         function getTemplateArray(type) {
@@ -1298,14 +1677,70 @@
                 });
         }
 
-        function markDoneFromButton(btn) {
+        let suppressExternalLinkUntil = 0;
+
+        function markActionClick(evt) {
+            if(evt) {
+                evt.preventDefault();
+                evt.stopPropagation();
+            }
+            suppressExternalLinkUntil = Date.now() + 1200;
+        }
+
+        function handleUserLinkClick(evt) {
+            if(Date.now() < suppressExternalLinkUntil) {
+                if(evt) {
+                    evt.preventDefault();
+                    evt.stopPropagation();
+                }
+                return false;
+            }
+            return true;
+        }
+
+        function markDoneFromButton(evt, btn) {
+            markActionClick(evt);
             const row = btn.closest('tr');
             const key = row ? (row.getAttribute('data-key') || '') : '';
             if(!key) return;
             markDone(key, btn);
         }
 
-        function sendNotifyReply(btn) {
+        function isNotifyItemReplied(item) {
+            return !!(item && (item.notify_replied || item.reply_checked));
+        }
+
+        function applyNotifyReplyState(row, replied, replyTime='') {
+            if(!row) return;
+            row.setAttribute('data-notify-replied', replied ? '1' : '0');
+
+            const replyBtn = row.querySelector('.btn-reply');
+            const replyState = row.querySelector('.reply-state');
+            const replySelect = row.querySelector('.reply-template-select');
+            const dmSelect = row.querySelector('.dm-template-select');
+
+            if(replyBtn) {
+                replyBtn.disabled = false;
+                replyBtn.textContent = replied ? '↩ 再次回复' : '↩ 回复';
+                replyBtn.classList.remove('done');
+            }
+            if(replySelect) replySelect.disabled = false;
+            if(dmSelect) dmSelect.disabled = false;
+
+            if(replyState) {
+                if(replied) {
+                    const suffix = replyTime ? ` (${replyTime})` : '';
+                    replyState.textContent = `已回复${suffix}`;
+                    replyState.classList.add('done');
+                } else {
+                    replyState.textContent = '未回复';
+                    replyState.classList.remove('done');
+                }
+            }
+        }
+
+        function sendNotifyReply(evt, btn) {
+            markActionClick(evt);
             const row = btn.closest('tr');
             const key = row ? (row.getAttribute('data-key') || '') : '';
             const handle = row ? (row.getAttribute('data-handle') || '') : '';
@@ -1332,6 +1767,8 @@
                 body:JSON.stringify({key:key, message:message, dm_message:dmMessage})
             }).then(r=>r.json()).then(d => {
                 if(d.status === 'ok') {
+                    const replyTime = (d.reply_time || '').trim();
+                    applyNotifyReplyState(row, true, replyTime);
                     alert(`✅ 已回复 ${handle || ''}`);
                 } else {
                     alert(`回复失败: ${d.msg || '未知错误'}`);
@@ -1340,7 +1777,8 @@
                 alert('网络异常，回复失败');
             }).finally(() => {
                 btn.disabled = false;
-                btn.textContent = oldText;
+                const repliedNow = row ? (row.getAttribute('data-notify-replied') === '1') : false;
+                btn.textContent = repliedNow ? '↩ 再次回复' : oldText;
             });
         }
 
@@ -1424,7 +1862,7 @@
         }
 
         function addRow(i, animate=true) {
-            if(document.querySelector(`tr[data-key="${i.key}"]`)) return;
+            if(document.querySelector(`tr[data-key="${i.key}"]`)) return false;
 
             const tr = document.createElement('tr');
             if(animate) tr.className = 'row-enter';
@@ -1432,17 +1870,22 @@
             tr.setAttribute('data-key', i.key);
 
             const isNotify = i.source === '通知页面';
+            const isReplied = isNotifyItemReplied(i);
             const safeHandle = escapeHtml(i.handle || '');
             const handlePath = escapeAttr((i.handle || '').replace('@', ''));
             const userCellHtml = isNotify
                 ? `<div class="user-info-cell">
-                        <a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank">${safeHandle}</a>
+                        <a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank" onclick="return handleUserLinkClick(event)">${safeHandle}</a>
                    </div>`
-                : `<a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank">${safeHandle}</a>`;
+                : `<a class="user-link" href="https://x.com/${handlePath}/with_replies" target="_blank" onclick="return handleUserLinkClick(event)">${safeHandle}</a>`;
             const replyOptions = buildTemplateOptionHtml(notifyReplyTemplates);
             const dmOptions = buildTemplateOptionHtml(dmMessageTemplates);
+            const replyTime = escapeHtml(i.notify_reply_time || i.reply_time || '');
+            const replyStateText = isReplied ? `已回复${replyTime ? ` (${replyTime})` : ''}` : '未回复';
+            const replyStateClass = isReplied ? 'reply-state done' : 'reply-state';
             const actionHtml = isNotify
                 ? `<div class="action-stack">
+                        <div class="${replyStateClass}">${replyStateText}</div>
                         <select class="reply-template-select">
                             <option value="">选择回复内容...</option>
                             ${replyOptions}
@@ -1452,11 +1895,11 @@
                             ${dmOptions}
                         </select>
                         <div class="action-btn-row">
-                            <button class="btn-reply btn-sm" onclick="sendNotifyReply(this)">↩ 回复</button>
-                            <button class="btn-primary btn-sm" onclick="markDoneFromButton(this)">✅ 已处理</button>
+                            <button type="button" class="btn-reply btn-sm" onclick="sendNotifyReply(event, this)">${isReplied ? '↩ 再次回复' : '↩ 回复'}</button>
+                            <button type="button" class="btn-primary btn-sm" onclick="markDoneFromButton(event, this)">✅ 已处理</button>
                         </div>
                    </div>`
-                : `<button class="btn-primary btn-sm" onclick="markDoneFromButton(this)">✅ 已处理</button>`;
+                : `<button type="button" class="btn-primary btn-sm" onclick="markDoneFromButton(event, this)">✅ 已处理</button>`;
 
             tr.innerHTML = `
                 <td style="color:var(--text-secondary)">${escapeHtml(i.time || '')}</td>
@@ -1467,17 +1910,34 @@
 
             if(isNotify) {
                 document.getElementById('notifyTableBody').prepend(tr);
+                const replySelect = tr.querySelector('.reply-template-select');
+                const dmSelect = tr.querySelector('.dm-template-select');
+                const savedReplyText = (i.notify_reply_text || i.reply_text || '').trim();
+                const savedDmText = (i.notify_dm_text || '').trim();
+                if(replySelect && savedReplyText) replySelect.value = savedReplyText;
+                if(dmSelect && savedDmText) dmSelect.value = savedDmText;
+                applyNotifyReplyState(tr, isReplied, i.notify_reply_time || i.reply_time || '');
             } else {
                 document.getElementById('tweetTableBody').prepend(tr);
             }
             const type = isNotify ? 'notify' : 'tweet';
             refreshFilterOptions(type);
             applyResultFilter(type);
+            return true;
         }
 
         setInterval(() => {
             fetch('/api/updates').then(r=>r.json()).then(d => {
-                d.new_items.forEach(i => addRow(i, true));
+                const notifyContents = [];
+                d.new_items.forEach(i => {
+                    addRow(i, true);
+                    if(i && i.source === '通知页面') {
+                        notifyContents.push(String(i.content || '').trim());
+                    }
+                });
+                if(notifyContents.length > 0) {
+                    notifyContents.forEach(content => announceNewNotifyByVoice(false, content));
+                }
                 if(d.tasks) renderTasks(d.tasks);
             });
         }, 1000);
