@@ -128,15 +128,77 @@ browser_lock = threading.Lock() # 浏览器操作锁（用于多标签页同步�
 browser_init_lock = threading.Lock() # 浏览器初始化串行锁，避免并发重入互相干扰
 tab_lock = threading.Lock()     # 标签页创建/销毁锁
 notification_monitoring = False  # 新增：通知监控开关
-NOTIFICATION_SCAN_INTERVAL_MIN_SEC = 4
-NOTIFICATION_SCAN_INTERVAL_MAX_SEC = 9
-NOTIFICATION_RECENT_WINDOW_MINUTES = 30
-NOTIFICATION_MAX_SCAN_ARTICLES = 60
-NOTIFICATION_VERBOSE_TRACE = True
-NOTIFICATION_TRACE_MAX_ARTICLES = 12
-NOTIFICATION_TRACE_TEXT_LEN = 120
-NOTIFICATION_REFRESH_INTERVAL_MIN_SEC = 12
-NOTIFICATION_REFRESH_INTERVAL_MAX_SEC = 25
+try:
+    NOTIFICATION_SCAN_INTERVAL_MIN_SEC = float(os.environ.get("XMONITOR_NOTIFY_SCAN_MIN_SEC", "3"))
+except Exception:
+    NOTIFICATION_SCAN_INTERVAL_MIN_SEC = 3.0
+try:
+    NOTIFICATION_SCAN_INTERVAL_MAX_SEC = float(os.environ.get("XMONITOR_NOTIFY_SCAN_MAX_SEC", "6"))
+except Exception:
+    NOTIFICATION_SCAN_INTERVAL_MAX_SEC = 6.0
+try:
+    NOTIFICATION_RECENT_WINDOW_MINUTES = int(os.environ.get("XMONITOR_NOTIFY_RECENT_WINDOW_MIN", "45"))
+except Exception:
+    NOTIFICATION_RECENT_WINDOW_MINUTES = 45
+try:
+    NOTIFICATION_MAX_SCAN_ARTICLES = int(os.environ.get("XMONITOR_NOTIFY_MAX_ARTICLES", "180"))
+except Exception:
+    NOTIFICATION_MAX_SCAN_ARTICLES = 180
+NOTIFICATION_VERBOSE_TRACE = str(
+    os.environ.get("XMONITOR_NOTIFY_VERBOSE_TRACE", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+try:
+    NOTIFICATION_TRACE_MAX_ARTICLES = int(os.environ.get("XMONITOR_NOTIFY_TRACE_MAX_ARTICLES", "12"))
+except Exception:
+    NOTIFICATION_TRACE_MAX_ARTICLES = 12
+try:
+    NOTIFICATION_TRACE_TEXT_LEN = int(os.environ.get("XMONITOR_NOTIFY_TRACE_TEXT_LEN", "120"))
+except Exception:
+    NOTIFICATION_TRACE_TEXT_LEN = 120
+try:
+    NOTIFICATION_REFRESH_INTERVAL_MIN_SEC = float(os.environ.get("XMONITOR_NOTIFY_REFRESH_MIN_SEC", "20"))
+except Exception:
+    NOTIFICATION_REFRESH_INTERVAL_MIN_SEC = 20.0
+try:
+    NOTIFICATION_REFRESH_INTERVAL_MAX_SEC = float(os.environ.get("XMONITOR_NOTIFY_REFRESH_MAX_SEC", "40"))
+except Exception:
+    NOTIFICATION_REFRESH_INTERVAL_MAX_SEC = 40.0
+try:
+    NOTIFICATION_REFRESH_SKIP_PROB = float(os.environ.get("XMONITOR_NOTIFY_REFRESH_SKIP_PROB", "0.22"))
+except Exception:
+    NOTIFICATION_REFRESH_SKIP_PROB = 0.22
+try:
+    NOTIFICATION_REFRESH_SOFT_NAV_PROB = float(os.environ.get("XMONITOR_NOTIFY_REFRESH_SOFT_NAV_PROB", "0.24"))
+except Exception:
+    NOTIFICATION_REFRESH_SOFT_NAV_PROB = 0.24
+try:
+    NOTIFICATION_REFRESH_COOLDOWN_PROB = float(os.environ.get("XMONITOR_NOTIFY_REFRESH_COOLDOWN_PROB", "0.16"))
+except Exception:
+    NOTIFICATION_REFRESH_COOLDOWN_PROB = 0.16
+try:
+    NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC = float(
+        os.environ.get("XMONITOR_NOTIFY_REFRESH_COOLDOWN_MIN_SEC", "8")
+    )
+except Exception:
+    NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC = 8.0
+try:
+    NOTIFICATION_REFRESH_COOLDOWN_MAX_SEC = float(
+        os.environ.get("XMONITOR_NOTIFY_REFRESH_COOLDOWN_MAX_SEC", "22")
+    )
+except Exception:
+    NOTIFICATION_REFRESH_COOLDOWN_MAX_SEC = 22.0
+try:
+    NOTIFICATION_EMPTY_RECOVER_SOFT_THRESHOLD = int(
+        os.environ.get("XMONITOR_NOTIFY_EMPTY_RECOVER_SOFT_THRESHOLD", "3")
+    )
+except Exception:
+    NOTIFICATION_EMPTY_RECOVER_SOFT_THRESHOLD = 3
+try:
+    NOTIFICATION_EMPTY_RECOVER_HARD_THRESHOLD = int(
+        os.environ.get("XMONITOR_NOTIFY_EMPTY_RECOVER_HARD_THRESHOLD", "6")
+    )
+except Exception:
+    NOTIFICATION_EMPTY_RECOVER_HARD_THRESHOLD = 6
 ENGINE_VERSION = "v11.3"
 REPLY_ACTION_GAP_MIN_SEC = 3.8
 REPLY_ACTION_GAP_MAX_SEC = 7.2
@@ -377,6 +439,7 @@ content_dedupe = {}  # {signature: last_seen_ts}
 notification_refresh_interval = random.uniform(NOTIFICATION_REFRESH_INTERVAL_MIN_SEC, NOTIFICATION_REFRESH_INTERVAL_MAX_SEC)
 notification_last_refresh_at = 0.0
 notification_disconnect_streak = 0
+notification_empty_article_streak = 0
 
 
 def is_persistent_browser_profile_dir(path):
@@ -1390,14 +1453,50 @@ def get_random_notification_interval():
     """生成通知扫描随机间隔，避免固定节奏。"""
     low = max(1.0, float(NOTIFICATION_SCAN_INTERVAL_MIN_SEC))
     high = max(low, float(NOTIFICATION_SCAN_INTERVAL_MAX_SEC))
-    return round(random.uniform(low, high), 2)
+    base = random.uniform(low, high)
+    # 少量短抖动，避免稳定节拍；仍保持在安全区间内
+    if random.random() < 0.12:
+        base = random.uniform(max(1.0, low * 0.85), high)
+    # 小概率长尾等待，降低固定频率特征
+    if random.random() < 0.08:
+        base = random.uniform(high, max(high + 0.8, high * 1.8))
+    return round(max(1.0, base), 2)
 
 
 def get_random_notification_refresh_interval():
     """生成通知页刷新间隔（秒），避免每轮都刷新页面。"""
     low = max(5.0, float(NOTIFICATION_REFRESH_INTERVAL_MIN_SEC))
     high = max(low, float(NOTIFICATION_REFRESH_INTERVAL_MAX_SEC))
-    return round(random.uniform(low, high), 2)
+    base = random.uniform(low, high)
+    # 常规轻抖动
+    if random.random() < 0.2:
+        base = random.uniform(low, high * 1.2)
+    # 小概率显著拉长，降低刷新指纹
+    if random.random() < 0.1:
+        base = random.uniform(high * 1.1, max(high * 2.6, high + 12))
+    return round(max(5.0, base), 2)
+
+
+def _schedule_next_notification_refresh_interval(previous_interval=None):
+    """调度下一次通知刷新间隔，加入平滑和长尾抖动。"""
+    global notification_refresh_interval
+
+    base = get_random_notification_refresh_interval()
+    prev = 0.0
+    try:
+        prev = float(previous_interval or 0.0)
+    except Exception:
+        prev = 0.0
+
+    if prev > 0:
+        mix = random.uniform(0.2, 0.6)
+        base = (prev * mix) + (base * (1.0 - mix))
+
+    if random.random() < 0.1:
+        base += random.uniform(5.0, 18.0)
+
+    notification_refresh_interval = round(max(5.0, base), 2)
+    return notification_refresh_interval
 
 
 def get_random_maintenance_interval():
@@ -3908,9 +4007,26 @@ def scan_page_content_with_tab(tab, url, blocked_list):
         return [], str(e)
 
 
+def _ensure_notification_all_tab_selected(tab, timeout=0.8):
+    """确保通知页切换到“全部”标签。"""
+    try:
+        tabs = tab.eles('css:[role="tab"]', timeout=timeout)
+        for tab_ele in tabs:
+            tab_text = (tab_ele.text or "").strip().lower()
+            if tab_text in ['全部', 'all']:
+                is_selected = (tab_ele.attr('aria-selected') or '').strip().lower() == 'true'
+                if not is_selected:
+                    tab_ele.click()
+                    time.sleep(random.uniform(0.35, 1.0))
+                return True
+    except Exception:
+        pass
+    return False
+
+
 def init_notification_tab(blocked_users):
     """初始化持久通知标签页"""
-    global notification_tab, global_browser, notification_last_refresh_at, notification_refresh_interval
+    global notification_tab, global_browser, notification_last_refresh_at, notification_refresh_interval, notification_empty_article_streak
 
     if not global_browser or not browser_initialized:
         return
@@ -3930,25 +4046,16 @@ def init_notification_tab(blocked_users):
             except Exception:
                 pass
 
-            time.sleep(2)
+            time.sleep(random.uniform(1.1, 2.1))
 
-            # 点击"全部"标签（而不是默认的"优先"）
-            try:
-                # 查找标签栏中的"全部"或"All"按钮
-                tabs = notification_tab.eles('css:[role="tab"]', timeout=2)
-                for tab in tabs:
-                    tab_text = (tab.text or "").strip().lower()
-                    if tab_text in ['全部', 'all']:
-                        tab.click()
-                        log_to_ui("info", "📬 已切换到\"全部\"通知")
-                        time.sleep(1)
-                        break
-            except Exception as e:
-                log_to_ui("debug", f"切换全部标签失败: {e}")
+            if _ensure_notification_all_tab_selected(notification_tab, timeout=2):
+                log_to_ui("info", "📬 已切换到\"全部\"通知")
 
             log_to_ui("success", "✅ 通知标签页已创建并保持打开")
             notification_last_refresh_at = 0.0
-            notification_refresh_interval = get_random_notification_refresh_interval()
+            _schedule_next_notification_refresh_interval(notification_refresh_interval)
+            notification_empty_article_streak = 0
+            log_to_ui("debug", f"📬 通知页下次刷新间隔: {notification_refresh_interval:.1f}s")
         except Exception as e:
             log_to_ui("error", f"创建通知标签页失败: {str(e)}")
             notification_tab = None
@@ -3956,7 +4063,7 @@ def init_notification_tab(blocked_users):
 
 def close_notification_tab():
     """关闭持久通知标签页"""
-    global notification_tab, notification_last_refresh_at
+    global notification_tab, notification_last_refresh_at, notification_empty_article_streak
 
     with notification_tab_lock:
         if notification_tab:
@@ -3966,6 +4073,7 @@ def close_notification_tab():
                 pass
             notification_tab = None
             notification_last_refresh_at = 0.0
+            notification_empty_article_streak = 0
             log_to_ui("info", "📬 通知标签页已关闭")
 
 
@@ -3991,7 +4099,8 @@ def ensure_notification_tab(blocked_users):
 
 def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
     """扫描持久通知标签页 - 快速扫描模式"""
-    global notification_tab, notification_last_refresh_at, notification_refresh_interval, notification_disconnect_streak
+    global notification_tab, notification_last_refresh_at, notification_refresh_interval
+    global notification_disconnect_streak, notification_empty_article_streak
 
     if notification_tab is None:
         return
@@ -3999,39 +4108,125 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
     try:
         with notification_tab_lock:
             now_ts = time.time()
-            need_refresh = (notification_last_refresh_at <= 0) or ((now_ts - notification_last_refresh_at) >= notification_refresh_interval)
+            need_refresh = (notification_last_refresh_at <= 0) or (
+                (now_ts - notification_last_refresh_at) >= notification_refresh_interval
+            )
 
-            # 仅按随机周期刷新，避免固定高频刷新触发风控
+            # 随机刷新策略：硬刷新 / 软跳转 / 跳过，降低固定行为特征
             if need_refresh:
+                prev_interval = notification_refresh_interval
+                refresh_action = "none"
                 try:
-                    notification_tab.refresh()
-                    time.sleep(random.uniform(0.8, 1.8))
+                    if random.random() < max(0.0, min(1.0, NOTIFICATION_REFRESH_COOLDOWN_PROB)):
+                        cooldown = random.uniform(
+                            max(1.0, NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC),
+                            max(
+                                max(1.0, NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC),
+                                NOTIFICATION_REFRESH_COOLDOWN_MAX_SEC,
+                            ),
+                        )
+                        notification_last_refresh_at = now_ts
+                        notification_refresh_interval = round(
+                            _schedule_next_notification_refresh_interval(prev_interval) + cooldown,
+                            2,
+                        )
+                        refresh_action = f"cooldown_skip({cooldown:.1f}s)"
+                    else:
+                        skip_prob = max(0.0, min(1.0, NOTIFICATION_REFRESH_SKIP_PROB))
+                        soft_prob = max(0.0, min(1.0 - skip_prob, NOTIFICATION_REFRESH_SOFT_NAV_PROB))
+                        roll = random.random()
+                        if roll < skip_prob:
+                            notification_last_refresh_at = now_ts
+                            _schedule_next_notification_refresh_interval(prev_interval)
+                            refresh_action = "skip_refresh"
+                        elif roll < (skip_prob + soft_prob):
+                            notification_tab.get("https://x.com/notifications")
+                            time.sleep(random.uniform(0.7, 1.8))
+                            notification_last_refresh_at = now_ts
+                            _schedule_next_notification_refresh_interval(prev_interval)
+                            refresh_action = "soft_nav"
+                        else:
+                            notification_tab.refresh()
+                            time.sleep(random.uniform(0.8, 1.8))
+                            notification_last_refresh_at = now_ts
+                            _schedule_next_notification_refresh_interval(prev_interval)
+                            refresh_action = "hard_refresh"
+                except Exception as refresh_err:
+                    log_to_ui("debug", f"📬 通知刷新动作失败: {refresh_err}")
                     notification_last_refresh_at = now_ts
-                    notification_refresh_interval = get_random_notification_refresh_interval()
-                    log_to_ui("debug", f"📬 通知页下次刷新间隔: {notification_refresh_interval:.1f}s")
-                except Exception:
-                    pass
+                    _schedule_next_notification_refresh_interval(prev_interval)
+                    refresh_action = "refresh_error"
+
+                log_to_ui(
+                    "debug",
+                    f"📬 通知刷新策略: {refresh_action}，下次刷新间隔: {notification_refresh_interval:.1f}s",
+                )
 
             # 快速确保在"全部"标签页
+            _ensure_notification_all_tab_selected(notification_tab, timeout=0.5)
+
+            # 顶部滚动也做轻随机，避免每轮同一行为
             try:
-                tabs = notification_tab.eles('css:[role="tab"]', timeout=0.5)  # 减少timeout
-                for tab in tabs:
-                    tab_text = (tab.text or "").strip().lower()
-                    if tab_text in ['全部', 'all']:
-                        is_selected = tab.attr('aria-selected') == 'true'
-                        if not is_selected:
-                            tab.click()
-                            time.sleep(random.uniform(0.35, 1.0))
-                        break
+                roll = random.random()
+                if roll < 0.72:
+                    notification_tab.run_js('window.scrollTo(0, 0);')
+                elif roll < 0.92:
+                    notification_tab.run_js(f'window.scrollBy(0, {random.randint(60, 260)});')
+                else:
+                    notification_tab.run_js(f'window.scrollBy(0, {-random.randint(35, 150)});')
+                    time.sleep(random.uniform(0.08, 0.25))
+                    notification_tab.run_js('window.scrollTo(0, 0);')
+                time.sleep(random.uniform(0.2, 0.75))
             except Exception:
                 pass
 
-            # 滚动到顶部
             try:
-                notification_tab.run_js('window.scrollTo(0, 0);')
-                time.sleep(random.uniform(0.25, 0.8))
+                article_count = len(notification_tab.eles('tag:article', timeout=0.55))
             except Exception:
-                pass
+                article_count = 0
+
+        if article_count <= 0:
+            notification_empty_article_streak += 1
+            log_to_ui(
+                "warn",
+                f"⚠️ 通知页疑似空白（articles=0，连续{notification_empty_article_streak}次）",
+            )
+
+            soft_threshold = max(1, int(NOTIFICATION_EMPTY_RECOVER_SOFT_THRESHOLD))
+            hard_threshold = max(soft_threshold + 1, int(NOTIFICATION_EMPTY_RECOVER_HARD_THRESHOLD))
+
+            if notification_empty_article_streak >= hard_threshold:
+                log_to_ui("warn", "⚠️ 通知页空白达到硬阈值，重建通知标签页")
+                with notification_tab_lock:
+                    try:
+                        if notification_tab:
+                            notification_tab.close()
+                    except Exception:
+                        pass
+                    notification_tab = None
+                    notification_last_refresh_at = 0.0
+                notification_empty_article_streak = 0
+                ensure_notification_tab(blocked_users)
+                return 0
+
+            if notification_empty_article_streak >= soft_threshold:
+                log_to_ui("warn", "⚠️ 通知页空白达到软阈值，执行软恢复")
+                with notification_tab_lock:
+                    try:
+                        if notification_tab:
+                            notification_tab.get("https://x.com/notifications")
+                            time.sleep(random.uniform(0.8, 1.8))
+                            _ensure_notification_all_tab_selected(notification_tab, timeout=0.8)
+                            notification_last_refresh_at = time.time()
+                            _schedule_next_notification_refresh_interval(notification_refresh_interval)
+                    except Exception as recover_err:
+                        log_to_ui("debug", f"📬 通知页软恢复失败: {recover_err}")
+                return 0
+            return 0
+
+        if notification_empty_article_streak > 0:
+            log_to_ui("debug", f"📬 通知页恢复正常（articles={article_count}）")
+        notification_empty_article_streak = 0
 
         # 扫描通知
         notif_items, notif_err = scan_notifications_page(
@@ -4042,7 +4237,7 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
 
         if notif_err:
             log_to_ui("error", f"❌ 通知扫描错误: {notif_err}")
-            # 尝试刷新页面
+            # 尝试恢复页面
             try:
                 # 连接断开时直接重建标签页，避免卡死在无效tab对象上
                 err_text = str(notif_err).lower()
@@ -4074,9 +4269,18 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                                 log_to_ui("warn", f"⚠️ 浏览器重建后恢复委派账户失败: {recover_err}")
                         ensure_notification_tab(blocked_users)
                         notification_disconnect_streak = 0
+                    notification_empty_article_streak = 0
                 else:
-                    notification_tab.refresh()
-                    time.sleep(random.uniform(1.2, 2.5))
+                    with notification_tab_lock:
+                        try:
+                            if notification_tab:
+                                notification_tab.get("https://x.com/notifications")
+                                time.sleep(random.uniform(0.9, 1.9))
+                                _ensure_notification_all_tab_selected(notification_tab, timeout=0.8)
+                                notification_last_refresh_at = time.time()
+                                _schedule_next_notification_refresh_interval(notification_refresh_interval)
+                        except Exception:
+                            pass
             except Exception:
                 pass
             return 0
