@@ -1,0 +1,16 @@
+{
+  "updated_at": "2026-02-28T13:40:54",
+  "notify_reply_templates": [
+    "老板我给您私信了",
+    "老板 我私信您了",
+    "大佬我私信您了",
+    "大佬 我给您私信了",
+    "大佬 我给您私信介绍了"
+  ],
+  "dm_message_templates": [
+    "老板您好，我是 懒猫微服 CEO 王勇，感谢您的关注与支持。\n如需了解更详细的产品资料，欢迎添加我们的工程师微信 17612774028，我们将为您提供一对一的专业介绍与支持，工程师告诉您购买方式~\n备注推特ID给您优惠。"
+  ],
+  "llm_intent_prompt_template": "",
+  "llm_filter_prompt_template": "",
+  "notify_voice_block_keywords_text": ""
+}
