@@ -1456,10 +1456,25 @@
             return !!(enabledEl && enabledEl.checked);
         }
 
+        function resolveNotifyVoiceShouldSpeak(analysis) {
+            if(!analysis || typeof analysis !== 'object') return false;
+            if(typeof analysis.voice_should_notify === 'boolean') {
+                return analysis.voice_should_notify;
+            }
+            const forceNotify = !!analysis.force_notify;
+            if(forceNotify) return true;
+            if(!!analysis.block_intent) return false;
+            const level = String(analysis.intent_level || '').toLowerCase();
+            if(level === 'low' || level === 'noise') return false;
+            const score = Number(analysis.intent_score || 0);
+            return (!!analysis.is_intent_user) && score >= 55;
+        }
+
         function enqueueNotifyIntentCheck(item) {
             if(!item || item.source !== '通知页面') return;
             notifyIntentQueue.push({
-                content: String(item.content || '').trim()
+                content: String(item.content || '').trim(),
+                analysis: item
             });
             processNotifyIntentQueue();
         }
@@ -1479,8 +1494,11 @@
                 return;
             }
 
-            if(!isIntentVoiceModeEnabled()) {
-                announceNewNotifyByVoice(false, content);
+            // 优先复用后端已计算好的意向结果，避免重复调用模型。
+            if(task.analysis && typeof task.analysis === 'object') {
+                if(resolveNotifyVoiceShouldSpeak(task.analysis)) {
+                    announceNewNotifyByVoice(false, content);
+                }
                 processNotifyIntentQueue();
                 return;
             }
@@ -1496,8 +1514,7 @@
             }).then(r => r.json()).then(d => {
                 if(d.status !== 'ok') return;
                 const a = d.analysis || {};
-                const isIntent = !!a.is_intent_user || (Number(a.intent_score || 0) >= 50);
-                if(isIntent) {
+                if(resolveNotifyVoiceShouldSpeak(a)) {
                     announceNewNotifyByVoice(false, content);
                 }
             }).catch(() => {
@@ -1584,6 +1601,7 @@
                 const lines = [
                     `意向等级: ${a.intent_level || '-'} (${a.intent_score ?? 0}分)`,
                     `是否意向用户: ${a.is_intent_user ? '是' : '否'}`,
+                    `是否语音播报: ${a.voice_should_notify ? '是' : '否'}`,
                     `规则分: ${a.rule_score ?? '-'} | LLM分: ${a.llm_score ?? '-'}`,
                     `LLM是否参与: ${llmUsed ? '是' : '否'}`,
                     `识别信号: ${signals || '-'}`,

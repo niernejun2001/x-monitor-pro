@@ -2238,6 +2238,34 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     return result
 
 
+def _should_notify_voice_by_intent(analysis):
+    """语音播报门槛：低意向/噪声不播报，强意向或中高分才播报。"""
+    if not isinstance(analysis, dict):
+        return False
+
+    score = 0
+    try:
+        score = int(float(analysis.get("intent_score", 0)))
+    except Exception:
+        score = 0
+    score = max(0, min(100, score))
+
+    level = str(analysis.get("intent_level", "") or "").strip().lower()
+    is_intent_user = bool(analysis.get("is_intent_user", False))
+    force_notify = bool(analysis.get("force_notify", False))
+    block_intent = bool(analysis.get("block_intent", False))
+
+    if block_intent:
+        return False
+    if force_notify:
+        return True
+    if level in {"low", "noise"}:
+        return False
+
+    # 保守策略：中高意向且分数不低时才播报，避免误报/噪音。
+    return bool(is_intent_user and score >= 55)
+
+
 def _should_skip_by_llm_filter(content):
     if not _llm_filter_is_ready():
         return False, ""
@@ -4594,14 +4622,16 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                     item["intent_score"] = int(analysis.get("intent_score", 0))
                     item["intent_level"] = str(analysis.get("intent_level", "noise"))
                     item["is_intent_user"] = bool(analysis.get("is_intent_user", False))
+                    item["force_notify"] = bool(analysis.get("force_notify", False))
                     item["llm_used"] = bool(analysis.get("llm_used", False))
                     item["intent_reason"] = str(analysis.get("reason", "") or "")
                     item["intent_signals"] = list(analysis.get("signals", []))[:8]
+                    item["voice_should_notify"] = bool(_should_notify_voice_by_intent(analysis))
                     log_to_ui(
                         "info",
                         f"🤖 AI意向分析[notify_auto] handle={item.get('handle', '')} "
                         f"score={item['intent_score']} level={item['intent_level']} "
-                        f"intent={item['is_intent_user']} llm_used={item['llm_used']}"
+                        f"intent={item['is_intent_user']} voice={item['voice_should_notify']} llm_used={item['llm_used']}"
                     )
                     llm_error = str(analysis.get("llm_error", "") or "").strip()
                     if llm_error:
@@ -7726,10 +7756,12 @@ def llm_filter_analyze():
         model=runtime["model"],
         timeout_sec=runtime["timeout_sec"],
     )
+    analysis["voice_should_notify"] = bool(_should_notify_voice_by_intent(analysis))
     log_to_ui(
         "debug",
         f"🤖 [IntentAPI] result source={analyze_source} score={analysis.get('intent_score', 0)} "
         f"level={analysis.get('intent_level', '')} intent={bool(analysis.get('is_intent_user', False))} "
+        f"voice={bool(analysis.get('voice_should_notify', False))} "
         f"llm_used={bool(analysis.get('llm_used', False))} reason={analysis.get('reason', '') or '-'}"
     )
     # 提升到 info，确保在常规运行日志中可见分析结果
@@ -7737,7 +7769,7 @@ def llm_filter_analyze():
         "info",
         f"🤖 AI意向分析[{analyze_source}] score={analysis.get('intent_score', 0)} "
         f"level={analysis.get('intent_level', '')} intent={bool(analysis.get('is_intent_user', False))} "
-        f"llm_used={bool(analysis.get('llm_used', False))}"
+        f"voice={bool(analysis.get('voice_should_notify', False))} llm_used={bool(analysis.get('llm_used', False))}"
     )
     return jsonify({
         "status": "ok",
