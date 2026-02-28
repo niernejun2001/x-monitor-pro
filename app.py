@@ -289,6 +289,12 @@ except Exception:
 HEADLESS_VERBOSE_LOG = str(
     os.environ.get("XMONITOR_HEADLESS_VERBOSE_LOG", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
+HEADFUL_MAINTENANCE_RESTART = str(
+    os.environ.get("XMONITOR_HEADFUL_MAINTENANCE_RESTART", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
+HEADFUL_NOTIFY_DISCONNECT_RESTART = str(
+    os.environ.get("XMONITOR_HEADFUL_NOTIFY_DISCONNECT_RESTART", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
 DM_UNAVAILABLE_CACHE_TTL_SEC = 12 * 3600
 CONTENT_DEDUPE_TTL_SEC = 72 * 3600
 CONTENT_DEDUPE_MAX_ENTRIES = 40000
@@ -827,6 +833,44 @@ def restart_global_browser():
     return browser
 
 
+def run_headful_soft_maintenance(blocked_users, notify_enabled):
+    """
+    有头模式轻量维护：
+    - 默认不重启整浏览器，避免打断人工操作
+    - 优先在通知标签页做保活
+    """
+    global notification_last_refresh_at, notification_refresh_interval
+
+    if not notify_enabled:
+        return True
+
+    try:
+        ensure_notification_tab(blocked_users)
+        with notification_tab_lock:
+            if not notification_tab:
+                return False
+            notification_tab.get("https://x.com/notifications")
+            time.sleep(random.uniform(0.7, 1.6))
+            try:
+                tabs = notification_tab.eles('css:[role="tab"]', timeout=1.2)
+                for tab in tabs:
+                    tab_text = (tab.text or "").strip().lower()
+                    if tab_text in ['全部', 'all']:
+                        is_selected = tab.attr('aria-selected') == 'true'
+                        if not is_selected:
+                            tab.click()
+                            time.sleep(random.uniform(0.3, 0.8))
+                        break
+            except Exception:
+                pass
+        notification_last_refresh_at = time.time()
+        notification_refresh_interval = _schedule_next_notification_refresh_interval(notification_refresh_interval)
+        return True
+    except Exception as e:
+        log_to_ui("warn", f"⚠️ 有头轻量维护失败: {e}")
+        return False
+
+
 def monitoring_loop():
     """
     主监控循环 - 单浏览器多标签页模式
@@ -842,6 +886,11 @@ def monitoring_loop():
     if headless_mode:
         profile_strategy = "临时Profile优先" if HEADLESS_FORCE_TEMP_PROFILE else "允许固定Profile"
         log_to_ui("info", f"🧪 [HEADLESS] Profile策略: {profile_strategy}")
+    else:
+        maint_mode = "允许自动重启" if HEADFUL_MAINTENANCE_RESTART else "默认仅轻量保活(不重启浏览器)"
+        disconnect_mode = "允许断线后重启" if HEADFUL_NOTIFY_DISCONNECT_RESTART else "断线仅重建通知标签页"
+        log_to_ui("info", f"🖥️ [HEADFUL] 维护策略: {maint_mode}")
+        log_to_ui("info", f"🖥️ [HEADFUL] 断线恢复策略: {disconnect_mode}")
     if _llm_filter_is_ready():
         log_to_ui("info", f"🤖 [LLMFilter] 已启用模型过滤: model={LLM_FILTER_MODEL}, endpoint={_llm_filter_endpoint()}")
     elif LLM_FILTER_ENABLED:
@@ -985,23 +1034,28 @@ def monitoring_loop():
 
             # 浏览器维护重启（按时间随机，避免频繁重启导致登录态抖动）
             if (time.time() - last_maintenance_time) >= maintenance_interval:
-                close_notification_tab()
-                delegated = get_effective_delegated_account()
-                if delegated and delegated_switch_ok and global_browser:
-                    log_to_ui("info", "🔄 委派模式维护：仅刷新浏览器，避免重复登录")
-                    try:
-                        with browser_lock:
-                            global_browser.get("https://x.com/home")
-                            time.sleep(1.2)
-                            global_browser.refresh()
-                            time.sleep(1.2)
-                    except Exception as refresh_err:
-                        log_to_ui("warn", f"⚠️ 轻量刷新失败，回退为完整重启: {refresh_err}")
-                        restart_global_browser()
+                if (not headless_mode) and (not HEADFUL_MAINTENANCE_RESTART):
+                    # 有头模式默认不重启整浏览器，避免打断人工操作。
+                    log_to_ui("info", "🛠️ 有头维护：执行轻量保活（不重启浏览器）")
+                    run_headful_soft_maintenance(blocked_users, notify_enabled)
                 else:
-                    restart_global_browser()
-                if notify_enabled:
-                    init_notification_tab(blocked_users)
+                    close_notification_tab()
+                    delegated = get_effective_delegated_account()
+                    if delegated and delegated_switch_ok and global_browser:
+                        log_to_ui("info", "🔄 委派模式维护：仅刷新浏览器，避免重复登录")
+                        try:
+                            with browser_lock:
+                                global_browser.get("https://x.com/home")
+                                time.sleep(1.2)
+                                global_browser.refresh()
+                                time.sleep(1.2)
+                        except Exception as refresh_err:
+                            log_to_ui("warn", f"⚠️ 轻量刷新失败，回退为完整重启: {refresh_err}")
+                            restart_global_browser()
+                    else:
+                        restart_global_browser()
+                    if notify_enabled:
+                        init_notification_tab(blocked_users)
                 last_notification_scan = 0
                 notification_interval = get_random_notification_interval()
                 last_maintenance_time = time.time()
@@ -4572,18 +4626,22 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                     ensure_notification_tab(blocked_users)
                     # 连续断开时执行一次浏览器级重建，缓解代理抖动导致的会话失联
                     if notification_disconnect_streak >= 3:
-                        log_to_ui("warn", "⚠️ 连续断线达到阈值，执行浏览器重建")
-                        browser = restart_global_browser()
-                        delegated = get_effective_delegated_account()
-                        if delegated and browser:
-                            try:
-                                with browser_lock:
-                                    browser.get("https://x.com/home")
-                                    time.sleep(1.5)
-                                    ensure_delegated_account_session(browser, delegated)
-                            except Exception as recover_err:
-                                log_to_ui("warn", f"⚠️ 浏览器重建后恢复委派账户失败: {recover_err}")
-                        ensure_notification_tab(blocked_users)
+                        if (not headless_mode) and (not HEADFUL_NOTIFY_DISCONNECT_RESTART):
+                            log_to_ui("warn", "⚠️ 连续断线达到阈值（有头模式），仅重建通知标签页，不重启浏览器")
+                            ensure_notification_tab(blocked_users)
+                        else:
+                            log_to_ui("warn", "⚠️ 连续断线达到阈值，执行浏览器重建")
+                            browser = restart_global_browser()
+                            delegated = get_effective_delegated_account()
+                            if delegated and browser:
+                                try:
+                                    with browser_lock:
+                                        browser.get("https://x.com/home")
+                                        time.sleep(1.5)
+                                        ensure_delegated_account_session(browser, delegated)
+                                except Exception as recover_err:
+                                    log_to_ui("warn", f"⚠️ 浏览器重建后恢复委派账户失败: {recover_err}")
+                            ensure_notification_tab(blocked_users)
                         notification_disconnect_streak = 0
                 else:
                     notification_tab.refresh()
