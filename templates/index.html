@@ -969,6 +969,9 @@
                                 <input type="text" id="llmModel" placeholder="模型名，例如 qwen2.5:7b">
                                 <input type="password" id="llmApiKey" placeholder="API Key（无则填 EMPTY）">
                                 <input type="text" id="llmTimeoutSec" placeholder="超时秒数（2-30）" value="8">
+                                <textarea id="llmIntentPromptTemplate" class="template-textarea" placeholder="意向分析 Prompt（可选，支持 {content} 占位）"></textarea>
+                                <textarea id="llmFilterPromptTemplate" class="template-textarea" placeholder="内容过滤 Prompt（可选，支持 {content} 占位）"></textarea>
+                                <textarea id="notifyVoiceBlockKeywords" class="template-textarea" placeholder="通知不播报关键词（逗号或换行分隔；仅影响语音，不影响通知显示）"></textarea>
                                 <div class="template-editor-actions">
                                     <button class="btn-primary btn-sm" onclick="saveLlmFilterConfig()">💾 保存配置</button>
                                     <button class="btn-ghost btn-sm" onclick="testLlmFilterModel()">🧪 测试模型</button>
@@ -1105,6 +1108,34 @@
         const notifyIntentQueue = [];
         let notifyIntentBusy = false;
         let notifyRowSeq = 0;
+        let notifyVoiceBlockKeywords = [];
+
+        function parseKeywordLines(rawText) {
+            const parts = String(rawText || '').split(/[\n,，;；]+/g);
+            const out = [];
+            const seen = new Set();
+            parts.forEach(part => {
+                const kw = String(part || '').trim();
+                if(!kw) return;
+                const low = kw.toLowerCase();
+                if(seen.has(low)) return;
+                seen.add(low);
+                out.push(kw);
+            });
+            return out;
+        }
+
+        function refreshNotifyVoiceBlockKeywordsFromInput() {
+            const el = document.getElementById('notifyVoiceBlockKeywords');
+            notifyVoiceBlockKeywords = parseKeywordLines(el ? el.value : '');
+        }
+
+        function shouldSuppressNotifyVoice(contentText) {
+            refreshNotifyVoiceBlockKeywordsFromInput();
+            const text = String(contentText || '').toLowerCase();
+            if(!text || !notifyVoiceBlockKeywords.length) return false;
+            return notifyVoiceBlockKeywords.some(kw => text.includes(String(kw || '').toLowerCase()));
+        }
 
         function pickNotifyVoice() {
             if (!('speechSynthesis' in window)) return null;
@@ -1241,6 +1272,10 @@
             document.getElementById('llmModel').value = d.llm_filter_model || '';
             document.getElementById('llmApiKey').value = d.llm_filter_api_key || '';
             document.getElementById('llmTimeoutSec').value = d.llm_filter_timeout_sec || 8;
+            document.getElementById('llmIntentPromptTemplate').value = d.llm_intent_prompt_template || '';
+            document.getElementById('llmFilterPromptTemplate').value = d.llm_filter_prompt_template || '';
+            document.getElementById('notifyVoiceBlockKeywords').value = d.notify_voice_block_keywords_text || '';
+            refreshNotifyVoiceBlockKeywordsFromInput();
             syncTemplatesFromPayload(d);
             renderTasks(d.tasks);
             if(d.is_running) setStatus(true);
@@ -1361,10 +1396,14 @@
             const baseUrl = document.getElementById('llmBaseUrl').value.trim();
             const model = document.getElementById('llmModel').value.trim();
             const apiKey = document.getElementById('llmApiKey').value.trim() || 'EMPTY';
+            const llmIntentPromptTemplate = (document.getElementById('llmIntentPromptTemplate').value || '').trim();
+            const llmFilterPromptTemplate = (document.getElementById('llmFilterPromptTemplate').value || '').trim();
+            const notifyVoiceBlockKeywordsText = (document.getElementById('notifyVoiceBlockKeywords').value || '').trim();
             let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
             if(Number.isNaN(timeoutSec)) timeoutSec = 8;
             timeoutSec = Math.max(2, Math.min(30, timeoutSec));
             document.getElementById('llmTimeoutSec').value = timeoutSec;
+            refreshNotifyVoiceBlockKeywordsFromInput();
 
             if(enabled && (!baseUrl || !model)) {
                 alert('启用 LLM 过滤时，Base URL 和模型名不能为空');
@@ -1379,10 +1418,17 @@
                     base_url: baseUrl,
                     model: model,
                     api_key: apiKey,
-                    timeout_sec: timeoutSec
+                    timeout_sec: timeoutSec,
+                    llm_intent_prompt_template: llmIntentPromptTemplate,
+                    llm_filter_prompt_template: llmFilterPromptTemplate,
+                    notify_voice_block_keywords_text: notifyVoiceBlockKeywordsText
                 })
             }).then(r=>r.json()).then(d => {
                 if(d.status === 'ok') {
+                    document.getElementById('llmIntentPromptTemplate').value = d.llm_intent_prompt_template || llmIntentPromptTemplate;
+                    document.getElementById('llmFilterPromptTemplate').value = d.llm_filter_prompt_template || llmFilterPromptTemplate;
+                    document.getElementById('notifyVoiceBlockKeywords').value = d.notify_voice_block_keywords_text || notifyVoiceBlockKeywordsText;
+                    refreshNotifyVoiceBlockKeywordsFromInput();
                     alert(`✅ LLM过滤配置已保存${enabled ? '并启用' : '（当前禁用）'}`);
                 } else {
                     alert(`保存失败: ${d.msg || '未知错误'}`);
@@ -1428,6 +1474,10 @@
                 processNotifyIntentQueue();
                 return;
             }
+            if(shouldSuppressNotifyVoice(content)) {
+                processNotifyIntentQueue();
+                return;
+            }
 
             if(!isIntentVoiceModeEnabled()) {
                 announceNewNotifyByVoice(false, content);
@@ -1436,18 +1486,13 @@
             }
 
             const payload = collectLlmRuntimePayload();
-            if(!payload.base_url || !payload.model) {
-                // 配置不完整时，回退普通播报
-                announceNewNotifyByVoice(false, content);
-                processNotifyIntentQueue();
-                return;
-            }
+            // 即便未配置LLM，也走后端规则分析兜底，避免漏播报短意向评论
 
             notifyIntentBusy = true;
             fetch('/api/llm_filter/analyze', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({...payload, content})
+                body: JSON.stringify({...payload, content, analyze_source: 'notify_voice_queue'})
             }).then(r => r.json()).then(d => {
                 if(d.status !== 'ok') return;
                 const a = d.analysis || {};
@@ -1456,8 +1501,7 @@
                     announceNewNotifyByVoice(false, content);
                 }
             }).catch(() => {
-                // 分析失败时不打断流程，回退普通播报
-                announceNewNotifyByVoice(false, content);
+                // 分析失败时不播报，避免误报
             }).finally(() => {
                 notifyIntentBusy = false;
                 processNotifyIntentQueue();
@@ -1509,7 +1553,7 @@
             fetch('/api/llm_filter/analyze', {
                 method: 'POST',
                 headers: {'Content-Type':'application/json'},
-                body: JSON.stringify({...payload, content})
+                body: JSON.stringify({...payload, content, analyze_source: 'manual_panel'})
             }).then(r => r.json()).then(d => {
                 if(d.status !== 'ok') {
                     setLlmIntentResult(`分析失败: ${d.msg || '未知错误'}`, true);
@@ -1517,13 +1561,38 @@
                 }
                 const a = d.analysis || {};
                 const signals = Array.isArray(a.signals) ? a.signals.join(', ') : '';
+                const signalsLower = String(signals || '').toLowerCase();
+                const reasonRaw = String(a.reason || '').trim();
+                const reasonLower = reasonRaw.toLowerCase();
+                const llmUsed = Boolean(a.llm_used);
+                const llmReason = String(a.llm_reason || '').trim();
+                const finalReasonCode = reasonRaw || (llmUsed ? 'rule_llm_blended' : 'rule_only');
+                let finalReason = reasonRaw;
+                if(!finalReason || reasonLower === 'rule_llm_blended' || reasonLower === 'rule_only' || reasonRaw === '-') {
+                    if(
+                        signalsLower.includes('emoji_only') ||
+                        signalsLower.includes('very_short_text') ||
+                        signalsLower.includes('short_text') ||
+                        String(a.intent_level || '').toLowerCase() === 'noise' ||
+                        String(a.intent_level || '').toLowerCase() === 'low'
+                    ) {
+                        finalReason = '纯闲聊、纯表情、无意义灌水';
+                    } else {
+                        finalReason = '未识别到明确购买意向';
+                    }
+                }
                 const lines = [
                     `意向等级: ${a.intent_level || '-'} (${a.intent_score ?? 0}分)`,
                     `是否意向用户: ${a.is_intent_user ? '是' : '否'}`,
                     `规则分: ${a.rule_score ?? '-'} | LLM分: ${a.llm_score ?? '-'}`,
+                    `LLM是否参与: ${llmUsed ? '是' : '否'}`,
                     `识别信号: ${signals || '-'}`,
-                    `判定依据: ${a.reason || '-'}`,
+                    `判定依据(最终): ${finalReasonCode}`,
+                    `判定依据(LLM): ${llmReason || '-'}`,
                 ];
+                if(finalReason && finalReason !== finalReasonCode) {
+                    lines.push(`判定解释: ${finalReason}`);
+                }
                 if(a.llm_error) {
                     lines.push(`LLM异常: ${a.llm_error}`);
                 }

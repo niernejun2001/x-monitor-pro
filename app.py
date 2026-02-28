@@ -199,6 +199,9 @@ try:
     )
 except Exception:
     NOTIFICATION_EMPTY_RECOVER_HARD_THRESHOLD = 6
+NOTIFICATION_REPLY_ONLY_MODE = str(
+    os.environ.get("XMONITOR_NOTIFY_REPLY_ONLY", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
 ENGINE_VERSION = "v11.3"
 REPLY_ACTION_GAP_MIN_SEC = 3.8
 REPLY_ACTION_GAP_MAX_SEC = 7.2
@@ -327,57 +330,38 @@ PROXY_ENV_KEYS = (
     "HTTP_PROXY",
     "http_proxy",
 )
-CONTENT_FILTER_BLOCKED_MENTIONS = ("@manateelazycat",)
-INTENT_FORCE_NOTIFY_KEYWORDS = (
-    "懒猫微服",
-    "lazycat.cloud",
-    "lazycat",
-    "懒猫 ai 算力舱",
-    "懒猫ai算力舱",
-    "ai算力舱",
-    "算力舱",
-    "lc-03",
-    "lc03",
-    "lc-02",
-    "lc02",
-    "lzcos",
-    "微服操作系统",
-    "懒猫 ai 浏览器",
-    "懒猫ai浏览器",
-    "ai 浏览器",
-    "私有云",
-    "内网穿透",
-    "询价",
-    "报价",
-    "价格",
-    "多少钱",
-    "怎么卖",
-    "购买",
-    "下单",
-    "采购",
-    "试用",
-    "演示",
-    "部署",
-    "联系",
-    "微信",
-    "vx",
-    "whatsapp",
-    "quote",
-    "pricing",
-    "price",
-    "buy",
-    "purchase",
+
+
+def _parse_keywords_env(env_key, default_text=""):
+    raw = str(os.environ.get(env_key, default_text) or default_text or "").strip()
+    items = []
+    seen = set()
+    for part in re.split(r"[\n,，;；]+", raw):
+        kw = str(part or "").strip().lower()
+        if not kw or kw in seen:
+            continue
+        seen.add(kw)
+        items.append(kw)
+    return tuple(items)
+
+
+# 为空表示不按“正文包含@xxx”做内容拦截，避免误杀通知正文
+CONTENT_FILTER_BLOCKED_MENTIONS = ()
+INTENT_FORCE_NOTIFY_KEYWORDS = _parse_keywords_env(
+    "XMONITOR_INTENT_FORCE_NOTIFY_KEYWORDS",
+    "询价,报价,多少价格,什么价格,多少钱,怎么卖,怎么买,购买方式,购买,下单,开通,试用,demo,演示,企业版,私有化,部署,合同,发票,开票,授权,代理,经销,渠道,优惠,折扣,售后,客服,联系方式,微信,vx,v我,whatsapp,telegram"
 )
-INTENT_NON_TARGET_TOPIC_KEYWORDS = (
-    "防晕车",
-    "防晕车模式",
-    "晕车模式",
-    "动作传感器",
-    "macbook",
-    "苹果系统",
-    "辅助功能",
-    "vehicle motion cues",
-    "motion sickness",
+INTENT_PRODUCT_KEYWORDS = _parse_keywords_env(
+    "XMONITOR_INTENT_PRODUCT_KEYWORDS",
+    "懒猫微服,lazycat,lazycat.cloud,应用云电脑,云电脑,内网穿透,沙箱隔离,一站式部署,大模型,deepseek,远程桌面,异地组网,家庭服务器,nas,openclaw"
+)
+INTENT_CONTACT_KEYWORDS = _parse_keywords_env(
+    "XMONITOR_INTENT_CONTACT_KEYWORDS",
+    "微信,vx,v我,加我,联系我,联系方式,私信,电话,whatsapp,telegram,email,邮箱"
+)
+INTENT_NON_TARGET_TOPIC_KEYWORDS = _parse_keywords_env(
+    "XMONITOR_INTENT_NON_TARGET_TOPIC_KEYWORDS",
+    "互赞,互粉,互关,抽奖,返现,领券,薅羊毛"
 )
 LLM_FILTER_ENABLED = str(
     os.environ.get("XMONITOR_LLM_FILTER_ENABLED", "0")
@@ -385,6 +369,20 @@ LLM_FILTER_ENABLED = str(
 LLM_FILTER_BASE_URL = str(os.environ.get("XMONITOR_LLM_BASE_URL", "") or "").strip()
 LLM_FILTER_API_KEY = str(os.environ.get("XMONITOR_LLM_API_KEY", "EMPTY") or "").strip()
 LLM_FILTER_MODEL = str(os.environ.get("XMONITOR_LLM_MODEL", "") or "").strip()
+LLM_FILTER_PROMPT_TEMPLATE = str(
+    os.environ.get("XMONITOR_LLM_FILTER_PROMPT_TEMPLATE", "") or ""
+).strip()
+LLM_INTENT_PROMPT_TEMPLATE = str(
+    os.environ.get("XMONITOR_LLM_INTENT_PROMPT_TEMPLATE", "") or ""
+).strip()
+NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = str(
+    os.environ.get("XMONITOR_NOTIFY_VOICE_BLOCK_KEYWORDS", "") or ""
+).strip()
+NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(
+    kw.strip().lower()
+    for kw in re.split(r"[\n,，;；]+", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
+    if kw.strip()
+)
 try:
     LLM_FILTER_TIMEOUT_SEC = float(os.environ.get("XMONITOR_LLM_TIMEOUT_SEC", "8"))
 except Exception:
@@ -397,6 +395,9 @@ try:
     LLM_FILTER_CACHE_MAX_ENTRIES = int(os.environ.get("XMONITOR_LLM_CACHE_MAX", "5000"))
 except Exception:
     LLM_FILTER_CACHE_MAX_ENTRIES = 5000
+LLM_HARD_FILTER_ENABLED = str(
+    os.environ.get("XMONITOR_LLM_HARD_FILTER_ENABLED", "0")
+).strip().lower() in {"1", "true", "yes", "on"}
 
 # --- 全局浏览器实例 (单浏览器多标签页模式) ---
 global_browser = None
@@ -1063,6 +1064,9 @@ def save_state():
         "llm_filter_api_key": str(LLM_FILTER_API_KEY or ""),
         "llm_filter_model": str(LLM_FILTER_MODEL or ""),
         "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
+        "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
+        "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+        "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
     }
     try:
         with open(STATE_FILE, "w", encoding="utf-8") as f:
@@ -1074,6 +1078,8 @@ def save_state():
 def load_state():
     global global_token, monitor_tasks, monitor_active, processed_users, pending_results, notification_monitoring, delegated_account, delegated_enabled, history_ids, headless_mode, content_dedupe, notify_reply_templates, dm_message_templates
     global LLM_FILTER_ENABLED, LLM_FILTER_BASE_URL, LLM_FILTER_API_KEY, LLM_FILTER_MODEL, LLM_FILTER_TIMEOUT_SEC
+    global LLM_FILTER_PROMPT_TEMPLATE, LLM_INTENT_PROMPT_TEMPLATE
+    global NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT, NOTIFY_VOICE_BLOCK_KEYWORDS
     ensure_data_dir()
 
     # 1. 加载主状态
@@ -1104,6 +1110,18 @@ def load_state():
                     LLM_FILTER_TIMEOUT_SEC = max(2.0, min(30.0, float(data.get("llm_filter_timeout_sec", LLM_FILTER_TIMEOUT_SEC))))
                 except Exception:
                     pass
+                LLM_FILTER_PROMPT_TEMPLATE = str(
+                    data.get("llm_filter_prompt_template", LLM_FILTER_PROMPT_TEMPLATE) or ""
+                ).strip()
+                LLM_INTENT_PROMPT_TEMPLATE = str(
+                    data.get("llm_intent_prompt_template", LLM_INTENT_PROMPT_TEMPLATE) or ""
+                ).strip()
+                NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = str(
+                    data.get("notify_voice_block_keywords_text", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ""
+                ).strip()
+                NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(
+                    kw.lower() for kw in _normalize_keyword_lines(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
+                )
 
                 # 恢复去重ID（完整版）
                 saved_history = data.get("history_ids", [])
@@ -1176,6 +1194,8 @@ def load_state():
                     logging.info(f"   - LLM过滤: 启用 ({LLM_FILTER_MODEL or '未配置模型'})")
                 else:
                     logging.info("   - LLM过滤: 禁用")
+                logging.info(f"   - 语音不播报关键词: {len(NOTIFY_VOICE_BLOCK_KEYWORDS)} 条")
+                logging.info(f"   - 通知仅抓回复: {'启用' if NOTIFICATION_REPLY_ONLY_MODE else '禁用'}")
 
                 if data.get("is_running", False):
                     start_monitor_thread()
@@ -1220,6 +1240,38 @@ def _sanitize_template_list(raw_list, fallback_list):
     if cleaned:
         return cleaned
     return list(fallback_list)
+
+
+def _normalize_keyword_lines(raw_text):
+    """将多行/逗号分隔关键词清洗为去重后的列表。"""
+    cleaned = []
+    seen = set()
+    raw = str(raw_text or "")
+    for part in re.split(r"[\n,，;；]+", raw):
+        kw = str(part or "").strip()
+        if not kw:
+            continue
+        low = kw.lower()
+        if low in seen:
+            continue
+        seen.add(low)
+        cleaned.append(kw)
+    return cleaned
+
+
+def _render_llm_prompt_template(template_text, content, fallback_prompt):
+    """
+    渲染可配置 prompt：
+    - 支持 {content} 或 {{content}} 占位
+    - 若未包含占位，自动在末尾追加评论内容
+    """
+    tpl = str(template_text or "").strip()
+    content_text = str(content or "")
+    if not tpl:
+        return str(fallback_prompt or "")
+    if "{content}" in tpl or "{{content}}" in tpl:
+        return tpl.replace("{{content}}", content_text).replace("{content}", content_text)
+    return f"{tpl}\n评论内容: {content_text}"
 
 
 def _get_template_list_and_limit(template_type):
@@ -1454,13 +1506,15 @@ def get_random_notification_interval():
     low = max(1.0, float(NOTIFICATION_SCAN_INTERVAL_MIN_SEC))
     high = max(low, float(NOTIFICATION_SCAN_INTERVAL_MAX_SEC))
     base = random.uniform(low, high)
-    # 少量短抖动，避免稳定节拍；仍保持在安全区间内
+    # 长尾抖动：偶发拉长一轮，减少固定频率特征
     if random.random() < 0.12:
-        base = random.uniform(max(1.0, low * 0.85), high)
-    # 小概率长尾等待，降低固定频率特征
-    if random.random() < 0.08:
-        base = random.uniform(high, max(high + 0.8, high * 1.8))
-    return round(max(1.0, base), 2)
+        base += random.uniform(high * 0.6, high * 1.8)
+    # 轻微提速：偶发短间隔，避免“恒慢速”特征
+    if random.random() < 0.06:
+        base *= random.uniform(0.72, 0.92)
+    upper = max(high * 3.2, high + 2.0)
+    base = max(low * 0.85, min(base, upper))
+    return round(base, 2)
 
 
 def get_random_notification_refresh_interval():
@@ -1468,35 +1522,36 @@ def get_random_notification_refresh_interval():
     low = max(5.0, float(NOTIFICATION_REFRESH_INTERVAL_MIN_SEC))
     high = max(low, float(NOTIFICATION_REFRESH_INTERVAL_MAX_SEC))
     base = random.uniform(low, high)
-    # 常规轻抖动
-    if random.random() < 0.2:
-        base = random.uniform(low, high * 1.2)
-    # 小概率显著拉长，降低刷新指纹
-    if random.random() < 0.1:
-        base = random.uniform(high * 1.1, max(high * 2.6, high + 12))
-    return round(max(5.0, base), 2)
+    # 偶发冷却：显著拉长刷新间隔，降低风控触发概率
+    if random.random() < 0.18:
+        base += random.uniform(6.0, 22.0)
+    # 偶发提前：保留少量随机提前刷新
+    if random.random() < 0.08:
+        base *= random.uniform(0.82, 0.95)
+    upper = max(high * 2.2, high + 8.0)
+    base = max(low * 0.9, min(base, upper))
+    return round(base, 2)
 
 
 def _schedule_next_notification_refresh_interval(previous_interval=None):
-    """调度下一次通知刷新间隔，加入平滑和长尾抖动。"""
-    global notification_refresh_interval
+    """生成下一次通知刷新间隔，带惯性和冷却随机化。"""
+    interval = float(get_random_notification_refresh_interval())
+    if previous_interval is not None:
+        try:
+            prev = max(5.0, float(previous_interval))
+        except Exception:
+            prev = 0.0
+        if prev > 0 and random.random() < 0.35:
+            mix = random.uniform(0.35, 0.75)
+            interval = (prev * mix) + (interval * (1 - mix))
 
-    base = get_random_notification_refresh_interval()
-    prev = 0.0
-    try:
-        prev = float(previous_interval or 0.0)
-    except Exception:
-        prev = 0.0
+    cooldown_prob = max(0.0, min(1.0, float(NOTIFICATION_REFRESH_COOLDOWN_PROB)))
+    if random.random() < cooldown_prob:
+        low = max(0.5, float(NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC))
+        high = max(low, float(NOTIFICATION_REFRESH_COOLDOWN_MAX_SEC))
+        interval += random.uniform(low, high)
 
-    if prev > 0:
-        mix = random.uniform(0.2, 0.6)
-        base = (prev * mix) + (base * (1.0 - mix))
-
-    if random.random() < 0.1:
-        base += random.uniform(5.0, 18.0)
-
-    notification_refresh_interval = round(max(5.0, base), 2)
-    return notification_refresh_interval
+    return round(max(5.0, interval), 2)
 
 
 def get_random_maintenance_interval():
@@ -1596,7 +1651,7 @@ def _is_emoji_only_content(content):
     return has_emoji
 
 
-def should_skip_content_by_policy(content):
+def should_skip_content_by_policy(content, allow_llm_hard_filter=None):
     """统一内容过滤策略：返回 (should_skip, reason)。"""
     text = _normalize_content_for_filter(content)
     if not text:
@@ -1611,9 +1666,12 @@ def should_skip_content_by_policy(content):
     if _is_emoji_only_content(text):
         return True, "emoji_only"
 
-    llm_skip, llm_reason = _should_skip_by_llm_filter(text)
-    if llm_skip:
-        return True, llm_reason or "llm_filter"
+    if allow_llm_hard_filter is None:
+        allow_llm_hard_filter = bool(LLM_HARD_FILTER_ENABLED)
+    if allow_llm_hard_filter:
+        llm_skip, llm_reason = _should_skip_by_llm_filter(text)
+        if llm_skip:
+            return True, llm_reason or "llm_filter"
 
     return False, ""
 
@@ -1826,14 +1884,19 @@ def _call_ollama_native_json(system_prompt, user_prompt, *, base_url=None, model
 
 
 def _call_openai_compatible_filter_api(content):
-    prompt = (
+    default_prompt = (
         "你是评论过滤器。只输出JSON对象，不要输出其他文本。\n"
         "返回字段: skip(boolean), reason(string), intent_score(number 0-100)。\n"
         "规则:\n"
-        "1) 纯表情或无意义字符 -> skip=true, reason=emoji_or_noise\n"
-        "2) 包含 @manateelazycat -> skip=true, reason=blocked_mention\n"
-        "3) 其他正常评论 -> skip=false, reason=normal\n"
+        "1) 只有在明显垃圾内容、纯表情或完全无意义字符时，才返回 skip=true。\n"
+        "2) 其他情况统一返回 skip=false。\n"
+        "3) reason 使用简短英文下划线词，例如 normal/spam/emoji_or_noise。\n"
         f"评论内容: {content}"
+    )
+    prompt = _render_llm_prompt_template(
+        LLM_FILTER_PROMPT_TEMPLATE,
+        content,
+        default_prompt,
     )
     result_obj, _ = _call_openai_compatible_json(
         "You are a strict JSON classifier.",
@@ -1877,6 +1940,31 @@ def _find_keyword_hits(text_lower, keywords):
     return hits
 
 
+def _is_short_reply_intent_signal(content):
+    """
+    识别“1/11/111/扣1”等短回复意向信号。
+    这类文本在实际私信转化流程中常用来表达“有兴趣/请联系我”。
+    """
+    raw = str(content or "").strip()
+    if not raw:
+        return False
+    # 统一全角/半角，减少“１/١”等形态漏判
+    norm = unicodedata.normalize("NFKC", raw).lower()
+    compact = re.sub(r"\s+", "", norm)
+    compact = compact.replace("＋", "+")
+
+    # 纯数字短回（常见: 1 / 11 / 111）
+    if re.fullmatch(r"1{1,4}", compact):
+        return True
+    # +1 / +11
+    if re.fullmatch(r"\+1{1,4}", compact):
+        return True
+    # 扣1 / 扣11 / 扣111 / 扣一
+    if re.fullmatch(r"扣1{1,4}", compact) or compact == "扣一":
+        return True
+    return False
+
+
 def _rule_based_intent_analysis(content):
     text = _normalize_content_for_filter(content)
     if not text:
@@ -1891,7 +1979,7 @@ def _rule_based_intent_analysis(content):
         }
     if _is_emoji_only_content(text):
         return {
-            "intent_score": 0,
+            "intent_score": 5,
             "intent_level": "noise",
             "signals": ["emoji_only"],
             "force_notify": False,
@@ -1900,78 +1988,79 @@ def _rule_based_intent_analysis(content):
             "non_target_keywords": [],
         }
 
-    lower = text.lower()
-    score = 8
-    signals = []
-    force_keywords = _find_keyword_hits(lower, INTENT_FORCE_NOTIFY_KEYWORDS)
-    non_target_keywords = _find_keyword_hits(lower, INTENT_NON_TARGET_TOPIC_KEYWORDS)
-    single_digit_one = bool(re.fullmatch(r"[1１]+", text))
-    force_notify = bool(force_keywords or single_digit_one)
+    if _is_short_reply_intent_signal(text):
+        return {
+            "intent_score": 62,
+            "intent_level": "medium",
+            "signals": ["short_reply_intent_signal"],
+            "force_notify": True,
+            "block_intent": False,
+            "force_keywords": ["short_reply_signal"],
+            "non_target_keywords": [],
+        }
 
-    high_keywords = [
-        "询价", "报价", "价格", "多少钱", "怎么卖", "购买", "下单", "采购", "试用",
-        "演示", "demo", "部署", "方案", "合作", "联系", "vx", "微信", "whatsapp",
-        "quote", "pricing", "price", "buy", "purchase",
-    ]
-    medium_keywords = [
-        "怎么用", "怎么做", "支持吗", "能不能", "可以吗", "介绍下", "了解", "咨询",
-        "details", "feature", "功能", "效果",
-    ]
+    text_low = text.lower()
+    force_hits = _find_keyword_hits(text_low, INTENT_FORCE_NOTIFY_KEYWORDS)
+    product_hits = _find_keyword_hits(text_low, INTENT_PRODUCT_KEYWORDS)
+    contact_hits = _find_keyword_hits(text_low, INTENT_CONTACT_KEYWORDS)
+    non_target_hits = _find_keyword_hits(text_low, INTENT_NON_TARGET_TOPIC_KEYWORDS)
 
-    for kw in high_keywords:
-        if kw in lower:
-            score += 26
-            signals.append(f"kw:{kw}")
-    for kw in medium_keywords:
-        if kw in lower:
-            score += 12
-            signals.append(f"kw:{kw}")
+    text_len = len(text)
+    if text_len <= 2:
+        score = 15
+        signals = ["very_short_text"]
+    elif text_len <= 6:
+        score = 25
+        signals = ["short_text"]
+    elif text_len <= 20:
+        score = 35
+        signals = ["normal_text"]
+    else:
+        score = 45
+        signals = ["long_text"]
 
-    if single_digit_one:
-        score += 42
-        signals.append("single_digit_interest")
-    if re.search(r"(加|留|联系).{0,4}(微信|vx|v|whatsapp)", text, re.IGNORECASE):
-        score += 25
-        signals.append("contact_request")
-    if re.search(r"(预算|合同|付款|交付|周期|售后)", text):
-        score += 18
-        signals.append("business_term")
-    if len(text) >= 12:
-        score += 8
+    force_notify = False
+    block_intent = False
 
-    score = int(max(0, min(100, score)))
-    level = _score_to_intent_level(score)
+    if force_hits:
+        score = max(score, 74 if len(force_hits) == 1 else 82)
+        force_notify = True
+        signals.append("force_intent_keyword")
 
-    if force_keywords:
-        signals.append("force_keyword_hit")
-    if force_notify:
-        score = max(score, 85)
-        level = "high"
-    if non_target_keywords and not force_notify:
+    if product_hits:
+        score += min(15, 5 * len(product_hits))
+        signals.append("product_keyword")
+
+    if contact_hits:
+        score += min(14, 7 * len(contact_hits))
+        signals.append("contact_keyword")
+
+    if product_hits and contact_hits:
+        score = max(score, 68)
+        force_notify = True
+        signals.append("product_contact_combo")
+
+    if non_target_hits and not force_hits and not (product_hits and contact_hits):
+        score = min(score, 24)
+        block_intent = True
         signals.append("non_target_topic")
-        score = min(score, 18)
-        level = "noise"
 
-    if not signals and len(text) <= 3:
-        level = "noise"
-        score = min(score, 15)
-        signals.append("very_short_text")
+    score = max(0, min(100, int(score)))
+    level = _score_to_intent_level(score)
 
     return {
         "intent_score": score,
         "intent_level": level,
-        "signals": signals,
+        "signals": list(dict.fromkeys(signals))[:10],
         "force_notify": bool(force_notify),
-        "block_intent": bool(non_target_keywords and not force_notify),
-        "force_keywords": force_keywords[:10],
-        "non_target_keywords": non_target_keywords[:10],
+        "block_intent": bool(block_intent),
+        "force_keywords": list(force_hits)[:8],
+        "non_target_keywords": list(non_target_hits)[:8],
     }
 
 
 def _build_intent_analysis_prompt(content):
-    force_kw_text = "、".join(INTENT_FORCE_NOTIFY_KEYWORDS)
-    block_kw_text = "、".join(INTENT_NON_TARGET_TOPIC_KEYWORDS)
-    return (
+    default_prompt = (
         "你是销售线索意向识别器。请严格输出JSON对象，不要输出任何解释文本。\n"
         "字段:\n"
         "- intent_score: 0-100\n"
@@ -1980,11 +2069,21 @@ def _build_intent_analysis_prompt(content):
         "- force_notify: true/false\n"
         "- buying_signals: string[]\n"
         "- reason: string\n\n"
-        "硬规则(必须遵守):\n"
-        f"1) 如果评论命中以下关键词，或评论内容是“1”，必须判定为意向并 force_notify=true：{force_kw_text}\n"
-        f"2) 如果评论主要在讨论以下话题，且未命中第1条，则判定为非意向(noise/low)：{block_kw_text}\n"
-        "3) 其余再按购买意向强弱评分。\n"
+        "业务背景（来自 lazycat.cloud 官网）:\n"
+        "懒猫微服（LazyCat）提供应用云电脑、内网穿透、沙箱隔离、一站式部署（含大模型部署）等能力，主打按需付费。\n"
+        "常见购买场景包括：询价/报价、套餐选择、试用开通、企业或教育部署、售后与续费咨询。\n\n"
+        "判定原则(销售线索优先):\n"
+        "1) 明确购买/询价/报价/价格/下单/试用/部署/联系方式咨询（微信/vx/whatsapp）=> medium/high。\n"
+        "2) 仅情绪表达、闲聊、纯表情、无意义灌水 => low/noise。\n"
+        "3) 出现“多少钱/什么价格/怎么买/购买方式/开票/合同/授权/代理/优惠”等词时，提高意向分。\n"
+        "4) “1/11/111/+1/扣1”这类短回复在“回复你”通知中通常代表愿意沟通，至少判为 medium。\n"
+        "5) force_notify 在强意向线索时设为 true（询价、采购、留联系方式、明确要买/试用/部署）。\n"
         f"评论内容: {content}"
+    )
+    return _render_llm_prompt_template(
+        LLM_INTENT_PROMPT_TEMPLATE,
+        content,
+        default_prompt,
     )
 
 
@@ -2070,25 +2169,17 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         "llm_reason": "",
         "llm_error": "",
     }
-
-    # 硬规则：命中强意向词时，无条件判定意向并优先播报
-    if rule_force_notify:
-        result["intent_score"] = max(int(result["intent_score"]), 85)
-        result["intent_level"] = "high"
-        result["is_intent_user"] = True
-        result["force_notify"] = True
-        result["reason"] = "force_notify_rule"
-        return result
-
-    # 非目标技术讨论：默认不判定意向，且不走LLM避免误报
-    if rule_block_intent:
-        result["intent_score"] = min(int(result["intent_score"]), 18)
-        result["intent_level"] = "noise"
-        result["is_intent_user"] = False
-        result["reason"] = "non_target_topic_rule"
-        return result
+    preview = _normalize_one_line(text, 120) if text else ""
+    log_to_ui(
+        "debug",
+        f"🤖 [Intent] analyze_start len={len(text)} rule_score={rule_score} text={preview}"
+    )
 
     if not _llm_runtime_ready(base_url=base_url, model=model):
+        log_to_ui(
+            "debug",
+            "🤖 [Intent] llm_skip runtime_not_ready -> rule_only"
+        )
         return result
 
     try:
@@ -2100,9 +2191,14 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
             timeout_sec=timeout_sec,
         )
         if not llm_result:
+            log_to_ui(
+                "debug",
+                "🤖 [Intent] llm_empty_result -> rule_only"
+            )
             return result
     except Exception as e:
         result["llm_error"] = str(e)
+        log_to_ui("warn", f"🤖 [Intent] llm_error: {e}")
         return result
 
     llm_score = int(llm_result.get("intent_score", 0))
@@ -2133,6 +2229,12 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         "llm_level": llm_level,
         "llm_reason": llm_reason,
     })
+    log_to_ui(
+        "debug",
+        f"🤖 [Intent] llm_done score={blended_score} level={blended_level} "
+        f"intent={result['is_intent_user']} force={result['force_notify']} "
+        f"rule={rule_score} llm={llm_score} reason={result['reason'] or '-'}"
+    )
     return result
 
 
@@ -3140,6 +3242,74 @@ def _normalize_notification_text(text):
     return re.sub(r'\s+', ' ', text or '').strip()
 
 
+NOTIFICATION_LIKE_REPLY_KEYWORDS = (
+    '喜欢了你的回复',
+    'liked your reply',
+)
+
+NOTIFICATION_INTERACTION_SKIP_KEYWORDS = (
+    '点赞了', 'liked', 'liked your', '转发了', 'reposted', 'retweeted',
+    '关注了你', 'followed you', '视频来源', '点赞了你的帖子', 'liked your post',
+    '转发了你的帖子', 'reposted your', 'retweet了'
+)
+
+NOTIFICATION_REPLY_TO_YOU_KEYWORDS = (
+    '回复了你',
+    '回复了你的帖子',
+    '回复了你的贴文',
+    '回复了你的推文',
+    'replied to you',
+    'replied to your post',
+    'replied to your tweet',
+)
+
+NOTIFICATION_MENTION_YOU_KEYWORDS = (
+    '提到了你',
+    '在帖子中提到了你',
+    'mentioned you',
+    'mentioned you in a post',
+)
+
+
+def _classify_notification_type(article_text):
+    """识别通知类型，供回复过滤与结构化字段使用。"""
+    normalized = _normalize_notification_text(article_text or "")
+    low = normalized.lower()
+    is_like_reply = any(k in low for k in NOTIFICATION_LIKE_REPLY_KEYWORDS)
+    is_reply_to_me = any(k in low for k in NOTIFICATION_REPLY_TO_YOU_KEYWORDS)
+    if not is_reply_to_me:
+        reply_hint_patterns = (
+            r'(^|\s)回复\s*@[\w_]{1,30}',
+            r'\breplying to\s+@[\w_]{1,30}',
+            r'\bin reply to\s+@[\w_]{1,30}',
+        )
+        is_reply_to_me = any(re.search(p, normalized, flags=re.IGNORECASE) for p in reply_hint_patterns)
+    is_mention_to_me = any(k in low for k in NOTIFICATION_MENTION_YOU_KEYWORDS)
+    is_reply_like = is_like_reply or is_reply_to_me or is_mention_to_me
+    is_interaction_only = (not is_like_reply) and any(k in low for k in NOTIFICATION_INTERACTION_SKIP_KEYWORDS)
+
+    if is_reply_to_me:
+        notification_type = "reply_to_you"
+    elif is_mention_to_me:
+        notification_type = "mention_you"
+    elif is_like_reply:
+        notification_type = "liked_your_reply"
+    elif is_interaction_only:
+        notification_type = "interaction"
+    else:
+        notification_type = "unknown"
+
+    return {
+        "notification_type": notification_type,
+        "is_reply_to_me": is_reply_to_me,
+        "is_mention_to_me": is_mention_to_me,
+        "is_reply_like": is_reply_like,
+        "is_interaction_only": is_interaction_only,
+        "normalized_text": normalized,
+        "low_text": low,
+    }
+
+
 def _is_display_name_like(text, user_name_candidates):
     if text in user_name_candidates:
         return True
@@ -3214,6 +3384,7 @@ def _extract_notification_content(article, article_text, handle):
     """提取通知内容：多来源候选 + 过滤 + 打分，避免把用户名称误当正文。"""
     user_name_candidates = set()
     candidates = []
+    tweet_text_candidates = []
     seen = set()
 
     def add_candidate(source, text):
@@ -3225,6 +3396,8 @@ def _extract_notification_content(article, article_text, handle):
             return
         seen.add(key)
         candidates.append((source, normalized))
+        if source == "tweetText":
+            tweet_text_candidates.append(normalized)
 
     # 1) 收集用户名称区域，供后续过滤
     try:
@@ -3247,7 +3420,8 @@ def _extract_notification_content(article, article_text, handle):
 
     # 2) 高优先级：tweetText
     try:
-        text_eles = article.eles('css:[data-testid="tweetText"]', timeout=0)
+        # timeout 过小会在无头模式下漏掉已存在的正文节点
+        text_eles = article.eles('css:[data-testid="tweetText"]', timeout=0.25)
         for ele in text_eles:
             add_candidate("tweetText", ele.text or "")
     except Exception:
@@ -3288,6 +3462,33 @@ def _extract_notification_content(article, article_text, handle):
         cleaned = re.sub(r'\s+', ' ', cleaned).strip(' -:|')
         add_candidate("cleaned", cleaned)
 
+    # 5.5) 若提取到了 tweetText，优先从 tweetText 中挑选正文，减少误拿整段卡片文案
+    if tweet_text_candidates:
+        best_tweet = ""
+        best_tweet_score = -10**9
+        for txt in tweet_text_candidates:
+            if _is_noise_notification_text(txt, handle, user_name_candidates):
+                continue
+            score = _score_notification_candidate(txt, "tweetText", user_name_candidates)
+            txt_low = txt.lower()
+            txt_len = len(txt)
+            # 通知正文一般偏短，适当提高短文本权重（比如“11”、“扣1”、“来了”）
+            if txt_len <= 4:
+                score += 26
+            elif txt_len <= 20:
+                score += 14
+            elif txt_len <= 80:
+                score += 8
+            elif txt_len > 180:
+                score -= 16
+            if re.search(r'https?://|www\.', txt_low):
+                score -= 8
+            if score > best_tweet_score:
+                best_tweet_score = score
+                best_tweet = txt
+        if best_tweet:
+            return best_tweet[:280]
+
     # 6) 过滤+打分选择最佳正文
     best_text = ""
     best_score = -10**9
@@ -3304,6 +3505,45 @@ def _extract_notification_content(article, article_text, handle):
     return ""
 
 
+def _extract_status_from_href(href):
+    """从单个 href 提取 status 用户和 status_id。"""
+    raw = str(href or "").strip()
+    if not raw:
+        return None, None
+
+    # 新版路径：/i/status/123 或 /i/web/status/123
+    m = re.search(r'/(?:i/(?:web/)?status|web/status)/(\d{6,25})', raw)
+    if m:
+        sid = _pick_best_status_id(m.group(1), raw)
+        if sid:
+            return None, sid
+
+    # 标准路径：/username/status/123...
+    user_matches = list(re.finditer(r'/([A-Za-z0-9_]+)/status/(\d{6,25})', raw))
+    if user_matches:
+        best = None
+        best_len = -1
+        for m in user_matches:
+            uname = str(m.group(1) or "").strip().lower()
+            if uname in {"i", "web"}:
+                continue
+            sid = _pick_best_status_id(m.group(2), raw)
+            if sid and len(sid) > best_len:
+                best = (m.group(1), sid)
+                best_len = len(sid)
+        if best:
+            return f"@{best[0]}", best[1]
+
+    # 某些跳转链接里会带 conversation_id
+    m = re.search(r'conversation_id=(\d{6,25})', raw)
+    if m:
+        sid = _pick_best_status_id(m.group(1), raw)
+        if sid:
+            return None, sid
+
+    return None, None
+
+
 def _extract_notification_status_info(article):
     """提取通知关联的 status 用户和 status_id。"""
     try:
@@ -3312,34 +3552,36 @@ def _extract_notification_status_info(article):
             href = (link.attr('href') or '').strip()
             if not href:
                 continue
+            status_handle, status_id = _extract_status_from_href(href)
+            if status_id:
+                return status_handle, status_id
+    except Exception:
+        pass
 
-            # 标准路径：/username/status/123...
-            user_matches = list(re.finditer(r'/([A-Za-z0-9_]+)/status/(\d{6,25})', href))
-            if user_matches:
-                # 同一 href 可能出现拼接链接，优先取更长的 status_id
-                best = None
-                best_len = -1
-                for m in user_matches:
-                    sid = _pick_best_status_id(m.group(2), href)
-                    if sid and len(sid) > best_len:
-                        best = (m.group(1), sid)
-                        best_len = len(sid)
-                if best:
-                    return f"@{best[0]}", best[1]
+    # 回退：某些卡片中 a 标签不可见/不完整时，直接从 article.html 抓取 status 线索
+    try:
+        raw_html = str(article.html or "")
+        if raw_html:
+            # 优先 time 锚点：与真实通知时间链接最接近，稳定性更高
+            time_href_matches = re.findall(
+                r'<a[^>]+href=[\'"]([^\'"]+)[\'"][^>]*>\s*<time\b',
+                raw_html,
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            for href in reversed(time_href_matches):
+                status_handle, status_id = _extract_status_from_href(href)
+                if status_id:
+                    return status_handle, status_id
 
-            # X 新版路径常见形态：/i/status/123... 或 /i/web/status/123...
-            m = re.search(r'/(?:i/(?:web/)?|web/)?status/(\d{6,25})', href)
-            if m:
-                sid = _pick_best_status_id(m.group(1), href)
-                if sid:
-                    return None, sid
+            href_matches = re.findall(r'href=[\'"]([^\'"]+)[\'"]', raw_html, flags=re.IGNORECASE)
+            for href in reversed(href_matches):
+                status_handle, status_id = _extract_status_from_href(href)
+                if status_id:
+                    return status_handle, status_id
 
-            # 某些跳转链接里会带 conversation_id
-            m = re.search(r'conversation_id=(\d{6,25})', href)
-            if m:
-                sid = _pick_best_status_id(m.group(1), href)
-                if sid:
-                    return None, sid
+            sid = _pick_best_status_id(raw_html)
+            if sid:
+                return None, sid
     except Exception:
         pass
     return None, None
@@ -3371,12 +3613,29 @@ def _collect_notification_hrefs(article, max_links=4):
     return hrefs
 
 
+def _collect_notification_tweet_texts(article, max_items=2):
+    samples = []
+    try:
+        text_eles = article.eles('css:[data-testid="tweetText"]', timeout=0)
+        for ele in text_eles:
+            txt = _normalize_one_line(ele.text or "", 80)
+            if not txt:
+                continue
+            samples.append(txt)
+            if len(samples) >= max_items:
+                break
+    except Exception:
+        pass
+    return samples
+
+
 def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
     """
     通知页面扫描（回复优先）：
     - 优先抓取“回复了你/提到了你”类通知
     - 支持 tweetText / div[lang] / 文本回退 多策略提取正文
     - 使用 status_id 去重，减少重复和漏抓
+    - 支持仅抓“回复了你”模式（XMONITOR_NOTIFY_REPLY_ONLY）
     """
     results = []
     seen_in_page = set()
@@ -3410,10 +3669,15 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
 
         # 快速查找所有通知元素
         articles = page.eles('tag:article', timeout=0.8)
+        total_articles = len(articles)
 
         # 只处理最新 N 条
         if len(articles) > max_scan_articles:
             articles = articles[:max_scan_articles]
+            log_to_ui(
+                "warn",
+                f"⚠️ 通知列表过长(total={total_articles})，当前仅扫描前{max_scan_articles}条；可调大 XMONITOR_NOTIFY_MAX_ARTICLES"
+            )
         articles = reorder_articles_for_scan(articles)
 
         new_captured = 0
@@ -3426,8 +3690,8 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
         skipped_no_handle = 0
         skipped_interaction = 0
         skipped_empty_text = 0
-        skipped_emoji_only = 0
-        skipped_blocked_mention = 0
+        policy_flagged_emoji_only = 0
+        policy_flagged_blocked_mention = 0
         article_errors = 0
         trace_logs = []
         trace_limit = NOTIFICATION_TRACE_MAX_ARTICLES if NOTIFICATION_VERBOSE_TRACE else 0
@@ -3437,6 +3701,14 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                 "debug",
                 f"🔎 [NotifyTrace] scan_start url={page.url} articles={len(articles)} recent_window={max_recent_minutes}min"
             )
+
+        blocked_norm_set = set()
+        for raw_handle in (blocked_list or []):
+            norm = normalize_handle(raw_handle)
+            if norm:
+                blocked_norm_set.add(norm)
+        delegated_now = get_effective_delegated_account()
+        delegated_norm = normalize_handle(delegated_now)
 
         for idx, article in enumerate(articles, start=1):
             try:
@@ -3448,30 +3720,30 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                         trace_logs.append(f"A{idx:02d} skip=empty_text")
                     continue
 
-                # ===== 0. 快速过滤无效类型 =====
-                article_lower = article_text.lower()
+                # ===== 0. 通知类型识别 =====
                 trace_sample = _normalize_one_line(article_text)
+                relation = _classify_notification_type(article_text)
+                notification_type = relation["notification_type"]
+                is_reply_like = relation["is_reply_like"]
+                is_reply_to_me = relation["is_reply_to_me"]
+                is_mention_to_me = relation["is_mention_to_me"]
+                is_interaction_only = relation["is_interaction_only"]
 
-                # 快速跳过点赞、转发、关注等
-                skip_keywords = [
-                    '点赞了', 'liked', 'liked your', '转发了', 'reposted', 'retweeted',
-                    '关注了你', 'followed you', '视频来源',
-                    '点赞了你的帖子', 'liked your post', 'liked your reply',
-                    '转发了你的帖子', 'reposted your', 'retweet了'
-                ]
-                if any(k in article_lower for k in skip_keywords):
+                if is_interaction_only:
                     skipped_interaction += 1
                     if idx <= trace_limit:
-                        trace_logs.append(f"A{idx:02d} skip=interaction text={trace_sample}")
+                        trace_logs.append(
+                            f"A{idx:02d} skip=interaction type={notification_type} text={trace_sample}"
+                        )
                     continue
 
-                # 回复相关提示（全部通知里通常会出现这些文案）
-                reply_hint_keywords = [
-                    '回复了你', '回复了你的帖子', '回复了你的贴文', '提到了你', '在帖子中提到了你',
-                    'replied to you', 'replied to your post', 'mentioned you', 'mentioned you in a post'
-                ]
-                is_reply_like = any(k in article_lower for k in reply_hint_keywords)
-                is_interaction_only = any(k in article_lower for k in skip_keywords)
+                if NOTIFICATION_REPLY_ONLY_MODE and (not is_reply_to_me):
+                    skipped_non_reply += 1
+                    if idx <= trace_limit:
+                        trace_logs.append(
+                            f"A{idx:02d} skip=reply_only_filter type={notification_type} text={trace_sample}"
+                        )
+                    continue
 
                 # 必须是 status 类型（评论/提及相关），但对明确“回复/提及”做兜底
                 status_handle, status_id = _extract_notification_status_info(article)
@@ -3479,8 +3751,12 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                     skipped_non_reply += 1
                     if idx <= trace_limit:
                         hrefs = _collect_notification_hrefs(article)
+                        html_status_hints = _extract_status_id_candidates_from_text(article.html or "")
+                        status_hint = html_status_hints[-1] if html_status_hints else ""
+                        tweet_texts = _collect_notification_tweet_texts(article)
                         trace_logs.append(
-                            f"A{idx:02d} skip=non_reply status_id=None is_reply_like={is_reply_like} hrefs={hrefs} text={trace_sample}"
+                            f"A{idx:02d} skip=non_reply status_id=None is_reply_like={is_reply_like} "
+                            f"status_hint={status_hint or '-'} tweetText={tweet_texts or '-'} hrefs={hrefs} text={trace_sample}"
                         )
                     continue
                 if not status_id and is_reply_like:
@@ -3488,7 +3764,8 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                     if idx <= trace_limit:
                         hrefs = _collect_notification_hrefs(article)
                         trace_logs.append(
-                            f"A{idx:02d} keep=fallback_no_status is_reply_like={is_reply_like} hrefs={hrefs} text={trace_sample}"
+                            f"A{idx:02d} keep=fallback_no_status type={notification_type} "
+                            f"is_reply_like={is_reply_like} hrefs={hrefs} text={trace_sample}"
                         )
 
                 # ===== 1. 快速检查时间 =====
@@ -3513,11 +3790,9 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
 
                 # 过滤保护名单
                 handle_norm = handle.strip().lstrip('@').lower()
-                delegated_now = get_effective_delegated_account()
-                delegated_norm = delegated_now.strip().lstrip('@').lower() if delegated_now else ''
 
                 # 如果被提取成了自己的账号，不要直接丢弃（这类误判在通知里比较常见）
-                should_skip_block = (handle in blocked_list and (not delegated_norm or handle_norm != delegated_norm))
+                should_skip_block = (handle_norm in blocked_norm_set and (not delegated_norm or handle_norm != delegated_norm))
                 if should_skip_block:
                     skipped_blacklist += 1
                     if idx <= trace_limit:
@@ -3535,17 +3810,20 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                             f"A{idx:02d} skip=no_content handle={handle} status_id={status_id} text={trace_sample}"
                         )
                     continue
-                should_skip_policy, skip_reason = should_skip_content_by_policy(content)
+                # 通知捕获必须展示完整数据：内容策略仅做“标记”，不拦截入库
+                should_skip_policy, skip_reason = should_skip_content_by_policy(
+                    content,
+                    allow_llm_hard_filter=False,
+                )
                 if should_skip_policy:
                     if skip_reason == "emoji_only":
-                        skipped_emoji_only += 1
+                        policy_flagged_emoji_only += 1
                     elif skip_reason == "blocked_mention":
-                        skipped_blocked_mention += 1
+                        policy_flagged_blocked_mention += 1
                     if idx <= trace_limit:
                         trace_logs.append(
-                            f"A{idx:02d} skip=content_policy reason={skip_reason} handle={handle} status_id={status_id} text={trace_sample}"
+                            f"A{idx:02d} flag=content_policy reason={skip_reason} handle={handle} status_id={status_id} text={trace_sample}"
                         )
-                    continue
 
                 # 明显是互动类且不是回复/提及时过滤
                 if is_interaction_only and not is_reply_like:
@@ -3587,13 +3865,18 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                     "time": datetime.datetime.now().strftime("%H:%M:%S"),
                     "status_id": status_id or "",
                     "status_handle": (status_handle or "").strip(),
+                    "notification_type": notification_type,
+                    "is_reply_to_me": bool(is_reply_to_me),
+                    "is_mention_to_me": bool(is_mention_to_me),
+                    "notification_text": relation["normalized_text"][:600],
+                    "notification_age_minutes": (round(float(age_minutes), 2) if age_minutes is not None else None),
                     "status_url": (
                         f"https://x.com/{normalize_handle(status_handle)}/status/{status_id}"
                         if status_id and status_handle else
                         (f"https://x.com/i/status/{status_id}" if status_id else "")
                     )
                 })
-                log_to_ui("success", f"📬 新通知: {handle} - {content[:20]}...")
+                log_to_ui("success", f"📬 新通知[{notification_type}]: {handle} - {content[:20]}...")
                 if idx <= trace_limit:
                     trace_logs.append(
                         f"A{idx:02d} pass handle={handle} status_id={status_id} age={age_minutes} content={_normalize_one_line(content)}"
@@ -3623,14 +3906,14 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
             log_to_ui("debug", f"📋 [Notify] 跳过重复: {skipped_duplicate}")
         if skipped_empty_text > 0:
             log_to_ui("debug", f"📋 [Notify] 跳过空文本: {skipped_empty_text}")
-        if skipped_emoji_only > 0:
-            log_to_ui("debug", f"📋 [Notify] 跳过纯表情: {skipped_emoji_only}")
-        if skipped_blocked_mention > 0:
-            log_to_ui("debug", f"📋 [Notify] 跳过指定@内容: {skipped_blocked_mention}")
+        if policy_flagged_emoji_only > 0:
+            log_to_ui("debug", f"📋 [Notify] 内容标记(纯表情): {policy_flagged_emoji_only}")
+        if policy_flagged_blocked_mention > 0:
+            log_to_ui("debug", f"📋 [Notify] 内容标记(指定@): {policy_flagged_blocked_mention}")
         if article_errors > 0:
             log_to_ui("debug", f"📋 [Notify] article异常: {article_errors}")
-        if new_captured == 0 and len(articles) > 0:
-            log_to_ui("warn", f"📬 本轮扫描未捕获新通知（articles={len(articles)}）")
+        if new_captured == 0 and len(articles) > 0 and NOTIFICATION_VERBOSE_TRACE:
+            log_to_ui("debug", f"📬 本轮扫描未捕获新通知（articles={len(articles)}）")
         if trace_logs and (NOTIFICATION_VERBOSE_TRACE and (new_captured == 0 or article_errors > 0)):
             for trace in trace_logs:
                 log_to_ui("debug", f"🔎 [NotifyTrace] {trace}")
@@ -4007,23 +4290,6 @@ def scan_page_content_with_tab(tab, url, blocked_list):
         return [], str(e)
 
 
-def _ensure_notification_all_tab_selected(tab, timeout=0.8):
-    """确保通知页切换到“全部”标签。"""
-    try:
-        tabs = tab.eles('css:[role="tab"]', timeout=timeout)
-        for tab_ele in tabs:
-            tab_text = (tab_ele.text or "").strip().lower()
-            if tab_text in ['全部', 'all']:
-                is_selected = (tab_ele.attr('aria-selected') or '').strip().lower() == 'true'
-                if not is_selected:
-                    tab_ele.click()
-                    time.sleep(random.uniform(0.35, 1.0))
-                return True
-    except Exception:
-        pass
-    return False
-
-
 def init_notification_tab(blocked_users):
     """初始化持久通知标签页"""
     global notification_tab, global_browser, notification_last_refresh_at, notification_refresh_interval, notification_empty_article_streak
@@ -4046,16 +4312,26 @@ def init_notification_tab(blocked_users):
             except Exception:
                 pass
 
-            time.sleep(random.uniform(1.1, 2.1))
+            time.sleep(2)
 
-            if _ensure_notification_all_tab_selected(notification_tab, timeout=2):
-                log_to_ui("info", "📬 已切换到\"全部\"通知")
+            # 点击"全部"标签（而不是默认的"优先"）
+            try:
+                # 查找标签栏中的"全部"或"All"按钮
+                tabs = notification_tab.eles('css:[role="tab"]', timeout=2)
+                for tab in tabs:
+                    tab_text = (tab.text or "").strip().lower()
+                    if tab_text in ['全部', 'all']:
+                        tab.click()
+                        log_to_ui("info", "📬 已切换到\"全部\"通知")
+                        time.sleep(1)
+                        break
+            except Exception as e:
+                log_to_ui("debug", f"切换全部标签失败: {e}")
 
             log_to_ui("success", "✅ 通知标签页已创建并保持打开")
             notification_last_refresh_at = 0.0
-            _schedule_next_notification_refresh_interval(notification_refresh_interval)
+            notification_refresh_interval = _schedule_next_notification_refresh_interval(notification_refresh_interval)
             notification_empty_article_streak = 0
-            log_to_ui("debug", f"📬 通知页下次刷新间隔: {notification_refresh_interval:.1f}s")
         except Exception as e:
             log_to_ui("error", f"创建通知标签页失败: {str(e)}")
             notification_tab = None
@@ -4099,104 +4375,131 @@ def ensure_notification_tab(blocked_users):
 
 def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
     """扫描持久通知标签页 - 快速扫描模式"""
-    global notification_tab, notification_last_refresh_at, notification_refresh_interval
-    global notification_disconnect_streak, notification_empty_article_streak
+    global notification_tab, notification_last_refresh_at, notification_refresh_interval, notification_disconnect_streak, notification_empty_article_streak
 
     if notification_tab is None:
         return
 
     try:
+        def _article_count(tab_obj, timeout_sec=0.8):
+            try:
+                return len(tab_obj.eles('tag:article', timeout=timeout_sec))
+            except Exception:
+                return 0
+
+        def _reload_notifications_view():
+            """通知页空载时的轻量恢复：重新打开通知页并切到“全部”标签。"""
+            global notification_last_refresh_at, notification_refresh_interval
+            try:
+                with notification_tab_lock:
+                    if not notification_tab:
+                        return 0
+                    notification_tab.get("https://x.com/notifications")
+                    try:
+                        notification_tab.wait.ele_displayed('tag:article', timeout=6)
+                    except Exception:
+                        pass
+                    time.sleep(random.uniform(0.9, 1.8))
+                    try:
+                        tabs = notification_tab.eles('css:[role="tab"]', timeout=1.2)
+                        for tab in tabs:
+                            tab_text = (tab.text or "").strip().lower()
+                            if tab_text in ['全部', 'all']:
+                                is_selected = tab.attr('aria-selected') == 'true'
+                                if not is_selected:
+                                    tab.click()
+                                    time.sleep(random.uniform(0.35, 0.9))
+                                break
+                    except Exception:
+                        pass
+                    notification_last_refresh_at = time.time()
+                    notification_refresh_interval = _schedule_next_notification_refresh_interval(notification_refresh_interval)
+                    return _article_count(notification_tab, timeout_sec=1.0)
+            except Exception as recover_err:
+                log_to_ui("warn", f"⚠️ 通知页空载恢复失败: {recover_err}")
+                return 0
+
         with notification_tab_lock:
             now_ts = time.time()
-            need_refresh = (notification_last_refresh_at <= 0) or (
-                (now_ts - notification_last_refresh_at) >= notification_refresh_interval
-            )
+            need_refresh = (notification_last_refresh_at <= 0) or ((now_ts - notification_last_refresh_at) >= notification_refresh_interval)
 
-            # 随机刷新策略：硬刷新 / 软跳转 / 跳过，降低固定行为特征
+            # 仅按随机周期刷新，避免固定高频刷新触发风控
             if need_refresh:
-                prev_interval = notification_refresh_interval
-                refresh_action = "none"
                 try:
-                    if random.random() < max(0.0, min(1.0, NOTIFICATION_REFRESH_COOLDOWN_PROB)):
-                        cooldown = random.uniform(
-                            max(1.0, NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC),
-                            max(
-                                max(1.0, NOTIFICATION_REFRESH_COOLDOWN_MIN_SEC),
-                                NOTIFICATION_REFRESH_COOLDOWN_MAX_SEC,
-                            ),
-                        )
-                        notification_last_refresh_at = now_ts
-                        notification_refresh_interval = round(
-                            _schedule_next_notification_refresh_interval(prev_interval) + cooldown,
-                            2,
-                        )
-                        refresh_action = f"cooldown_skip({cooldown:.1f}s)"
-                    else:
-                        skip_prob = max(0.0, min(1.0, NOTIFICATION_REFRESH_SKIP_PROB))
-                        soft_prob = max(0.0, min(1.0 - skip_prob, NOTIFICATION_REFRESH_SOFT_NAV_PROB))
-                        roll = random.random()
-                        if roll < skip_prob:
-                            notification_last_refresh_at = now_ts
-                            _schedule_next_notification_refresh_interval(prev_interval)
-                            refresh_action = "skip_refresh"
-                        elif roll < (skip_prob + soft_prob):
-                            notification_tab.get("https://x.com/notifications")
-                            time.sleep(random.uniform(0.7, 1.8))
-                            notification_last_refresh_at = now_ts
-                            _schedule_next_notification_refresh_interval(prev_interval)
-                            refresh_action = "soft_nav"
-                        else:
-                            notification_tab.refresh()
-                            time.sleep(random.uniform(0.8, 1.8))
-                            notification_last_refresh_at = now_ts
-                            _schedule_next_notification_refresh_interval(prev_interval)
-                            refresh_action = "hard_refresh"
-                except Exception as refresh_err:
-                    log_to_ui("debug", f"📬 通知刷新动作失败: {refresh_err}")
-                    notification_last_refresh_at = now_ts
-                    _schedule_next_notification_refresh_interval(prev_interval)
-                    refresh_action = "refresh_error"
+                    skip_prob = max(0.0, min(1.0, float(NOTIFICATION_REFRESH_SKIP_PROB)))
+                    soft_prob = max(0.0, min(1.0, float(NOTIFICATION_REFRESH_SOFT_NAV_PROB)))
+                    if skip_prob + soft_prob > 0.95:
+                        soft_prob = max(0.0, 0.95 - skip_prob)
 
-                log_to_ui(
-                    "debug",
-                    f"📬 通知刷新策略: {refresh_action}，下次刷新间隔: {notification_refresh_interval:.1f}s",
-                )
+                    refresh_roll = random.random()
+                    refresh_strategy = "hard_refresh"
+                    if refresh_roll < skip_prob:
+                        refresh_strategy = "skip_refresh"
+                    elif refresh_roll < (skip_prob + soft_prob):
+                        refresh_strategy = "soft_nav"
+
+                    if refresh_strategy == "hard_refresh":
+                        notification_tab.refresh()
+                        time.sleep(random.uniform(0.9, 2.1))
+                    elif refresh_strategy == "soft_nav":
+                        notification_tab.get("https://x.com/notifications")
+                        time.sleep(random.uniform(0.95, 2.35))
+                    else:
+                        # 本轮仅更新节奏，不做页面跳转，打散行为指纹
+                        time.sleep(random.uniform(0.22, 0.7))
+
+                    notification_last_refresh_at = now_ts
+                    notification_refresh_interval = _schedule_next_notification_refresh_interval(notification_refresh_interval)
+                    log_to_ui(
+                        "debug",
+                        f"📬 通知刷新策略={refresh_strategy}，下次刷新间隔: {notification_refresh_interval:.1f}s"
+                    )
+                except Exception:
+                    pass
 
             # 快速确保在"全部"标签页
-            _ensure_notification_all_tab_selected(notification_tab, timeout=0.5)
-
-            # 顶部滚动也做轻随机，避免每轮同一行为
             try:
-                roll = random.random()
-                if roll < 0.72:
-                    notification_tab.run_js('window.scrollTo(0, 0);')
-                elif roll < 0.92:
-                    notification_tab.run_js(f'window.scrollBy(0, {random.randint(60, 260)});')
-                else:
-                    notification_tab.run_js(f'window.scrollBy(0, {-random.randint(35, 150)});')
-                    time.sleep(random.uniform(0.08, 0.25))
-                    notification_tab.run_js('window.scrollTo(0, 0);')
-                time.sleep(random.uniform(0.2, 0.75))
+                tabs = notification_tab.eles('css:[role="tab"]', timeout=0.5)  # 减少timeout
+                for tab in tabs:
+                    tab_text = (tab.text or "").strip().lower()
+                    if tab_text in ['全部', 'all']:
+                        is_selected = tab.attr('aria-selected') == 'true'
+                        if not is_selected:
+                            tab.click()
+                            time.sleep(random.uniform(0.35, 1.0))
+                        break
             except Exception:
                 pass
 
+            # 随机滚动策略：大多数回到顶部，少数做小幅下滚，避免每轮一致动作
             try:
-                article_count = len(notification_tab.eles('tag:article', timeout=0.55))
+                if random.random() < 0.82:
+                    notification_tab.run_js('window.scrollTo(0, 0);')
+                else:
+                    delta = int(random.uniform(80, 360))
+                    notification_tab.run_js(f'window.scrollBy(0, {delta});')
+                time.sleep(random.uniform(0.22, 0.95))
             except Exception:
-                article_count = 0
+                pass
 
-        if article_count <= 0:
+        pre_article_count = _article_count(notification_tab, timeout_sec=0.6)
+        if pre_article_count <= 0:
             notification_empty_article_streak += 1
-            log_to_ui(
-                "warn",
-                f"⚠️ 通知页疑似空白（articles=0，连续{notification_empty_article_streak}次）",
-            )
+            streak = int(notification_empty_article_streak)
+            log_to_ui("warn", f"⚠️ 通知页疑似空载（articles=0，连续{streak}次）")
 
-            soft_threshold = max(1, int(NOTIFICATION_EMPTY_RECOVER_SOFT_THRESHOLD))
+            soft_threshold = max(2, int(NOTIFICATION_EMPTY_RECOVER_SOFT_THRESHOLD))
             hard_threshold = max(soft_threshold + 1, int(NOTIFICATION_EMPTY_RECOVER_HARD_THRESHOLD))
 
-            if notification_empty_article_streak >= hard_threshold:
-                log_to_ui("warn", "⚠️ 通知页空白达到硬阈值，重建通知标签页")
+            if streak >= soft_threshold:
+                recovered_count = _reload_notifications_view()
+                if recovered_count > 0:
+                    notification_empty_article_streak = 0
+                    pre_article_count = recovered_count
+                    log_to_ui("info", f"✅ 通知页空载已恢复（articles={recovered_count}）")
+
+            if pre_article_count <= 0 and streak >= hard_threshold:
+                log_to_ui("warn", "⚠️ 通知页持续空载，重建通知标签页")
                 with notification_tab_lock:
                     try:
                         if notification_tab:
@@ -4204,29 +4507,14 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                     except Exception:
                         pass
                     notification_tab = None
-                    notification_last_refresh_at = 0.0
-                notification_empty_article_streak = 0
                 ensure_notification_tab(blocked_users)
+                notification_empty_article_streak = 0
+            if pre_article_count <= 0:
                 return 0
-
-            if notification_empty_article_streak >= soft_threshold:
-                log_to_ui("warn", "⚠️ 通知页空白达到软阈值，执行软恢复")
-                with notification_tab_lock:
-                    try:
-                        if notification_tab:
-                            notification_tab.get("https://x.com/notifications")
-                            time.sleep(random.uniform(0.8, 1.8))
-                            _ensure_notification_all_tab_selected(notification_tab, timeout=0.8)
-                            notification_last_refresh_at = time.time()
-                            _schedule_next_notification_refresh_interval(notification_refresh_interval)
-                    except Exception as recover_err:
-                        log_to_ui("debug", f"📬 通知页软恢复失败: {recover_err}")
-                return 0
-            return 0
-
-        if notification_empty_article_streak > 0:
-            log_to_ui("debug", f"📬 通知页恢复正常（articles={article_count}）")
-        notification_empty_article_streak = 0
+        else:
+            if notification_empty_article_streak > 0:
+                log_to_ui("info", f"✅ 通知页已恢复正常（articles={pre_article_count}）")
+            notification_empty_article_streak = 0
 
         # 扫描通知
         notif_items, notif_err = scan_notifications_page(
@@ -4237,7 +4525,7 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
 
         if notif_err:
             log_to_ui("error", f"❌ 通知扫描错误: {notif_err}")
-            # 尝试恢复页面
+            # 尝试刷新页面
             try:
                 # 连接断开时直接重建标签页，避免卡死在无效tab对象上
                 err_text = str(notif_err).lower()
@@ -4269,18 +4557,9 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                                 log_to_ui("warn", f"⚠️ 浏览器重建后恢复委派账户失败: {recover_err}")
                         ensure_notification_tab(blocked_users)
                         notification_disconnect_streak = 0
-                    notification_empty_article_streak = 0
                 else:
-                    with notification_tab_lock:
-                        try:
-                            if notification_tab:
-                                notification_tab.get("https://x.com/notifications")
-                                time.sleep(random.uniform(0.9, 1.9))
-                                _ensure_notification_all_tab_selected(notification_tab, timeout=0.8)
-                                notification_last_refresh_at = time.time()
-                                _schedule_next_notification_refresh_interval(notification_refresh_interval)
-                        except Exception:
-                            pass
+                    notification_tab.refresh()
+                    time.sleep(random.uniform(1.2, 2.5))
             except Exception:
                 pass
             return 0
@@ -4290,30 +4569,55 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
         # 处理新数据
         new_count = 0
         skipped_dup_content = 0
-        skipped_policy = 0
         if notif_items:
             for item in notif_items:
                 with data_lock:
                     if item["key"] in history_ids:
                         continue
-                    should_skip_policy, _ = should_skip_content_by_policy(item.get("content", ""))
-                    if should_skip_policy:
-                        skipped_policy += 1
-                        continue
                     if should_skip_duplicate_content(item.get("handle", ""), item.get("content", "")):
                         skipped_dup_content += 1
                         continue
                     history_ids.add(item["key"])
+
+                # 通知入队前做一次意向分析（用于日志与前端展示，不做拦截）
+                try:
+                    runtime_base_url = LLM_FILTER_BASE_URL if LLM_FILTER_ENABLED else ""
+                    runtime_model = LLM_FILTER_MODEL if LLM_FILTER_ENABLED else ""
+                    runtime_api_key = LLM_FILTER_API_KEY if LLM_FILTER_ENABLED else ""
+                    analysis = analyze_comment_intent(
+                        item.get("content", ""),
+                        base_url=runtime_base_url,
+                        api_key=runtime_api_key,
+                        model=runtime_model,
+                        timeout_sec=LLM_FILTER_TIMEOUT_SEC,
+                    )
+                    item["intent_score"] = int(analysis.get("intent_score", 0))
+                    item["intent_level"] = str(analysis.get("intent_level", "noise"))
+                    item["is_intent_user"] = bool(analysis.get("is_intent_user", False))
+                    item["llm_used"] = bool(analysis.get("llm_used", False))
+                    item["intent_reason"] = str(analysis.get("reason", "") or "")
+                    item["intent_signals"] = list(analysis.get("signals", []))[:8]
+                    log_to_ui(
+                        "info",
+                        f"🤖 AI意向分析[notify_auto] handle={item.get('handle', '')} "
+                        f"score={item['intent_score']} level={item['intent_level']} "
+                        f"intent={item['is_intent_user']} llm_used={item['llm_used']}"
+                    )
+                    llm_error = str(analysis.get("llm_error", "") or "").strip()
+                    if llm_error:
+                        log_to_ui("warn", f"🤖 AI意向分析[notify_auto] LLM异常: {llm_error}")
+                except Exception as analyze_err:
+                    log_to_ui("warn", f"🤖 AI意向分析[notify_auto] 失败: {analyze_err}")
+
+                with data_lock:
                     pending_results.append(item)
-                    msg_queue.put({"type": "new_data", "data": item})
-                    new_count += 1
+                msg_queue.put({"type": "new_data", "data": item})
+                new_count += 1
             if new_count > 0:
                 save_state()
                 log_to_ui("success", f"📬 通知扫描: 新增 {new_count} 条")
             if skipped_dup_content > 0:
                 log_to_ui("debug", f"📋 [Notify] 跳过同用户重复内容: {skipped_dup_content}")
-            if skipped_policy > 0:
-                log_to_ui("debug", f"📋 [Notify] 跳过内容过滤: {skipped_policy}")
         return new_count
 
     except Exception as e:
@@ -4380,6 +4684,25 @@ def extract_status_id_from_notification_item(item):
         return sid or m.group(1)
 
     return ""
+
+
+def is_reply_to_me_notification_item(item):
+    """判断通知记录是否属于“回复了你”类型。"""
+    if not isinstance(item, dict):
+        return False
+    if item.get("source") != "通知页面":
+        return False
+
+    notify_type = str(item.get("notification_type", "") or "").strip().lower()
+    if notify_type:
+        return notify_type == "reply_to_you"
+
+    # 兼容旧数据：没有 notification_type 字段时按文本兜底判定
+    text_blob = " ".join([
+        str(item.get("notification_text", "") or ""),
+        str(item.get("content", "") or ""),
+    ]).lower()
+    return any(k in text_blob for k in NOTIFICATION_REPLY_TO_YOU_KEYWORDS)
 
 
 def _extract_status_ids_from_article(article):
@@ -7007,6 +7330,10 @@ def state():
             "llm_filter_api_key": str(LLM_FILTER_API_KEY or ""),
             "llm_filter_model": str(LLM_FILTER_MODEL or ""),
             "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
+            "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
+            "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+            "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
+            "notification_reply_only_mode": bool(NOTIFICATION_REPLY_ONLY_MODE),
         })
 
 @app.route('/api/task/add', methods=['POST'])
@@ -7074,6 +7401,30 @@ def clear_blocklist():
     save_processed_users()
     log_to_ui("info", "⛔ 已清空黑名单（当前抓取不再按用户屏蔽）")
     return jsonify({"status":"ok"})
+
+@app.route('/api/notify_replies')
+def get_notify_replies():
+    """返回通知中“回复了你”的结构化记录。"""
+    try:
+        limit = int(request.args.get('limit', 200))
+    except Exception:
+        limit = 200
+    limit = max(1, min(limit, 2000))
+
+    with data_lock:
+        reply_items = [dict(item) for item in pending_results if is_reply_to_me_notification_item(item)]
+
+    # pending_results 为时间顺序，接口默认返回最新在前
+    reply_items.reverse()
+    if limit:
+        reply_items = reply_items[:limit]
+
+    return jsonify({
+        "status": "ok",
+        "count": len(reply_items),
+        "reply_only_mode": bool(NOTIFICATION_REPLY_ONLY_MODE),
+        "items": reply_items,
+    })
 
 @app.route('/api/toggle_notification', methods=['POST'])
 def toggle_notification():
@@ -7359,16 +7710,34 @@ def llm_filter_analyze():
     """分析评论意向用户。"""
     payload = request.get_json(silent=True) or {}
     content = str(payload.get("content", "") or "").strip()
+    analyze_source = str(payload.get("analyze_source", "") or "").strip() or "unknown"
     if not content:
         return jsonify({"status": "err", "msg": "评论内容不能为空"}), 400
 
     runtime = _extract_llm_runtime_from_payload(payload)
+    log_to_ui(
+        "debug",
+        f"🤖 [IntentAPI] request source={analyze_source} content={_normalize_one_line(content, 120)}"
+    )
     analysis = analyze_comment_intent(
         content,
         base_url=runtime["base_url"],
         api_key=runtime["api_key"],
         model=runtime["model"],
         timeout_sec=runtime["timeout_sec"],
+    )
+    log_to_ui(
+        "debug",
+        f"🤖 [IntentAPI] result source={analyze_source} score={analysis.get('intent_score', 0)} "
+        f"level={analysis.get('intent_level', '')} intent={bool(analysis.get('is_intent_user', False))} "
+        f"llm_used={bool(analysis.get('llm_used', False))} reason={analysis.get('reason', '') or '-'}"
+    )
+    # 提升到 info，确保在常规运行日志中可见分析结果
+    log_to_ui(
+        "info",
+        f"🤖 AI意向分析[{analyze_source}] score={analysis.get('intent_score', 0)} "
+        f"level={analysis.get('intent_level', '')} intent={bool(analysis.get('is_intent_user', False))} "
+        f"llm_used={bool(analysis.get('llm_used', False))}"
     )
     return jsonify({
         "status": "ok",
@@ -7380,17 +7749,36 @@ def llm_filter_analyze():
 def set_llm_filter_config():
     """设置LLM内容过滤配置（OpenAI兼容接口）。"""
     global LLM_FILTER_ENABLED, LLM_FILTER_BASE_URL, LLM_FILTER_API_KEY, LLM_FILTER_MODEL, LLM_FILTER_TIMEOUT_SEC
+    global LLM_FILTER_PROMPT_TEMPLATE, LLM_INTENT_PROMPT_TEMPLATE
+    global NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT, NOTIFY_VOICE_BLOCK_KEYWORDS
     payload = request.get_json(silent=True) or {}
 
     enabled = bool(payload.get('enabled', False))
     base_url = str(payload.get('base_url', '') or '').strip()
     api_key = str(payload.get('api_key', '') or '').strip()
     model = str(payload.get('model', '') or '').strip()
+    filter_prompt_template = str(
+        payload.get('llm_filter_prompt_template', LLM_FILTER_PROMPT_TEMPLATE) or ''
+    ).strip()
+    intent_prompt_template = str(
+        payload.get('llm_intent_prompt_template', LLM_INTENT_PROMPT_TEMPLATE) or ''
+    ).strip()
+    notify_voice_block_keywords_text = str(
+        payload.get('notify_voice_block_keywords_text', NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ''
+    ).strip()
     try:
         timeout_sec = float(payload.get('timeout_sec', LLM_FILTER_TIMEOUT_SEC))
     except Exception:
         timeout_sec = LLM_FILTER_TIMEOUT_SEC
     timeout_sec = max(2.0, min(30.0, timeout_sec))
+    if len(filter_prompt_template) > 12000:
+        return jsonify({"status": "err", "msg": "过滤 Prompt 过长（最大12000字符）"}), 400
+    if len(intent_prompt_template) > 12000:
+        return jsonify({"status": "err", "msg": "意向 Prompt 过长（最大12000字符）"}), 400
+
+    notify_voice_block_keywords = tuple(
+        kw.lower() for kw in _normalize_keyword_lines(notify_voice_block_keywords_text)
+    )
 
     if enabled and (not base_url or not model):
         return jsonify({"status": "err", "msg": "启用LLM过滤时必须填写 Base URL 和模型名"}), 400
@@ -7401,6 +7789,10 @@ def set_llm_filter_config():
         LLM_FILTER_API_KEY = api_key or "EMPTY"
         LLM_FILTER_MODEL = model
         LLM_FILTER_TIMEOUT_SEC = timeout_sec
+        LLM_FILTER_PROMPT_TEMPLATE = filter_prompt_template
+        LLM_INTENT_PROMPT_TEMPLATE = intent_prompt_template
+        NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = notify_voice_block_keywords_text
+        NOTIFY_VOICE_BLOCK_KEYWORDS = notify_voice_block_keywords
     with llm_filter_cache_lock:
         llm_filter_cache.clear()
 
@@ -7412,6 +7804,7 @@ def set_llm_filter_config():
         log_to_ui("warn", "⚠️ [LLMFilter] 已启用但配置不完整")
     else:
         log_to_ui("info", "🤖 [LLMFilter] 已禁用")
+    log_to_ui("info", f"🔇 [NotifyVoice] 不播报关键词已更新: {len(NOTIFY_VOICE_BLOCK_KEYWORDS)} 条")
 
     return jsonify({
         "status": "ok",
@@ -7420,6 +7813,10 @@ def set_llm_filter_config():
         "llm_filter_api_key": str(LLM_FILTER_API_KEY or ""),
         "llm_filter_model": str(LLM_FILTER_MODEL or ""),
         "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
+        "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
+        "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+        "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
+        "notify_voice_block_keywords": list(NOTIFY_VOICE_BLOCK_KEYWORDS),
     })
 
 @app.route('/api/toggle_headless', methods=['POST'])
