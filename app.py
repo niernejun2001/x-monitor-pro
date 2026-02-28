@@ -13,6 +13,8 @@ import json
 import logging
 import hashlib
 import unicodedata
+import base64
+import uuid
 import concurrent.futures
 import subprocess
 import urllib.request
@@ -23,6 +25,24 @@ from DrissionPage import ChromiumPage, ChromiumOptions
 
 app = Flask(__name__)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+LOCAL_TTS_CONFIG_FILE = os.path.join(BASE_DIR, "data", "local_tts_config.json")
+
+
+def _load_local_tts_config():
+    """读取本地私有TTS配置（git忽略），用于保存密钥。"""
+    try:
+        if not os.path.exists(LOCAL_TTS_CONFIG_FILE):
+            return {}
+        with open(LOCAL_TTS_CONFIG_FILE, "r", encoding="utf-8") as f:
+            obj = json.load(f)
+            if isinstance(obj, dict):
+                return obj
+    except Exception as e:
+        logging.warning(f"读取本地TTS配置失败: {e}")
+    return {}
+
+
+LOCAL_TTS_CONFIG = _load_local_tts_config()
 
 # --- 配置文件路径（自动检测环境）---
 def get_default_user_data_dir():
@@ -389,6 +409,67 @@ NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(
     for kw in re.split(r"[\n,，;；]+", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
     if kw.strip()
 )
+DOUBAO_TTS_APP_ID = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_APP_ID", LOCAL_TTS_CONFIG.get("app_id", "")) or ""
+).strip()
+DOUBAO_TTS_ACCESS_TOKEN = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_ACCESS_TOKEN", LOCAL_TTS_CONFIG.get("access_token", "")) or ""
+).strip()
+DOUBAO_TTS_SECRET_KEY = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_SECRET_KEY", LOCAL_TTS_CONFIG.get("secret_key", "")) or ""
+).strip()
+DOUBAO_TTS_VOICE_TYPE = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_VOICE_TYPE", LOCAL_TTS_CONFIG.get("voice_type", "zh_female_vv_uranus_bigtts")) or "zh_female_vv_uranus_bigtts"
+).strip()
+DOUBAO_TTS_CLUSTER = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_CLUSTER", LOCAL_TTS_CONFIG.get("cluster", "volcano_tts")) or "volcano_tts"
+).strip()
+DOUBAO_TTS_ENDPOINT = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_ENDPOINT", LOCAL_TTS_CONFIG.get("endpoint", "https://openspeech.bytedance.com/api/v1/tts")) or "https://openspeech.bytedance.com/api/v1/tts"
+).strip()
+DOUBAO_TTS_UID = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_UID", LOCAL_TTS_CONFIG.get("uid", "xmonitor-notify")) or "xmonitor-notify"
+).strip()
+DOUBAO_TTS_ENCODING = str(
+    os.environ.get("XMONITOR_DOUBAO_TTS_ENCODING", LOCAL_TTS_CONFIG.get("encoding", "mp3")) or "mp3"
+).strip().lower()
+try:
+    DOUBAO_TTS_SPEED_RATIO = float(
+        os.environ.get("XMONITOR_DOUBAO_TTS_SPEED_RATIO", LOCAL_TTS_CONFIG.get("speed_ratio", 1.0))
+    )
+except Exception:
+    DOUBAO_TTS_SPEED_RATIO = 1.0
+try:
+    DOUBAO_TTS_VOLUME_RATIO = float(
+        os.environ.get("XMONITOR_DOUBAO_TTS_VOLUME_RATIO", LOCAL_TTS_CONFIG.get("volume_ratio", 1.35))
+    )
+except Exception:
+    DOUBAO_TTS_VOLUME_RATIO = 1.35
+DOUBAO_TTS_VOLUME_RATIO = max(0.2, min(3.0, float(DOUBAO_TTS_VOLUME_RATIO)))
+try:
+    DOUBAO_TTS_PITCH_RATIO = float(
+        os.environ.get("XMONITOR_DOUBAO_TTS_PITCH_RATIO", LOCAL_TTS_CONFIG.get("pitch_ratio", 1.0))
+    )
+except Exception:
+    DOUBAO_TTS_PITCH_RATIO = 1.0
+try:
+    DOUBAO_TTS_TIMEOUT_SEC = float(
+        os.environ.get("XMONITOR_DOUBAO_TTS_TIMEOUT_SEC", LOCAL_TTS_CONFIG.get("timeout_sec", 12.0))
+    )
+except Exception:
+    DOUBAO_TTS_TIMEOUT_SEC = 12.0
+try:
+    DOUBAO_TTS_TEXT_MAX_CHARS = int(
+        os.environ.get("XMONITOR_DOUBAO_TTS_TEXT_MAX_CHARS", LOCAL_TTS_CONFIG.get("text_max_chars", 160))
+    )
+except Exception:
+    DOUBAO_TTS_TEXT_MAX_CHARS = 160
+DOUBAO_TTS_ENABLED = str(
+    os.environ.get(
+        "XMONITOR_DOUBAO_TTS_ENABLED",
+        LOCAL_TTS_CONFIG.get("enabled", "1" if (DOUBAO_TTS_APP_ID and DOUBAO_TTS_ACCESS_TOKEN) else "0"),
+    )
+).strip().lower() in {"1", "true", "yes", "on"}
 try:
     LLM_FILTER_TIMEOUT_SEC = float(os.environ.get("XMONITOR_LLM_TIMEOUT_SEC", "8"))
 except Exception:
@@ -1248,6 +1329,8 @@ def load_state():
                     logging.info(f"   - LLM过滤: 启用 ({LLM_FILTER_MODEL or '未配置模型'})")
                 else:
                     logging.info("   - LLM过滤: 禁用")
+                tts_status = "启用" if _doubao_tts_is_ready() else "禁用/未配置"
+                logging.info(f"   - 豆包TTS: {tts_status} ({DOUBAO_TTS_VOICE_TYPE or '未配置音色'})")
                 logging.info(f"   - 语音不播报关键词: {len(NOTIFY_VOICE_BLOCK_KEYWORDS)} 条")
                 logging.info(f"   - 通知仅抓回复: {'启用' if NOTIFICATION_REPLY_ONLY_MODE else '禁用'}")
 
@@ -1752,6 +1835,109 @@ def _llm_runtime_ready(base_url=None, model=None):
 def _llm_filter_is_ready(base_url=None, model=None, enabled=None):
     enabled_flag = LLM_FILTER_ENABLED if enabled is None else bool(enabled)
     return bool(enabled_flag and _llm_runtime_ready(base_url=base_url, model=model))
+
+
+def _doubao_tts_is_ready():
+    return bool(
+        DOUBAO_TTS_ENABLED
+        and str(DOUBAO_TTS_APP_ID or "").strip()
+        and str(DOUBAO_TTS_ACCESS_TOKEN or "").strip()
+        and str(DOUBAO_TTS_VOICE_TYPE or "").strip()
+    )
+
+
+def _doubao_tts_mime_by_encoding(encoding):
+    enc = str(encoding or "").strip().lower()
+    if enc == "wav":
+        return "audio/wav"
+    if enc in {"ogg", "opus"}:
+        return "audio/ogg"
+    return "audio/mpeg"
+
+
+def _truncate_text_for_tts(text):
+    content = str(text or "").strip()
+    max_chars = max(20, int(DOUBAO_TTS_TEXT_MAX_CHARS))
+    if len(content) <= max_chars:
+        return content
+    return f"{content[:max_chars]}..."
+
+
+def _synthesize_doubao_tts_audio_base64(text):
+    if not _doubao_tts_is_ready():
+        raise RuntimeError("豆包TTS未就绪：请配置 AppID/AccessToken/音色")
+
+    text_payload = _truncate_text_for_tts(text)
+    if not text_payload:
+        raise RuntimeError("语音文本为空")
+
+    req_obj = {
+        "app": {
+            "appid": str(DOUBAO_TTS_APP_ID),
+            # 在线TTS接口要求 app.token 非空，这里复用 Access Token。
+            "token": str(DOUBAO_TTS_ACCESS_TOKEN),
+            "cluster": str(DOUBAO_TTS_CLUSTER),
+        },
+        "user": {"uid": str(DOUBAO_TTS_UID or "xmonitor-notify")},
+        "audio": {
+            "voice_type": str(DOUBAO_TTS_VOICE_TYPE),
+            "encoding": str(DOUBAO_TTS_ENCODING or "mp3"),
+            "speed_ratio": float(DOUBAO_TTS_SPEED_RATIO),
+            "volume_ratio": float(DOUBAO_TTS_VOLUME_RATIO),
+            "pitch_ratio": float(DOUBAO_TTS_PITCH_RATIO),
+        },
+        "request": {
+            "reqid": str(uuid.uuid4()),
+            "text": text_payload,
+            "text_type": "plain",
+            "operation": "query",
+        },
+    }
+    body = json.dumps(req_obj, ensure_ascii=False).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer;{DOUBAO_TTS_ACCESS_TOKEN}",
+    }
+    req = urllib.request.Request(DOUBAO_TTS_ENDPOINT, data=body, headers=headers, method="POST")
+
+    try:
+        with urllib.request.urlopen(req, timeout=max(3.0, float(DOUBAO_TTS_TIMEOUT_SEC))) as resp:
+            raw_bytes = resp.read() or b""
+    except urllib.error.HTTPError as e:
+        detail = ""
+        try:
+            detail = (e.read() or b"").decode("utf-8", errors="ignore")
+        except Exception:
+            detail = ""
+        raise RuntimeError(f"豆包TTS HTTP错误: {e.code} {detail[:200]}") from e
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"豆包TTS网络错误: {e}") from e
+
+    try:
+        resp_obj = json.loads(raw_bytes.decode("utf-8", errors="ignore"))
+    except Exception as e:
+        raise RuntimeError(f"豆包TTS响应解析失败: {e}") from e
+
+    code = int(resp_obj.get("code", 0) or 0)
+    if code not in {0, 3000}:
+        msg = str(resp_obj.get("message", "") or "").strip()
+        raise RuntimeError(f"豆包TTS返回失败 code={code} msg={msg}")
+
+    audio_b64 = resp_obj.get("data", "")
+    if isinstance(audio_b64, dict):
+        audio_b64 = audio_b64.get("audio", "")
+    audio_b64 = str(audio_b64 or "").strip()
+    if not audio_b64:
+        raise RuntimeError("豆包TTS返回音频为空")
+
+    # 快速校验base64合法性，避免前端播放报错
+    try:
+        base64.b64decode(audio_b64, validate=True)
+    except Exception as e:
+        raise RuntimeError(f"豆包TTS音频base64无效: {e}") from e
+
+    return audio_b64
 
 
 def _prune_llm_filter_cache(now_ts=None):
@@ -7422,6 +7608,9 @@ def state():
             "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
             "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
             "notification_reply_only_mode": bool(NOTIFICATION_REPLY_ONLY_MODE),
+            "notify_tts_provider": ("doubao" if _doubao_tts_is_ready() else "browser"),
+            "notify_tts_ready": bool(_doubao_tts_is_ready()),
+            "notify_tts_voice_type": str(DOUBAO_TTS_VOICE_TYPE or ""),
         })
 
 @app.route('/api/task/add', methods=['POST'])
@@ -7908,6 +8097,42 @@ def set_llm_filter_config():
         "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
         "notify_voice_block_keywords": list(NOTIFY_VOICE_BLOCK_KEYWORDS),
     })
+
+
+@app.route('/api/tts/synthesize', methods=['POST'])
+def tts_synthesize():
+    """通知语音合成：优先使用豆包TTS，供前端播放。"""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "") or "").strip()
+    if not text:
+        return jsonify({"status": "err", "msg": "text不能为空"}), 400
+
+    if not _doubao_tts_is_ready():
+        return jsonify({
+            "status": "err",
+            "msg": "豆包TTS未配置或未启用",
+            "provider": "browser",
+        }), 503
+
+    try:
+        audio_b64 = _synthesize_doubao_tts_audio_base64(text)
+        return jsonify({
+            "status": "ok",
+            "provider": "doubao",
+            "voice_type": str(DOUBAO_TTS_VOICE_TYPE or ""),
+            "encoding": str(DOUBAO_TTS_ENCODING or "mp3"),
+            "mime": _doubao_tts_mime_by_encoding(DOUBAO_TTS_ENCODING),
+            "audio_base64": audio_b64,
+        })
+    except Exception as e:
+        err_msg = str(e)
+        log_to_ui("warn", f"🔊 豆包TTS合成失败: {err_msg}")
+        return jsonify({
+            "status": "err",
+            "msg": err_msg,
+            "provider": "doubao",
+        }), 500
+
 
 @app.route('/api/toggle_headless', methods=['POST'])
 def toggle_headless():

@@ -1034,7 +1034,7 @@
                         </div>
                     </div>
 
-                    <div class="table-container resizable">
+                    <div class="table-container resizable" id="notifyTableContainer">
                         <table>
                             <thead>
                                 <tr>
@@ -1109,6 +1109,78 @@
         let notifyIntentBusy = false;
         let notifyRowSeq = 0;
         let notifyVoiceBlockKeywords = [];
+        let notifyTtsProvider = 'doubao';
+        let notifyTtsReady = false;
+        let notifyTtsVoiceType = '';
+        let notifyBackendAudio = null;
+        let notifyBrowserUtterance = null;
+        let notifyAudioContext = null;
+        let notifyAudioGainNode = null;
+        let notifyAudioSourceNode = null;
+        const NOTIFY_AUDIO_GAIN = 1.8;
+        const NOTIFY_TABLE_HEIGHT_KEY = 'xmonitor_notify_table_height_v1';
+
+        function clampNotifyTableHeight(rawHeight) {
+            const minHeight = 220;
+            const maxHeight = Math.max(280, Math.floor(window.innerHeight * 0.75));
+            const h = Number(rawHeight || 0);
+            if(!Number.isFinite(h) || h <= 0) return 280;
+            return Math.max(minHeight, Math.min(maxHeight, Math.round(h)));
+        }
+
+        function getNotifyTableContainer() {
+            return document.getElementById('notifyTableContainer');
+        }
+
+        function saveNotifyTableHeight() {
+            const container = getNotifyTableContainer();
+            if(!container) return;
+            const height = clampNotifyTableHeight(container.getBoundingClientRect().height);
+            try {
+                localStorage.setItem(NOTIFY_TABLE_HEIGHT_KEY, String(height));
+            } catch (_) {}
+        }
+
+        function restoreNotifyTableHeight() {
+            const container = getNotifyTableContainer();
+            if(!container) return;
+            let stored = '';
+            try {
+                stored = localStorage.getItem(NOTIFY_TABLE_HEIGHT_KEY) || '';
+            } catch (_) {
+                stored = '';
+            }
+            if(!stored) return;
+            const height = clampNotifyTableHeight(parseInt(stored, 10));
+            container.style.height = `${height}px`;
+        }
+
+        function bindNotifyTableHeightPersistence() {
+            const container = getNotifyTableContainer();
+            if(!container) return;
+            restoreNotifyTableHeight();
+
+            if('ResizeObserver' in window) {
+                let timer = null;
+                const observer = new ResizeObserver(() => {
+                    if(timer) clearTimeout(timer);
+                    timer = setTimeout(() => saveNotifyTableHeight(), 120);
+                });
+                observer.observe(container);
+            } else {
+                container.addEventListener('mouseup', () => setTimeout(() => saveNotifyTableHeight(), 120));
+                container.addEventListener('touchend', () => setTimeout(() => saveNotifyTableHeight(), 120));
+            }
+
+            window.addEventListener('beforeunload', saveNotifyTableHeight);
+            window.addEventListener('resize', () => {
+                const el = getNotifyTableContainer();
+                if(!el) return;
+                if(!el.style.height) return;
+                el.style.height = `${clampNotifyTableHeight(parseInt(el.style.height, 10))}px`;
+                saveNotifyTableHeight();
+            });
+        }
 
         function parseKeywordLines(rawText) {
             const parts = String(rawText || '').split(/[\n,，;；]+/g);
@@ -1168,45 +1240,152 @@
             return `${notifyVoiceText}，评论内容：${clipped}`;
         }
 
-        function _playNotifyVoiceOnce(contentText = '', done = null) {
-            const speakText = buildNotifyVoiceText(contentText);
+        function _onceNotifyDone(done = null) {
+            let called = false;
+            return function(ok = true) {
+                if(called) return;
+                called = true;
+                if (typeof done === 'function') done(ok);
+            };
+        }
 
-            if ('speechSynthesis' in window) {
-                try {
-                    const utter = new SpeechSynthesisUtterance(speakText);
-                    utter.lang = 'zh-CN';
-                    // 偏温柔女声 + 稍微更有感染力
-                    utter.rate = 1.08;
-                    utter.pitch = 1.2;
-                    utter.volume = 1.0;
-                    if (!cachedNotifyVoice) cachedNotifyVoice = pickNotifyVoice();
-                    if (cachedNotifyVoice) utter.voice = cachedNotifyVoice;
-                    utter.onend = () => { if (typeof done === 'function') done(); };
-                    utter.onerror = () => { if (typeof done === 'function') done(); };
-                    window.speechSynthesis.speak(utter);
-                    return;
-                } catch (_) {}
+        function _stopNotifyBackendAudio() {
+            if(notifyAudioSourceNode) {
+                try { notifyAudioSourceNode.disconnect(); } catch (_) {}
+                notifyAudioSourceNode = null;
             }
-
-            // 语音不可用时，退化为短提示音
+            if(!notifyBackendAudio) return;
             try {
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (!AudioCtx) return;
-                const ctx = new AudioCtx();
-                const osc = ctx.createOscillator();
-                const gain = ctx.createGain();
-                osc.type = 'sine';
-                osc.frequency.value = 880;
-                gain.gain.value = 0.0001;
-                osc.connect(gain);
-                gain.connect(ctx.destination);
-                const t = ctx.currentTime;
-                gain.gain.exponentialRampToValueAtTime(0.08, t + 0.02);
-                gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.18);
-                osc.start(t);
-                osc.stop(t + 0.2);
+                notifyBackendAudio.onended = null;
+                notifyBackendAudio.onerror = null;
+                notifyBackendAudio.pause();
+                notifyBackendAudio.src = '';
             } catch (_) {}
-            if (typeof done === 'function') done();
+            notifyBackendAudio = null;
+        }
+
+        function _stopNotifyBrowserSpeech() {
+            if(!('speechSynthesis' in window)) return;
+            try {
+                if(notifyBrowserUtterance) {
+                    notifyBrowserUtterance.onend = null;
+                    notifyBrowserUtterance.onerror = null;
+                    notifyBrowserUtterance = null;
+                }
+                window.speechSynthesis.cancel();
+            } catch (_) {}
+        }
+
+        function stopNotifyVoicePlayback() {
+            if (notifyVoiceTimer) {
+                clearTimeout(notifyVoiceTimer);
+                notifyVoiceTimer = null;
+            }
+            _stopNotifyBackendAudio();
+            _stopNotifyBrowserSpeech();
+        }
+
+        function _playNotifyVoiceByAudioData(audioBase64, mime, done = null) {
+            const finish = _onceNotifyDone(done);
+            const b64 = String(audioBase64 || '').trim();
+            if(!b64) {
+                finish(false);
+                return;
+            }
+            const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
+            const src = `data:${safeMime};base64,${b64}`;
+            try {
+                _stopNotifyBrowserSpeech();
+                _stopNotifyBackendAudio();
+                const audio = new Audio(src);
+                notifyBackendAudio = audio;
+                audio.volume = 1.0;
+                const AudioCtx = window.AudioContext || window.webkitAudioContext;
+                if (AudioCtx) {
+                    if (!notifyAudioContext) {
+                        notifyAudioContext = new AudioCtx();
+                    }
+                    if (!notifyAudioGainNode) {
+                        notifyAudioGainNode = notifyAudioContext.createGain();
+                        notifyAudioGainNode.connect(notifyAudioContext.destination);
+                    }
+                    notifyAudioGainNode.gain.value = Math.max(1.0, NOTIFY_AUDIO_GAIN);
+                    notifyAudioSourceNode = notifyAudioContext.createMediaElementSource(audio);
+                    notifyAudioSourceNode.connect(notifyAudioGainNode);
+                    if (notifyAudioContext.state === 'suspended') {
+                        try { notifyAudioContext.resume(); } catch (_) {}
+                    }
+                }
+                audio.onended = () => {
+                    if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                    if(notifyAudioSourceNode) {
+                        try { notifyAudioSourceNode.disconnect(); } catch (_) {}
+                        notifyAudioSourceNode = null;
+                    }
+                    finish(true);
+                };
+                audio.onerror = () => {
+                    if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                    if(notifyAudioSourceNode) {
+                        try { notifyAudioSourceNode.disconnect(); } catch (_) {}
+                        notifyAudioSourceNode = null;
+                    }
+                    finish(false);
+                };
+                const p = audio.play();
+                if (p && typeof p.then === 'function') {
+                    p.catch(() => {
+                        if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                        if(notifyAudioSourceNode) {
+                            try { notifyAudioSourceNode.disconnect(); } catch (_) {}
+                            notifyAudioSourceNode = null;
+                        }
+                        finish(false);
+                    });
+                }
+            } catch (_) {
+                _stopNotifyBackendAudio();
+                finish(false);
+            }
+        }
+
+        function _playNotifyVoiceByDoubao(contentText = '', done = null) {
+            const speakText = buildNotifyVoiceText(contentText);
+            const controller = ('AbortController' in window) ? new AbortController() : null;
+            const timer = setTimeout(() => {
+                try {
+                    if(controller) controller.abort();
+                } catch (_) {}
+            }, 10000);
+            fetch('/api/tts/synthesize', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({text: speakText, source: 'notify_voice'}),
+                signal: controller ? controller.signal : undefined,
+            }).then(r => r.json()).then(d => {
+                if(d.status !== 'ok' || !d.audio_base64) {
+                    if (typeof done === 'function') done(false);
+                    return;
+                }
+                _playNotifyVoiceByAudioData(d.audio_base64, d.mime || 'audio/mpeg', done);
+            }).catch(() => {
+                if (typeof done === 'function') done(false);
+            }).finally(() => {
+                clearTimeout(timer);
+            });
+        }
+
+        function _playNotifyVoiceByBrowser(contentText = '', done = null) {
+            // 已禁用浏览器语音链路，保留函数仅为兼容旧调用。
+            if (typeof done === 'function') done(false);
+        }
+
+        function _playNotifyVoiceOnce(contentText = '', done = null) {
+            if (notifyTtsReady) {
+                _playNotifyVoiceByDoubao(contentText, done);
+                return;
+            }
+            if (typeof done === 'function') done(false);
         }
 
         function processNotifyVoiceQueue() {
@@ -1239,6 +1418,9 @@
         }
 
         function testNotifyVoice() {
+            stopNotifyVoicePlayback();
+            notifyVoiceQueue.length = 0;
+            notifyVoicePlaying = false;
             announceNewNotifyByVoice(true, '这是一条测试评论内容');
         }
 
@@ -1257,16 +1439,16 @@
         }
 
         window.onload = () => {
-            preloadNotifyVoice();
-            if ('speechSynthesis' in window && typeof window.speechSynthesis.onvoiceschanged !== 'undefined') {
-                window.speechSynthesis.onvoiceschanged = () => preloadNotifyVoice();
-            }
+            bindNotifyTableHeightPersistence();
             switchControlPanel('control');
             fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';
             document.getElementById('notifCheckbox').checked = d.notification_monitoring || false;
             document.getElementById('headlessCheckbox').checked = d.headless_mode !== false;
             document.getElementById('delegatedAccount').value = d.delegated_account || '';
+            notifyTtsProvider = String(d.notify_tts_provider || 'doubao');
+            notifyTtsReady = !!d.notify_tts_ready;
+            notifyTtsVoiceType = String(d.notify_tts_voice_type || '');
             document.getElementById('llmFilterEnabled').checked = !!d.llm_filter_enabled;
             document.getElementById('llmBaseUrl').value = d.llm_filter_base_url || '';
             document.getElementById('llmModel').value = d.llm_filter_model || '';
