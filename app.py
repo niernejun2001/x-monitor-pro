@@ -405,6 +405,9 @@ INTENT_NON_TARGET_TOPIC_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_NON_TARGET_TOPIC_KEYWORDS",
     "互赞,互粉,互关,抽奖,返现,领券,薅羊毛,义乌,压力给到了,压力给到,副厂配件,极影相机,vivo好,发点token,token计费,token耗尽,token烧完,iphone,安卓,诺基亚,fotorgear,手机壳,镜头,掌中宝,v998,338c"
 )
+INTENT_LLM_PRIMARY_MODE = str(
+    os.environ.get("XMONITOR_INTENT_LLM_PRIMARY_MODE", "1")
+).strip().lower() in {"1", "true", "yes", "on"}
 LLM_FILTER_ENABLED = str(
     os.environ.get("XMONITOR_LLM_FILTER_ENABLED", "0")
 ).strip().lower() in {"1", "true", "yes", "on"}
@@ -2338,6 +2341,33 @@ def _max_intent_level(*levels):
     return best
 
 
+def _is_negative_intent_reason(reason_text):
+    """根据判定理由识别明显负向（非购买/噪声）语义。"""
+    txt = str(reason_text or "").strip().lower()
+    if not txt:
+        return False
+    negative_keywords = [
+        "noise",
+        "low",
+        "噪声",
+        "无意向",
+        "无购买",
+        "非购买",
+        "无关",
+        "不相关",
+        "闲聊",
+        "灌水",
+        "段子",
+        "调侃",
+        "吐槽",
+        "副厂配件",
+        "极影相机",
+        "手机壳",
+        "fotorgear",
+    ]
+    return any(k in txt for k in negative_keywords)
+
+
 def _find_keyword_hits(text_lower, keywords):
     hits = []
     src = str(text_lower or "").lower()
@@ -2688,6 +2718,18 @@ def _llm_intent_analysis(content, *, base_url=None, api_key=None, model=None, ti
     else:
         force_notify = bool(force_notify_raw)
 
+    # 纠正模型内部自相矛盾：reason/level 明确负向时，不允许高分与强提醒。
+    if level in {"noise", "low"}:
+        score = min(score, 24 if level == "noise" else 45)
+        if score < 50:
+            is_intent_user = False
+        force_notify = False
+    if _is_negative_intent_reason(reason):
+        score = min(score, 30)
+        level = "noise" if level == "noise" else "low"
+        is_intent_user = False
+        force_notify = False
+
     return {
         "intent_score": score,
         "intent_level": level,
@@ -2711,7 +2753,7 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         "content": text,
         "intent_score": rule_score,
         "intent_level": rule_level,
-        "is_intent_user": bool(rule_force_notify or rule_score >= 50),
+        "is_intent_user": bool(rule_force_notify or rule_score >= 55),
         "force_notify": bool(rule_force_notify),
         "block_intent": bool(rule_block_intent),
         "signals": list(rule_signals),
@@ -2765,13 +2807,94 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     llm_signals = list(llm_result.get("buying_signals", []))
     llm_force_notify = bool(llm_result.get("force_notify", False))
     llm_is_intent_user = bool(llm_result.get("is_intent_user", False))
+    llm_reason_negative = _is_negative_intent_reason(llm_reason)
 
-    blended_score = int(round(max(rule_score, (rule_score * 0.35 + llm_score * 0.65))))
+    # LLM 主导模式：除少量硬兜底外，最终判断以 LLM 为主，减少规则分支复杂度。
+    if INTENT_LLM_PRIMARY_MODE:
+        hard_rule_force = "short_reply_intent_signal" in set(rule_signals)
+        hard_rule_block = "non_business_meme_signal" in set(rule_signals)
+
+        final_score = max(0, min(100, int(llm_score)))
+        final_level = str(llm_level or "").strip().lower()
+        if final_level not in {"high", "medium", "low", "noise"}:
+            final_level = _score_to_intent_level(final_score)
+        final_force_notify = bool(llm_force_notify)
+        final_is_intent = bool(
+            llm_is_intent_user
+            or final_force_notify
+            or (final_score >= 60 and _intent_level_rank(final_level) >= _intent_level_rank("medium"))
+        )
+        final_block = bool(hard_rule_block)
+
+        # LLM 给出负向结论时，直接压低并禁播，避免“理由是噪声但分数偏高”。
+        if llm_reason_negative or final_level in {"low", "noise"}:
+            cap = 30 if final_level == "noise" else 45
+            final_score = min(final_score, cap)
+            final_level = _score_to_intent_level(final_score)
+            final_is_intent = False
+            final_force_notify = False
+            if _intent_level_rank(final_level) <= _intent_level_rank("low"):
+                final_block = True
+
+        # 仅保留“短回复强意向”这类硬兜底，确保 1/扣1 等不会漏播。
+        if hard_rule_force:
+            final_score = max(final_score, 62)
+            final_level = _max_intent_level(final_level, "medium")
+            final_is_intent = True
+            final_force_notify = True
+            final_block = False
+
+        merged_signals = []
+        for sig in (rule_signals + llm_signals):
+            sig_text = str(sig).strip()
+            if sig_text and sig_text not in merged_signals:
+                merged_signals.append(sig_text)
+        if llm_reason_negative and "llm_negative_reason" not in merged_signals:
+            merged_signals.append("llm_negative_reason")
+
+        result.update({
+            "intent_score": int(final_score),
+            "intent_level": str(final_level),
+            "is_intent_user": bool(final_is_intent),
+            "force_notify": bool(final_force_notify),
+            "block_intent": bool(final_block),
+            "signals": merged_signals[:12],
+            "reason": llm_reason or "llm_primary",
+            "llm_used": True,
+            "llm_score": llm_score,
+            "llm_level": llm_level,
+            "llm_reason": llm_reason,
+        })
+        log_to_ui(
+            "debug",
+            f"🤖 [Intent] llm_primary score={result['intent_score']} level={result['intent_level']} "
+            f"intent={result['is_intent_user']} force={result['force_notify']} block={result.get('block_intent', False)} "
+            f"rule={rule_score} llm={llm_score}/{llm_level} reason={result['reason'] or '-'}"
+        )
+        return result
+
+    llm_positive = bool(
+        (not llm_reason_negative)
+        and (
+            llm_force_notify
+            or (llm_is_intent_user and llm_score >= 55)
+            or _intent_level_rank(llm_level) >= _intent_level_rank("medium")
+            or bool(llm_signals)
+        )
+    )
+    llm_weight = 0.65 if llm_positive else 0.20
+    llm_score_for_blend = llm_score if llm_positive else min(llm_score, 45)
+
+    blended_score = int(round(max(rule_score, (rule_score * (1.0 - llm_weight) + llm_score_for_blend * llm_weight))))
+    if (not llm_positive) and _intent_level_rank(llm_level) <= _intent_level_rank("low") and rule_score < 55:
+        blended_score = min(blended_score, 49)
     blended_score = max(0, min(100, blended_score))
     score_level = _score_to_intent_level(blended_score)
     llm_intent_hint = bool(
+        (not llm_reason_negative)
+        and
         llm_is_intent_user
-        and llm_score >= 50
+        and llm_score >= 55
         and (
             _intent_level_rank(llm_level) >= _intent_level_rank("medium")
             or llm_force_notify
@@ -2793,7 +2916,7 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     result.update({
         "intent_score": blended_score,
         "intent_level": blended_level,
-        "is_intent_user": bool(blended_score >= 50 or llm_is_intent_user or blended_force_notify),
+        "is_intent_user": bool(blended_score >= 55 or llm_intent_hint or blended_force_notify),
         "force_notify": bool(blended_force_notify),
         "signals": merged_signals[:12],
         "reason": llm_reason or "rule_llm_blended",
@@ -2813,6 +2936,21 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         result.update({
             "intent_score": blocked_score,
             "intent_level": blocked_level,
+            "is_intent_user": False,
+            "force_notify": False,
+            "block_intent": True,
+            "signals": blocked_signals[:12],
+        })
+
+    # LLM 负向理由兜底：避免出现“理由是噪声，但综合分中高”的矛盾结果。
+    if (not rule_force_notify) and llm_reason_negative and _intent_level_rank(llm_level) <= _intent_level_rank("low"):
+        blocked_score = min(int(result.get("intent_score", 0) or 0), 30)
+        blocked_signals = list(result.get("signals", []))
+        if "llm_negative_reason" not in blocked_signals:
+            blocked_signals.append("llm_negative_reason")
+        result.update({
+            "intent_score": blocked_score,
+            "intent_level": _score_to_intent_level(blocked_score),
             "is_intent_user": False,
             "force_notify": False,
             "block_intent": True,
