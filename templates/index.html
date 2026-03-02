@@ -1496,14 +1496,19 @@
         }
         function _onceNotifyDone(done = null) {
             let called = false;
-            return function(ok = true) {
+            return function(ok = true, msg = '') {
                 if(called) return;
                 called = true;
-                if (typeof done === 'function') done(ok);
+                if (typeof done === 'function') done(ok, msg);
             };
         }
 
         function _stopNotifyBackendAudio() {
+            if (notifyAudioBufferSource) {
+                try { notifyAudioBufferSource.stop(0); } catch (_) {}
+                try { notifyAudioBufferSource.disconnect(); } catch (_) {}
+                notifyAudioBufferSource = null;
+            }
             if(notifyAudioSourceNode) {
                 try { notifyAudioSourceNode.disconnect(); } catch (_) {}
                 notifyAudioSourceNode = null;
@@ -1543,68 +1548,74 @@
             const finish = _onceNotifyDone(done);
             const b64 = String(audioBase64 || '').trim();
             if(!b64) {
-                finish(false);
+                _notifyAudioDiag('play_b64_empty');
+                finish(false, '豆包返回音频为空');
                 return;
             }
-            const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
-            const src = `data:${safeMime};base64,${b64}`;
+            _notifyAudioDiag('play_recv_audio', {
+                b64_len: b64.length,
+                mime: String(mime || 'audio/mpeg'),
+                ctx_state: _getNotifyAudioCtxState(),
+                unlocked: !!notifyAudioUnlocked,
+            });
             try {
                 _stopNotifyBrowserSpeech();
                 _stopNotifyBackendAudio();
+                const ctx = _getOrCreateNotifyAudioContext();
+                if (ctx) {
+                    _notifyAudioDiag('play_webaudio_primary', { ctx_state: _getNotifyAudioCtxState() });
+                    _playNotifyVoiceByWebAudioData(b64, (ok, msg) => {
+                        if (ok) {
+                            finish(true);
+                            return;
+                        }
+                        _notifyAudioDiag('play_webaudio_primary_fail', {
+                            ctx_state: _getNotifyAudioCtxState(),
+                            err: String(msg || 'unknown'),
+                        });
+                        finish(false, msg || 'WebAudio播放失败');
+                    });
+                    return;
+                }
+                const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
+                const src = `data:${safeMime};base64,${b64}`;
                 const audio = new Audio(src);
                 notifyBackendAudio = audio;
                 audio.volume = 1.0;
-                const AudioCtx = window.AudioContext || window.webkitAudioContext;
-                if (AudioCtx) {
-                    if (!notifyAudioContext) {
-                        notifyAudioContext = new AudioCtx();
-                    }
-                    if (!notifyAudioGainNode) {
-                        notifyAudioGainNode = notifyAudioContext.createGain();
-                        notifyAudioGainNode.connect(notifyAudioContext.destination);
-                    }
-                    notifyAudioGainNode.gain.value = Math.max(1.0, NOTIFY_AUDIO_GAIN);
-                    notifyAudioSourceNode = notifyAudioContext.createMediaElementSource(audio);
-                    notifyAudioSourceNode.connect(notifyAudioGainNode);
-                    if (notifyAudioContext.state === 'suspended') {
-                        try { notifyAudioContext.resume(); } catch (_) {}
-                    }
-                }
                 audio.onended = () => {
                     if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                    if(notifyAudioSourceNode) {
-                        try { notifyAudioSourceNode.disconnect(); } catch (_) {}
-                        notifyAudioSourceNode = null;
-                    }
                     finish(true);
                 };
                 audio.onerror = () => {
                     if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                    if(notifyAudioSourceNode) {
-                        try { notifyAudioSourceNode.disconnect(); } catch (_) {}
-                        notifyAudioSourceNode = null;
-                    }
-                    finish(false);
+                    finish(false, '浏览器音频播放错误');
                 };
                 const p = audio.play();
                 if (p && typeof p.then === 'function') {
-                    p.catch(() => {
+                    p.catch((e) => {
+                        const blocked = e && (e.name === 'NotAllowedError' || /notallowed/i.test(String(e.message || '')));
+                        _notifyAudioDiag('play_htmlaudio_reject', {
+                            err: String((e && (e.message || e.name)) || e || 'unknown'),
+                            blocked: !!blocked,
+                        });
                         if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                        if(notifyAudioSourceNode) {
-                            try { notifyAudioSourceNode.disconnect(); } catch (_) {}
-                            notifyAudioSourceNode = null;
-                        }
-                        finish(false);
+                        finish(false, blocked ? '浏览器阻止音频播放，请检查页面是否静音或自动播放策略' : '浏览器音频播放失败');
                     });
                 }
             } catch (_) {
                 _stopNotifyBackendAudio();
-                finish(false);
+                _notifyAudioDiag('play_init_fail');
+                finish(false, '浏览器音频组件初始化失败');
             }
         }
 
         function _playNotifyVoiceByDoubao(contentText = '', done = null) {
             const speakText = buildNotifyVoiceText(contentText);
+            _notifyAudioDiag('doubao_fetch_start', {
+                text_len: speakText.length,
+                provider: notifyTtsProvider,
+                ready: !!notifyTtsReady,
+            });
             const controller = ('AbortController' in window) ? new AbortController() : null;
             const timer = setTimeout(() => {
                 try {
@@ -1618,12 +1629,24 @@
                 signal: controller ? controller.signal : undefined,
             }).then(r => r.json()).then(d => {
                 if(d.status !== 'ok' || !d.audio_base64) {
-                    if (typeof done === 'function') done(false);
+                    const errMsg = String(d.msg || d.error || '').trim() || '豆包TTS返回失败';
+                    _notifyAudioDiag('doubao_fetch_fail', { err: errMsg, status: String(d.status || '') });
+                    if (typeof done === 'function') done(false, errMsg);
                     return;
                 }
+                _notifyAudioDiag('doubao_fetch_ok', {
+                    audio_len: String(d.audio_base64 || '').length,
+                    mime: String(d.mime || ''),
+                    voice_type: String(d.voice_type || ''),
+                });
                 _playNotifyVoiceByAudioData(d.audio_base64, d.mime || 'audio/mpeg', done);
-            }).catch(() => {
-                if (typeof done === 'function') done(false);
+            }).catch((e) => {
+                const errMsg = e && e.name === 'AbortError' ? '豆包TTS请求超时' : '豆包TTS请求失败（网络异常）';
+                _notifyAudioDiag('doubao_fetch_error', {
+                    err: errMsg,
+                    reason: String((e && (e.message || e.name)) || e || 'unknown'),
+                });
+                if (typeof done === 'function') done(false, errMsg);
             }).finally(() => {
                 clearTimeout(timer);
             });
@@ -1639,7 +1662,7 @@
                 _playNotifyVoiceByDoubao(contentText, done);
                 return;
             }
-            if (typeof done === 'function') done(false);
+            if (typeof done === 'function') done(false, '豆包TTS未就绪（notify_tts_ready=false）');
         }
 
         function processNotifyVoiceQueue() {
@@ -1675,7 +1698,31 @@
             stopNotifyVoicePlayback();
             notifyVoiceQueue.length = 0;
             notifyVoicePlaying = false;
-            announceNewNotifyByVoice(true, '这是一条测试评论内容');
+            _notifyAudioDiag('test_click', {
+                ready: !!notifyTtsReady,
+                provider: notifyTtsProvider,
+                ctx_state: _getNotifyAudioCtxState(),
+                unlocked: !!notifyAudioUnlocked,
+                gain: clampNotifyAudioGain(notifyAudioGainValue),
+            });
+            unlockNotifyAudioByGesture().then((unlockOk) => {
+                _notifyAudioDiag('test_after_unlock', {
+                    unlock_ok: !!unlockOk,
+                    ctx_state: _getNotifyAudioCtxState(),
+                    unlocked: !!notifyAudioUnlocked,
+                    gain: clampNotifyAudioGain(notifyAudioGainValue),
+                });
+                _playNotifyVoiceOnce('这是一条测试评论内容', (ok, msg) => {
+                    _notifyAudioDiag('test_done', {
+                        ok: !!ok,
+                        msg: String(msg || ''),
+                        ctx_state: _getNotifyAudioCtxState(),
+                        gain: clampNotifyAudioGain(notifyAudioGainValue),
+                    });
+                    if (ok) return;
+                    alert(`测试失败：${String(msg || '未知错误')}`);
+                });
+            });
         }
 
         function switchControlPanel(panelKey, btn) {
@@ -1694,6 +1741,12 @@
 
         window.onload = () => {
             bindNotifyTableHeightPersistence();
+            restoreNotifyAudioGain();
+            bindNotifyAudioGainControl();
+            const unlockOnce = () => {
+                unlockNotifyAudioByGesture().finally(() => {});
+            };
+            document.addEventListener('pointerdown', unlockOnce, { once: true });
             switchControlPanel('control');
             fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';

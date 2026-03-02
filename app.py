@@ -399,7 +399,7 @@ INTENT_CONTACT_KEYWORDS = _parse_keywords_env(
 )
 INTENT_NON_TARGET_TOPIC_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_NON_TARGET_TOPIC_KEYWORDS",
-    "互赞,互粉,互关,抽奖,返现,领券,薅羊毛"
+    "互赞,互粉,互关,抽奖,返现,领券,薅羊毛,义乌,压力给到了,压力给到"
 )
 LLM_FILTER_ENABLED = str(
     os.environ.get("XMONITOR_LLM_FILTER_ENABLED", "0")
@@ -2370,6 +2370,24 @@ def _is_performance_consult_signal(content):
     return bool((intent_anchor and perf_anchor) or (intent_anchor and ask_anchor))
 
 
+def _is_non_business_meme_signal(content):
+    """识别与业务无关的网络梗/段子，避免误触发意向播报。"""
+    raw = str(content or "").strip()
+    if not raw:
+        return False
+    norm = unicodedata.normalize("NFKC", raw).lower()
+    compact = re.sub(r"\s+", "", norm)
+    if not compact:
+        return False
+    meme_patterns = [
+        "压力给到了义乌",
+        "压力给到义乌",
+        "压力给到了",
+        "压力给到",
+    ]
+    return any(p in compact for p in meme_patterns)
+
+
 def _rule_based_intent_analysis(content):
     text = _normalize_content_for_filter(content)
     if not text:
@@ -2413,6 +2431,17 @@ def _rule_based_intent_analysis(content):
             "block_intent": False,
             "force_keywords": ["performance_consult"],
             "non_target_keywords": [],
+        }
+
+    if _is_non_business_meme_signal(text):
+        return {
+            "intent_score": 8,
+            "intent_level": "noise",
+            "signals": ["non_business_meme_signal"],
+            "force_notify": False,
+            "block_intent": True,
+            "force_keywords": [],
+            "non_target_keywords": ["meme"],
         }
 
     text_low = text.lower()
@@ -2491,6 +2520,7 @@ def _build_intent_analysis_prompt(content):
         "判定原则(销售线索优先):\n"
         "1) 明确购买/询价/报价/价格/下单/试用/部署/联系方式咨询（微信/vx/whatsapp）=> medium/high。\n"
         "2) 仅情绪表达、闲聊、纯表情、无意义灌水 => low/noise。\n"
+        "2.1) 网络梗/段子（例如“压力给到了义乌”）按无业务相关处理，判定 noise。\n"
         "3) 出现“多少钱/什么价格/怎么买/购买方式/开票/合同/授权/代理/优惠”等词时，提高意向分。\n"
         "4) “1/11/111/+1/扣1”这类短回复在“回复你”通知中通常代表愿意沟通，至少判为 medium。\n"
         "5) force_notify 在强意向线索时设为 true（询价、采购、留联系方式、明确要买/试用/部署）。\n"
