@@ -44,6 +44,18 @@ def _load_local_tts_config():
 
 LOCAL_TTS_CONFIG = _load_local_tts_config()
 
+
+def _save_local_tts_config(cfg):
+    """保存本地私有TTS配置（不进入git）。"""
+    try:
+        target = os.path.abspath(os.path.expanduser(LOCAL_TTS_CONFIG_FILE))
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        with open(target, "w", encoding="utf-8") as f:
+            json.dump(cfg, f, ensure_ascii=False, indent=2)
+        return True, ""
+    except Exception as e:
+        return False, str(e)
+
 # --- 配置文件路径（自动检测环境）---
 def get_default_user_data_dir():
     """返回当前用户默认数据目录。"""
@@ -375,11 +387,11 @@ def _parse_keywords_env(env_key, default_text=""):
 CONTENT_FILTER_BLOCKED_MENTIONS = ()
 INTENT_FORCE_NOTIFY_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_FORCE_NOTIFY_KEYWORDS",
-    "询价,报价,多少价格,什么价格,多少钱,怎么卖,怎么买,购买方式,购买,下单,开通,试用,demo,演示,企业版,私有化,部署,合同,发票,开票,授权,代理,经销,渠道,优惠,折扣,售后,客服,联系方式,微信,vx,v我,whatsapp,telegram"
+    "询价,报价,多少价格,什么价格,多少钱,怎么卖,怎么买,购买方式,购买,下单,开通,试用,demo,演示,企业版,私有化,部署,合同,发票,开票,授权,代理,经销,渠道,优惠,折扣,售后,客服,联系方式,微信,vx,v我,whatsapp,telegram,算力舱,算力配置,性能,并发,吞吐,能跑多快,能跑多少"
 )
 INTENT_PRODUCT_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_PRODUCT_KEYWORDS",
-    "懒猫微服,lazycat,lazycat.cloud,应用云电脑,云电脑,内网穿透,沙箱隔离,一站式部署,大模型,deepseek,远程桌面,异地组网,家庭服务器,nas,openclaw"
+    "懒猫微服,lazycat,lazycat.cloud,应用云电脑,云电脑,内网穿透,沙箱隔离,一站式部署,大模型,deepseek,远程桌面,异地组网,家庭服务器,nas,openclaw,算力舱,算力,算力规格,cpu,gpu"
 )
 INTENT_CONTACT_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_CONTACT_KEYWORDS",
@@ -470,6 +482,121 @@ DOUBAO_TTS_ENABLED = str(
         LOCAL_TTS_CONFIG.get("enabled", "1" if (DOUBAO_TTS_APP_ID and DOUBAO_TTS_ACCESS_TOKEN) else "0"),
     )
 ).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _safe_float(val, default_val):
+    try:
+        return float(val)
+    except Exception:
+        return float(default_val)
+
+
+def _safe_int(val, default_val):
+    try:
+        return int(val)
+    except Exception:
+        return int(default_val)
+
+
+def _build_notify_tts_runtime_payload(include_secrets=True):
+    payload = {
+        "notify_tts_enabled": bool(DOUBAO_TTS_ENABLED),
+        "notify_tts_ready": bool(_doubao_tts_is_ready()),
+        "notify_tts_provider": ("doubao" if _doubao_tts_is_ready() else "browser"),
+        "notify_tts_app_id": str(DOUBAO_TTS_APP_ID or ""),
+        "notify_tts_voice_type": str(DOUBAO_TTS_VOICE_TYPE or ""),
+        "notify_tts_cluster": str(DOUBAO_TTS_CLUSTER or "volcano_tts"),
+        "notify_tts_endpoint": str(DOUBAO_TTS_ENDPOINT or "https://openspeech.bytedance.com/api/v1/tts"),
+        "notify_tts_uid": str(DOUBAO_TTS_UID or "xmonitor-notify"),
+        "notify_tts_encoding": str(DOUBAO_TTS_ENCODING or "mp3"),
+        "notify_tts_speed_ratio": float(DOUBAO_TTS_SPEED_RATIO),
+        "notify_tts_volume_ratio": float(DOUBAO_TTS_VOLUME_RATIO),
+        "notify_tts_pitch_ratio": float(DOUBAO_TTS_PITCH_RATIO),
+        "notify_tts_timeout_sec": float(DOUBAO_TTS_TIMEOUT_SEC),
+        "notify_tts_text_max_chars": int(DOUBAO_TTS_TEXT_MAX_CHARS),
+    }
+    if include_secrets:
+        payload["notify_tts_access_token"] = str(DOUBAO_TTS_ACCESS_TOKEN or "")
+        payload["notify_tts_secret_key"] = str(DOUBAO_TTS_SECRET_KEY or "")
+    return payload
+
+
+def _normalize_notify_tts_config_from_payload(payload):
+    payload = payload or {}
+    enabled = bool(payload.get("enabled", DOUBAO_TTS_ENABLED))
+    app_id = str(payload.get("app_id", DOUBAO_TTS_APP_ID) or "").strip()
+    access_token = str(payload.get("access_token", DOUBAO_TTS_ACCESS_TOKEN) or "").strip()
+    secret_key = str(payload.get("secret_key", DOUBAO_TTS_SECRET_KEY) or "").strip()
+    voice_type = str(payload.get("voice_type", DOUBAO_TTS_VOICE_TYPE or "zh_female_vv_uranus_bigtts") or "zh_female_vv_uranus_bigtts").strip()
+    cluster = str(payload.get("cluster", DOUBAO_TTS_CLUSTER or "volcano_tts") or "volcano_tts").strip()
+    endpoint = str(
+        payload.get("endpoint", DOUBAO_TTS_ENDPOINT or "https://openspeech.bytedance.com/api/v1/tts")
+        or "https://openspeech.bytedance.com/api/v1/tts"
+    ).strip()
+    uid = str(payload.get("uid", DOUBAO_TTS_UID or "xmonitor-notify") or "xmonitor-notify").strip()
+    encoding = str(payload.get("encoding", DOUBAO_TTS_ENCODING or "mp3") or "mp3").strip().lower()
+    if encoding == "opus":
+        encoding = "ogg"
+    if encoding not in {"mp3", "wav", "ogg"}:
+        encoding = "mp3"
+    speed_ratio = max(0.5, min(2.0, _safe_float(payload.get("speed_ratio", DOUBAO_TTS_SPEED_RATIO), DOUBAO_TTS_SPEED_RATIO)))
+    volume_ratio = max(0.2, min(3.0, _safe_float(payload.get("volume_ratio", DOUBAO_TTS_VOLUME_RATIO), DOUBAO_TTS_VOLUME_RATIO)))
+    pitch_ratio = max(0.5, min(2.0, _safe_float(payload.get("pitch_ratio", DOUBAO_TTS_PITCH_RATIO), DOUBAO_TTS_PITCH_RATIO)))
+    timeout_sec = max(3.0, min(30.0, _safe_float(payload.get("timeout_sec", DOUBAO_TTS_TIMEOUT_SEC), DOUBAO_TTS_TIMEOUT_SEC)))
+    text_max_chars = max(20, min(500, _safe_int(payload.get("text_max_chars", DOUBAO_TTS_TEXT_MAX_CHARS), DOUBAO_TTS_TEXT_MAX_CHARS)))
+    return {
+        "enabled": bool(enabled),
+        "app_id": app_id,
+        "access_token": access_token,
+        "secret_key": secret_key,
+        "voice_type": voice_type,
+        "cluster": cluster or "volcano_tts",
+        "endpoint": endpoint or "https://openspeech.bytedance.com/api/v1/tts",
+        "uid": uid or "xmonitor-notify",
+        "encoding": encoding,
+        "speed_ratio": float(speed_ratio),
+        "volume_ratio": float(volume_ratio),
+        "pitch_ratio": float(pitch_ratio),
+        "timeout_sec": float(timeout_sec),
+        "text_max_chars": int(text_max_chars),
+    }
+
+
+def _apply_notify_tts_config(cfg):
+    global DOUBAO_TTS_ENABLED, DOUBAO_TTS_APP_ID, DOUBAO_TTS_ACCESS_TOKEN, DOUBAO_TTS_SECRET_KEY
+    global DOUBAO_TTS_VOICE_TYPE, DOUBAO_TTS_CLUSTER, DOUBAO_TTS_ENDPOINT, DOUBAO_TTS_UID, DOUBAO_TTS_ENCODING
+    global DOUBAO_TTS_SPEED_RATIO, DOUBAO_TTS_VOLUME_RATIO, DOUBAO_TTS_PITCH_RATIO, DOUBAO_TTS_TIMEOUT_SEC
+    global DOUBAO_TTS_TEXT_MAX_CHARS, LOCAL_TTS_CONFIG
+    DOUBAO_TTS_ENABLED = bool(cfg.get("enabled", False))
+    DOUBAO_TTS_APP_ID = str(cfg.get("app_id", "") or "").strip()
+    DOUBAO_TTS_ACCESS_TOKEN = str(cfg.get("access_token", "") or "").strip()
+    DOUBAO_TTS_SECRET_KEY = str(cfg.get("secret_key", "") or "").strip()
+    DOUBAO_TTS_VOICE_TYPE = str(cfg.get("voice_type", "zh_female_vv_uranus_bigtts") or "zh_female_vv_uranus_bigtts").strip()
+    DOUBAO_TTS_CLUSTER = str(cfg.get("cluster", "volcano_tts") or "volcano_tts").strip()
+    DOUBAO_TTS_ENDPOINT = str(cfg.get("endpoint", "https://openspeech.bytedance.com/api/v1/tts") or "https://openspeech.bytedance.com/api/v1/tts").strip()
+    DOUBAO_TTS_UID = str(cfg.get("uid", "xmonitor-notify") or "xmonitor-notify").strip()
+    DOUBAO_TTS_ENCODING = str(cfg.get("encoding", "mp3") or "mp3").strip().lower()
+    DOUBAO_TTS_SPEED_RATIO = max(0.5, min(2.0, _safe_float(cfg.get("speed_ratio", 1.0), 1.0)))
+    DOUBAO_TTS_VOLUME_RATIO = max(0.2, min(3.0, _safe_float(cfg.get("volume_ratio", 1.35), 1.35)))
+    DOUBAO_TTS_PITCH_RATIO = max(0.5, min(2.0, _safe_float(cfg.get("pitch_ratio", 1.0), 1.0)))
+    DOUBAO_TTS_TIMEOUT_SEC = max(3.0, min(30.0, _safe_float(cfg.get("timeout_sec", 12.0), 12.0)))
+    DOUBAO_TTS_TEXT_MAX_CHARS = max(20, min(500, _safe_int(cfg.get("text_max_chars", 160), 160)))
+    LOCAL_TTS_CONFIG = {
+        "enabled": "1" if DOUBAO_TTS_ENABLED else "0",
+        "app_id": DOUBAO_TTS_APP_ID,
+        "access_token": DOUBAO_TTS_ACCESS_TOKEN,
+        "secret_key": DOUBAO_TTS_SECRET_KEY,
+        "voice_type": DOUBAO_TTS_VOICE_TYPE,
+        "cluster": DOUBAO_TTS_CLUSTER,
+        "endpoint": DOUBAO_TTS_ENDPOINT,
+        "uid": DOUBAO_TTS_UID,
+        "encoding": DOUBAO_TTS_ENCODING,
+        "speed_ratio": DOUBAO_TTS_SPEED_RATIO,
+        "volume_ratio": DOUBAO_TTS_VOLUME_RATIO,
+        "pitch_ratio": DOUBAO_TTS_PITCH_RATIO,
+        "timeout_sec": DOUBAO_TTS_TIMEOUT_SEC,
+        "text_max_chars": DOUBAO_TTS_TEXT_MAX_CHARS,
+    }
 try:
     LLM_FILTER_TIMEOUT_SEC = float(os.environ.get("XMONITOR_LLM_TIMEOUT_SEC", "8"))
 except Exception:
@@ -2168,6 +2295,28 @@ def _score_to_intent_level(score):
     return "noise"
 
 
+def _intent_level_rank(level):
+    lv = str(level or "").strip().lower()
+    if lv == "high":
+        return 4
+    if lv == "medium":
+        return 3
+    if lv == "low":
+        return 2
+    return 1
+
+
+def _max_intent_level(*levels):
+    best = "noise"
+    best_rank = 0
+    for lv in levels:
+        r = _intent_level_rank(lv)
+        if r > best_rank:
+            best_rank = r
+            best = str(lv or "").strip().lower() or "noise"
+    return best
+
+
 def _find_keyword_hits(text_lower, keywords):
     hits = []
     src = str(text_lower or "").lower()
@@ -2205,6 +2354,22 @@ def _is_short_reply_intent_signal(content):
     return False
 
 
+def _is_performance_consult_signal(content):
+    """识别“性能/速度/算力规格”类购买前咨询。"""
+    raw = str(content or "").strip()
+    if not raw:
+        return False
+    norm = unicodedata.normalize("NFKC", raw).lower()
+    compact = re.sub(r"\s+", "", norm)
+    if not compact:
+        return False
+
+    intent_anchor = any(k in compact for k in ["算力舱", "算力仓", "算力", "配置", "规格", "机型", "cpu", "gpu"])
+    perf_anchor = any(k in compact for k in ["速度", "性能", "跑", "并发", "吞吐", "延迟", "带宽"])
+    ask_anchor = ("?" in norm) or ("？" in raw) or any(k in compact for k in ["多少", "几个", "能跑", "多快", "怎样", "怎么"])
+    return bool((intent_anchor and perf_anchor) or (intent_anchor and ask_anchor))
+
+
 def _rule_based_intent_analysis(content):
     text = _normalize_content_for_filter(content)
     if not text:
@@ -2236,6 +2401,17 @@ def _rule_based_intent_analysis(content):
             "force_notify": True,
             "block_intent": False,
             "force_keywords": ["short_reply_signal"],
+            "non_target_keywords": [],
+        }
+
+    if _is_performance_consult_signal(text):
+        return {
+            "intent_score": 72,
+            "intent_level": "medium",
+            "signals": ["performance_consult_signal"],
+            "force_notify": True,
+            "block_intent": False,
+            "force_keywords": ["performance_consult"],
             "non_target_keywords": [],
         }
 
@@ -2446,10 +2622,25 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     llm_reason = str(llm_result.get("reason", "") or "").strip()
     llm_signals = list(llm_result.get("buying_signals", []))
     llm_force_notify = bool(llm_result.get("force_notify", False))
+    llm_is_intent_user = bool(llm_result.get("is_intent_user", False))
 
     blended_score = int(round(max(rule_score, (rule_score * 0.35 + llm_score * 0.65))))
     blended_score = max(0, min(100, blended_score))
-    blended_level = _score_to_intent_level(blended_score)
+    score_level = _score_to_intent_level(blended_score)
+    llm_intent_hint = bool(
+        llm_is_intent_user
+        and llm_score >= 50
+        and (
+            _intent_level_rank(llm_level) >= _intent_level_rank("medium")
+            or llm_force_notify
+            or bool(llm_signals)
+        )
+    )
+    blended_force_notify = bool(rule_force_notify or llm_force_notify or llm_intent_hint)
+    if blended_force_notify:
+        blended_score = max(blended_score, 55)
+        score_level = _score_to_intent_level(blended_score)
+    blended_level = _max_intent_level(score_level, rule_level, llm_level)
 
     merged_signals = []
     for sig in (rule_signals + llm_signals):
@@ -2460,8 +2651,8 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
     result.update({
         "intent_score": blended_score,
         "intent_level": blended_level,
-        "is_intent_user": bool(blended_score >= 50 or llm_result.get("is_intent_user", False) or llm_force_notify),
-        "force_notify": bool(llm_force_notify),
+        "is_intent_user": bool(blended_score >= 50 or llm_is_intent_user or blended_force_notify),
+        "force_notify": bool(blended_force_notify),
         "signals": merged_signals[:12],
         "reason": llm_reason or "rule_llm_blended",
         "llm_used": True,
@@ -2473,7 +2664,8 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         "debug",
         f"🤖 [Intent] llm_done score={blended_score} level={blended_level} "
         f"intent={result['is_intent_user']} force={result['force_notify']} "
-        f"rule={rule_score} llm={llm_score} reason={result['reason'] or '-'}"
+        f"rule={rule_score} llm={llm_score}/{llm_level} llm_intent={llm_is_intent_user} "
+        f"hint={llm_intent_hint} reason={result['reason'] or '-'}"
     )
     return result
 
@@ -7608,9 +7800,7 @@ def state():
             "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
             "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
             "notification_reply_only_mode": bool(NOTIFICATION_REPLY_ONLY_MODE),
-            "notify_tts_provider": ("doubao" if _doubao_tts_is_ready() else "browser"),
-            "notify_tts_ready": bool(_doubao_tts_is_ready()),
-            "notify_tts_voice_type": str(DOUBAO_TTS_VOICE_TYPE or ""),
+            **_build_notify_tts_runtime_payload(include_secrets=True),
         })
 
 @app.route('/api/task/add', methods=['POST'])
@@ -8097,6 +8287,67 @@ def set_llm_filter_config():
         "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
         "notify_voice_block_keywords": list(NOTIFY_VOICE_BLOCK_KEYWORDS),
     })
+
+
+@app.route('/api/set_notify_tts_config', methods=['POST'])
+def set_notify_tts_config():
+    """设置通知豆包TTS配置并立即生效。"""
+    payload = request.get_json(silent=True) or {}
+    cfg = _normalize_notify_tts_config_from_payload(payload)
+    if cfg["enabled"] and (not cfg["app_id"] or not cfg["access_token"] or not cfg["voice_type"]):
+        return jsonify({"status": "err", "msg": "启用豆包TTS时必须填写 AppID / Access Token / 音色"}), 400
+
+    with data_lock:
+        _apply_notify_tts_config(cfg)
+        save_ok, save_err = _save_local_tts_config(LOCAL_TTS_CONFIG)
+    save_state()
+
+    if _doubao_tts_is_ready():
+        log_to_ui(
+            "info",
+            f"🔊 [NotifyTTS] 配置已更新并生效: voice={DOUBAO_TTS_VOICE_TYPE} encoding={DOUBAO_TTS_ENCODING}"
+        )
+    else:
+        log_to_ui("warn", "⚠️ [NotifyTTS] 配置已保存，但当前仍未就绪（请检查必填项）")
+    if not save_ok:
+        log_to_ui("warn", f"⚠️ [NotifyTTS] 本地配置落盘失败: {save_err}")
+
+    resp = {"status": "ok", "saved_to_local_file": bool(save_ok), "save_error": str(save_err or "")}
+    resp.update(_build_notify_tts_runtime_payload(include_secrets=True))
+    return jsonify(resp)
+
+
+@app.route('/api/notify_tts/test', methods=['POST'])
+def notify_tts_test():
+    """测试豆包TTS配置可用性。"""
+    payload = request.get_json(silent=True) or {}
+    text = str(payload.get("text", "") or "").strip() or "这是一条豆包语音测试"
+    if not _doubao_tts_is_ready():
+        return jsonify({
+            "status": "err",
+            "msg": "豆包TTS未就绪，请先保存有效配置",
+            **_build_notify_tts_runtime_payload(include_secrets=False),
+        }), 400
+
+    started_at = time.perf_counter()
+    try:
+        audio_b64 = _synthesize_doubao_tts_audio_base64(text)
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        return jsonify({
+            "status": "ok",
+            "msg": "豆包TTS测试通过",
+            "latency_ms": elapsed_ms,
+            "audio_b64_len": len(str(audio_b64 or "")),
+            **_build_notify_tts_runtime_payload(include_secrets=False),
+        })
+    except Exception as e:
+        elapsed_ms = int((time.perf_counter() - started_at) * 1000)
+        return jsonify({
+            "status": "err",
+            "msg": f"豆包TTS测试失败: {e}",
+            "latency_ms": elapsed_ms,
+            **_build_notify_tts_runtime_payload(include_secrets=False),
+        }), 500
 
 
 @app.route('/api/tts/synthesize', methods=['POST'])
