@@ -397,9 +397,13 @@ INTENT_CONTACT_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_CONTACT_KEYWORDS",
     "微信,vx,v我,加我,联系我,联系方式,私信,电话,whatsapp,telegram,email,邮箱"
 )
+INTENT_CONSULT_KEYWORDS = _parse_keywords_env(
+    "XMONITOR_INTENT_CONSULT_KEYWORDS",
+    "咨询,了解,介绍,是否支持,支持吗,能否,可以,怎么,如何,多少钱,什么价格,报价,预算,方案,套餐,配置,规格,速度,性能,并发,吞吐,试用,部署,开通,企业版,私有化,交付,售后,发票,合同,采购"
+)
 INTENT_NON_TARGET_TOPIC_KEYWORDS = _parse_keywords_env(
     "XMONITOR_INTENT_NON_TARGET_TOPIC_KEYWORDS",
-    "互赞,互粉,互关,抽奖,返现,领券,薅羊毛,义乌,压力给到了,压力给到"
+    "互赞,互粉,互关,抽奖,返现,领券,薅羊毛,义乌,压力给到了,压力给到,副厂配件,极影相机,vivo好,发点token,token计费,token耗尽,token烧完,iphone,安卓,诺基亚,fotorgear,手机壳,镜头,掌中宝,v998,338c"
 )
 LLM_FILTER_ENABLED = str(
     os.environ.get("XMONITOR_LLM_FILTER_ENABLED", "0")
@@ -416,10 +420,24 @@ LLM_INTENT_PROMPT_TEMPLATE = str(
 NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = str(
     os.environ.get("XMONITOR_NOTIFY_VOICE_BLOCK_KEYWORDS", "") or ""
 ).strip()
+NOTIFY_VOICE_BLOCK_KEYWORDS_BUILTIN = (
+    "副厂配件",
+    "极影相机",
+    "vivo好",
+    "发点token",
+    "token计费",
+    "token耗尽",
+    "token烧完",
+)
 NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(
-    kw.strip().lower()
-    for kw in re.split(r"[\n,，;；]+", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
-    if kw.strip()
+    dict.fromkeys(
+        list(NOTIFY_VOICE_BLOCK_KEYWORDS_BUILTIN)
+        + [
+            kw.strip().lower()
+            for kw in re.split(r"[\n,，;；]+", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
+            if kw.strip()
+        ]
+    )
 )
 DOUBAO_TTS_APP_ID = str(
     os.environ.get("XMONITOR_DOUBAO_TTS_APP_ID", LOCAL_TTS_CONFIG.get("app_id", "")) or ""
@@ -1382,7 +1400,10 @@ def load_state():
                     data.get("notify_voice_block_keywords_text", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ""
                 ).strip()
                 NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(
-                    kw.lower() for kw in _normalize_keyword_lines(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)
+                    dict.fromkeys(
+                        list(NOTIFY_VOICE_BLOCK_KEYWORDS_BUILTIN)
+                        + [kw.lower() for kw in _normalize_keyword_lines(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)]
+                    )
                 )
 
                 # 恢复去重ID（完整版）
@@ -2379,13 +2400,78 @@ def _is_non_business_meme_signal(content):
     compact = re.sub(r"\s+", "", norm)
     if not compact:
         return False
-    meme_patterns = [
+    business_anchors = [
+        "懒猫",
+        "lazycat",
+        "微服",
+        "算力舱",
+        "云电脑",
+        "内网穿透",
+        "沙箱",
+        "openclaw",
+        "私有化",
+        "部署",
+    ]
+    has_business_context = any(k in compact for k in business_anchors)
+    has_business_question = any(
+        k in compact for k in ["咨询", "了解", "购买", "报价", "价格", "多少钱", "试用", "部署", "合同", "发票", "联系", "怎么", "如何", "支持"]
+    )
+
+    hard_meme_patterns = [
         "压力给到了义乌",
         "压力给到义乌",
         "压力给到了",
         "压力给到",
     ]
-    return any(p in compact for p in meme_patterns)
+    if any(p in compact for p in hard_meme_patterns):
+        return True
+
+    consumer_patterns = [
+        "副厂配件",
+        "极影相机",
+        "vivo好",
+        "iphone",
+        "安卓",
+        "诺基亚",
+        "fotorgear",
+        "手机壳",
+        "镜头",
+        "掌中宝",
+        "v998",
+        "338c",
+    ]
+    if any(p in compact for p in consumer_patterns) and not (has_business_context and has_business_question):
+        return True
+
+    # token 成本吐槽默认按非业务噪声处理；但若明确在咨询产品能力/采购，不在此处拦截。
+    if "token" in compact and any(k in compact for k in ["vivo", "发点", "计费", "烧完", "耗尽", "星期几", "问天气"]):
+        if has_business_context and has_business_question:
+            return False
+        return True
+    return False
+
+
+def _is_business_consult_signal(content):
+    """识别业务咨询类文本，提升潜在商机召回。"""
+    text = _normalize_content_for_filter(content)
+    if not text:
+        return False
+    text_low = text.lower()
+    consult_hits = _find_keyword_hits(text_low, INTENT_CONSULT_KEYWORDS)
+    if not consult_hits:
+        return False
+
+    product_hits = _find_keyword_hits(text_low, INTENT_PRODUCT_KEYWORDS)
+    contact_hits = _find_keyword_hits(text_low, INTENT_CONTACT_KEYWORDS)
+    has_qmark = ("?" in text) or ("？" in text)
+
+    if product_hits:
+        return True
+    if contact_hits and any(k in text_low for k in ["咨询", "了解", "报价", "价格", "购买", "试用", "部署", "开通", "合作"]):
+        return True
+    if has_qmark and any(k in text_low for k in ["企业版", "私有化", "部署", "试用", "采购", "算力", "性能"]):
+        return True
+    return False
 
 
 def _rule_based_intent_analysis(content):
@@ -2433,6 +2519,17 @@ def _rule_based_intent_analysis(content):
             "non_target_keywords": [],
         }
 
+    if _is_business_consult_signal(text):
+        return {
+            "intent_score": 68,
+            "intent_level": "medium",
+            "signals": ["business_consult_signal"],
+            "force_notify": True,
+            "block_intent": False,
+            "force_keywords": ["business_consult"],
+            "non_target_keywords": [],
+        }
+
     if _is_non_business_meme_signal(text):
         return {
             "intent_score": 8,
@@ -2448,6 +2545,7 @@ def _rule_based_intent_analysis(content):
     force_hits = _find_keyword_hits(text_low, INTENT_FORCE_NOTIFY_KEYWORDS)
     product_hits = _find_keyword_hits(text_low, INTENT_PRODUCT_KEYWORDS)
     contact_hits = _find_keyword_hits(text_low, INTENT_CONTACT_KEYWORDS)
+    consult_hits = _find_keyword_hits(text_low, INTENT_CONSULT_KEYWORDS)
     non_target_hits = _find_keyword_hits(text_low, INTENT_NON_TARGET_TOPIC_KEYWORDS)
 
     text_len = len(text)
@@ -2480,6 +2578,11 @@ def _rule_based_intent_analysis(content):
         score += min(14, 7 * len(contact_hits))
         signals.append("contact_keyword")
 
+    if consult_hits and product_hits:
+        score = max(score, 58)
+        force_notify = True
+        signals.append("product_consult_signal")
+
     if product_hits and contact_hits:
         score = max(score, 68)
         force_notify = True
@@ -2489,6 +2592,12 @@ def _rule_based_intent_analysis(content):
         score = min(score, 24)
         block_intent = True
         signals.append("non_target_topic")
+    elif non_target_hits and not product_hits:
+        # 非目标消费电子/品牌/型号讨论：即便出现“价格/想买”等词，也按噪声处理
+        score = min(score, 18)
+        force_notify = False
+        block_intent = True
+        signals.append("non_target_consumer_topic")
 
     score = max(0, min(100, int(score)))
     level = _score_to_intent_level(score)
@@ -2521,9 +2630,12 @@ def _build_intent_analysis_prompt(content):
         "1) 明确购买/询价/报价/价格/下单/试用/部署/联系方式咨询（微信/vx/whatsapp）=> medium/high。\n"
         "2) 仅情绪表达、闲聊、纯表情、无意义灌水 => low/noise。\n"
         "2.1) 网络梗/段子（例如“压力给到了义乌”）按无业务相关处理，判定 noise。\n"
+        "2.2) 对 token 计费的吐槽、手机品牌讨论（如 vivo）、副厂配件/极影相机等非购买讨论，判定 noise。\n"
+        "2.3) 手机/数码消费品讨论（如 iPhone/安卓/诺基亚/Fotorgear/掌中宝/v998/338c/镜头/手机壳），即使出现价格词，也判定 noise。\n"
         "3) 出现“多少钱/什么价格/怎么买/购买方式/开票/合同/授权/代理/优惠”等词时，提高意向分。\n"
         "4) “1/11/111/+1/扣1”这类短回复在“回复你”通知中通常代表愿意沟通，至少判为 medium。\n"
         "5) force_notify 在强意向线索时设为 true（询价、采购、留联系方式、明确要买/试用/部署）。\n"
+        "6) 若涉及本产品功能/性能/部署/试用等咨询但信息不完整，宁可判为 medium，也不要判 low/noise。\n"
         f"评论内容: {content}"
     )
     return _render_llm_prompt_template(
@@ -2690,10 +2802,27 @@ def analyze_comment_intent(content, *, base_url=None, api_key=None, model=None, 
         "llm_level": llm_level,
         "llm_reason": llm_reason,
     })
+
+    # 规则层已判定为非目标场景时，强制压制最终结果，防止 LLM 误抬高意向。
+    if rule_block_intent:
+        blocked_score = min(int(result.get("intent_score", 0) or 0), 18)
+        blocked_level = _score_to_intent_level(blocked_score)
+        blocked_signals = list(result.get("signals", []))
+        if "rule_block_intent" not in blocked_signals:
+            blocked_signals.append("rule_block_intent")
+        result.update({
+            "intent_score": blocked_score,
+            "intent_level": blocked_level,
+            "is_intent_user": False,
+            "force_notify": False,
+            "block_intent": True,
+            "signals": blocked_signals[:12],
+        })
+
     log_to_ui(
         "debug",
-        f"🤖 [Intent] llm_done score={blended_score} level={blended_level} "
-        f"intent={result['is_intent_user']} force={result['force_notify']} "
+        f"🤖 [Intent] llm_done score={result['intent_score']} level={result['intent_level']} "
+        f"intent={result['is_intent_user']} force={result['force_notify']} block={result.get('block_intent', False)} "
         f"rule={rule_score} llm={llm_score}/{llm_level} llm_intent={llm_is_intent_user} "
         f"hint={llm_intent_hint} reason={result['reason'] or '-'}"
     )
@@ -8276,7 +8405,10 @@ def set_llm_filter_config():
         return jsonify({"status": "err", "msg": "意向 Prompt 过长（最大12000字符）"}), 400
 
     notify_voice_block_keywords = tuple(
-        kw.lower() for kw in _normalize_keyword_lines(notify_voice_block_keywords_text)
+        dict.fromkeys(
+            list(NOTIFY_VOICE_BLOCK_KEYWORDS_BUILTIN)
+            + [kw.lower() for kw in _normalize_keyword_lines(notify_voice_block_keywords_text)]
+        )
     )
 
     if enabled and (not base_url or not model):

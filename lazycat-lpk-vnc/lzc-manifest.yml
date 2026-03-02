@@ -1,0 +1,51 @@
+lzc-sdk-version: 0.1
+package: cloud.lazycat.app.xmonitor-vnc
+version: 1.0.11
+name: X Monitor Pro VNC
+description: X/Twitter 评论监控工具（VNC桌面版）
+author: shou
+homepage: https://developer.lazycat.cloud/app-vnc.html
+
+locales:
+  zh:
+    name: X Monitor Pro VNC
+    description: X/Twitter 评论监控工具（VNC桌面版）
+  zh_CN:
+    name: X Monitor Pro VNC
+    description: X/Twitter 评论监控工具（VNC桌面版）
+  en:
+    name: X Monitor Pro VNC
+    description: X/Twitter comment monitoring tool (VNC desktop)
+
+application:
+  subdomain: xmonitor-vnc
+  public_path:
+    - /
+  upstreams:
+    - location: /
+      backend: https://xmonitor-vnc.cloud.lazycat.app.xmonitor-vnc.lzcapp:6901
+      disable_backend_ssl_verify: true
+  depends_on:
+    - xmonitor-vnc
+
+services:
+  xmonitor-vnc:
+    image: registry.lazycat.cloud/nierenjun/shoxk8s/x-monitor-pro-vnc:c0e1b3359ac72aeb
+    labels:
+      io.kubernetes.service.name: xmonitor-vnc
+    environment:
+      - TZ=Asia/Shanghai
+      - VNC_PW=123456
+      - VNCOPTIONS=-DisableBasicAuth -SecurityTypes None
+      - XMONITOR_PORT=56125
+      - XMONITOR_DATA_DIR=/tmp/x-monitor-pro
+      - XMONITOR_HEADLESS_DEFAULT=0
+      - XMONITOR_FORCE_HEADLESS=0
+      - XMONITOR_PERSIST_BROWSER_PROFILE=1
+      - XMONITOR_VNC_AUTOSTART_BROWSER=1
+    shm_size: 2g
+    health_check:
+      test_url: http://localhost:56125/api/state
+      start_period: 90s
+    binds:
+      - /lzcapp/var/data:/home/kasm-user/.local/share/x-monitor-pro

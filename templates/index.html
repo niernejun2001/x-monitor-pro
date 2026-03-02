@@ -960,7 +960,7 @@
 
                             <div class="llm-filter-section">
                                 <div class="llm-filter-title">🔊 豆包通知语音配置</div>
-                                <div class="llm-filter-note">填写后可直接用于“测试通知声音”和实时播报。</div>
+                                <div class="llm-filter-note">填写后可直接用于“测试通知声音”和实时播报。高级参数已固定使用后端默认值。</div>
 
                                 <label class="switch-container" onclick="event.stopPropagation()" style="margin-bottom:10px;">
                                     <div class="switch">
@@ -977,15 +977,6 @@
                                 <input type="password" id="notifyTtsAccessToken" placeholder="Access Token">
                                 <input type="password" id="notifyTtsSecretKey" placeholder="Secret Key（可选）">
                                 <input type="text" id="notifyTtsVoiceType" placeholder="音色，例如 zh_female_vv_uranus_bigtts">
-                                <input type="text" id="notifyTtsCluster" placeholder="cluster，默认 volcano_tts">
-                                <input type="text" id="notifyTtsEndpoint" placeholder="endpoint，默认 https://openspeech.bytedance.com/api/v1/tts">
-                                <input type="text" id="notifyTtsUid" placeholder="uid，默认 xmonitor-notify">
-                                <input type="text" id="notifyTtsEncoding" placeholder="编码：mp3 / wav / ogg">
-                                <input type="text" id="notifyTtsSpeedRatio" placeholder="语速 0.5-2.0，默认1.0">
-                                <input type="text" id="notifyTtsVolumeRatio" placeholder="音量倍率 0.2-3.0，默认1.35">
-                                <input type="text" id="notifyTtsPitchRatio" placeholder="音调 0.5-2.0，默认1.0">
-                                <input type="text" id="notifyTtsTimeoutSec" placeholder="超时秒数 3-30，默认12">
-                                <input type="text" id="notifyTtsTextMaxChars" placeholder="单次最长字符 20-500，默认160">
                                 <div class="template-editor-actions">
                                     <button class="btn-primary btn-sm" onclick="saveNotifyTtsConfig()">💾 保存豆包配置</button>
                                     <button class="btn-ghost btn-sm" onclick="testNotifyTtsConfig()">🧪 测试豆包配置</button>
@@ -1893,45 +1884,12 @@
         }
 
         function collectNotifyTtsPayload() {
-            let speedRatio = parseFloat(document.getElementById('notifyTtsSpeedRatio').value || '1.0');
-            let volumeRatio = parseFloat(document.getElementById('notifyTtsVolumeRatio').value || '1.35');
-            let pitchRatio = parseFloat(document.getElementById('notifyTtsPitchRatio').value || '1.0');
-            let timeoutSec = parseFloat(document.getElementById('notifyTtsTimeoutSec').value || '12');
-            let textMaxChars = parseInt(document.getElementById('notifyTtsTextMaxChars').value || '160', 10);
-
-            if(Number.isNaN(speedRatio)) speedRatio = 1.0;
-            if(Number.isNaN(volumeRatio)) volumeRatio = 1.35;
-            if(Number.isNaN(pitchRatio)) pitchRatio = 1.0;
-            if(Number.isNaN(timeoutSec)) timeoutSec = 12;
-            if(Number.isNaN(textMaxChars)) textMaxChars = 160;
-
-            speedRatio = Math.max(0.5, Math.min(2.0, speedRatio));
-            volumeRatio = Math.max(0.2, Math.min(3.0, volumeRatio));
-            pitchRatio = Math.max(0.5, Math.min(2.0, pitchRatio));
-            timeoutSec = Math.max(3, Math.min(30, timeoutSec));
-            textMaxChars = Math.max(20, Math.min(500, textMaxChars));
-
-            document.getElementById('notifyTtsSpeedRatio').value = speedRatio;
-            document.getElementById('notifyTtsVolumeRatio').value = volumeRatio;
-            document.getElementById('notifyTtsPitchRatio').value = pitchRatio;
-            document.getElementById('notifyTtsTimeoutSec').value = timeoutSec;
-            document.getElementById('notifyTtsTextMaxChars').value = textMaxChars;
-
             return {
                 enabled: !!document.getElementById('notifyTtsEnabled').checked,
                 app_id: document.getElementById('notifyTtsAppId').value.trim(),
                 access_token: document.getElementById('notifyTtsAccessToken').value.trim(),
                 secret_key: document.getElementById('notifyTtsSecretKey').value.trim(),
                 voice_type: document.getElementById('notifyTtsVoiceType').value.trim(),
-                cluster: document.getElementById('notifyTtsCluster').value.trim(),
-                endpoint: document.getElementById('notifyTtsEndpoint').value.trim(),
-                uid: document.getElementById('notifyTtsUid').value.trim(),
-                encoding: document.getElementById('notifyTtsEncoding').value.trim().toLowerCase(),
-                speed_ratio: speedRatio,
-                volume_ratio: volumeRatio,
-                pitch_ratio: pitchRatio,
-                timeout_sec: timeoutSec,
-                text_max_chars: textMaxChars,
             };
         }
 
@@ -1952,15 +1910,6 @@
             setVal('notifyTtsAccessToken', d.notify_tts_access_token || '');
             setVal('notifyTtsSecretKey', d.notify_tts_secret_key || '');
             setVal('notifyTtsVoiceType', d.notify_tts_voice_type || 'zh_female_vv_uranus_bigtts');
-            setVal('notifyTtsCluster', d.notify_tts_cluster || 'volcano_tts');
-            setVal('notifyTtsEndpoint', d.notify_tts_endpoint || 'https://openspeech.bytedance.com/api/v1/tts');
-            setVal('notifyTtsUid', d.notify_tts_uid || 'xmonitor-notify');
-            setVal('notifyTtsEncoding', d.notify_tts_encoding || 'mp3');
-            setVal('notifyTtsSpeedRatio', d.notify_tts_speed_ratio ?? 1.0);
-            setVal('notifyTtsVolumeRatio', d.notify_tts_volume_ratio ?? 1.35);
-            setVal('notifyTtsPitchRatio', d.notify_tts_pitch_ratio ?? 1.0);
-            setVal('notifyTtsTimeoutSec', d.notify_tts_timeout_sec ?? 12);
-            setVal('notifyTtsTextMaxChars', d.notify_tts_text_max_chars ?? 160);
         }
 
         function saveNotifyTtsConfig() {

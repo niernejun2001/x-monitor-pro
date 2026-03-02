@@ -1,0 +1,53 @@
+FROM kasmweb/core-ubuntu-focal:1.15.0
+
+USER root
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    TZ=Asia/Shanghai \
+    PYTHONUNBUFFERED=1 \
+    XMONITOR_PORT=56125 \
+    XMONITOR_DATA_DIR=/home/kasm-user/.local/share/x-monitor-pro \
+    XMONITOR_HEADLESS_DEFAULT=0 \
+    XMONITOR_FORCE_HEADLESS=0 \
+    XMONITOR_PERSIST_BROWSER_PROFILE=1 \
+    XMONITOR_VNC_AUTOSTART_BROWSER=1
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3 \
+    python3-pip \
+    python3-venv \
+    python3-setuptools \
+    python3-wheel \
+    psmisc \
+    curl \
+    ca-certificates \
+    tzdata \
+    fonts-noto-cjk \
+    wget \
+    gnupg \
+    && wget -qO- https://dl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-linux.gpg \
+    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-linux.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
+    && apt-get update && apt-get install -y --no-install-recommends google-chrome-stable \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/x-monitor
+
+COPY requirements.txt /opt/x-monitor/requirements.txt
+RUN python3 -m venv /opt/venv \
+    && /opt/venv/bin/pip install --no-cache-dir --upgrade pip \
+    && /opt/venv/bin/pip install --no-cache-dir -r /opt/x-monitor/requirements.txt
+
+COPY app.py /opt/x-monitor/app.py
+COPY templates /opt/x-monitor/templates
+COPY scripts/vnc/custom_startup.sh /dockerstartup/custom_startup.sh
+COPY scripts/vnc/launch_xmonitor.sh /usr/local/bin/xmonitor-launch
+
+RUN chmod +x /dockerstartup/custom_startup.sh /usr/local/bin/xmonitor-launch \
+    && mkdir -p /home/kasm-user/.local/share/x-monitor-pro \
+    && chown -R 1000:1000 /opt/x-monitor /opt/venv /home/kasm-user/.local/share/x-monitor-pro
+
+ENV PATH="/opt/venv/bin:${PATH}"
+
+EXPOSE 56125 6901
+
+USER 1000
