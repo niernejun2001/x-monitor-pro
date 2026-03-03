@@ -235,8 +235,8 @@ NOTIFICATION_REPLY_ONLY_MODE = str(
     os.environ.get("XMONITOR_NOTIFY_REPLY_ONLY", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
 ENGINE_VERSION = "v11.3"
-REPLY_ACTION_GAP_MIN_SEC = 3.8
-REPLY_ACTION_GAP_MAX_SEC = 7.2
+REPLY_ACTION_GAP_MIN_SEC = 1.4
+REPLY_ACTION_GAP_MAX_SEC = 2.8
 REPLY_PREPARE_REFRESH_MIN_GAP_SEC = 18.0
 REPLY_PROMPT_GUARD_MAX_RETRY = 2
 try:
@@ -247,17 +247,97 @@ DM_EDITOR_OPEN_RETRY_HEADLESS = 4
 DM_EDITOR_OPEN_RETRY_NORMAL = 3
 DM_SEND_RETRY_HEADLESS = 3
 DM_SEND_RETRY_NORMAL = 2
-DM_ACTION_GAP_MIN_SEC = 2.1
-DM_ACTION_GAP_MAX_SEC = 5.0
-DM_BETWEEN_MESSAGES_MIN_SEC = 1.2
-DM_BETWEEN_MESSAGES_MAX_SEC = 3.2
-DM_HUMAN_SCROLL_CHANCE = 0.32
+DM_ACTION_GAP_MIN_SEC = 0.8
+DM_ACTION_GAP_MAX_SEC = 1.9
+DM_BETWEEN_MESSAGES_MIN_SEC = 0.35
+DM_BETWEEN_MESSAGES_MAX_SEC = 0.9
+DM_HUMAN_SCROLL_CHANCE = 0.18
 DM_SEND_FOLLOWUP_TEXT = str(
     os.environ.get("XMONITOR_DM_SEND_FOLLOWUP_TEXT", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
+DM_ENTRY_MODE = str(
+    os.environ.get("XMONITOR_DM_ENTRY_MODE", "profile_first")
+).strip().lower()
+if DM_ENTRY_MODE not in {"direct_compose_first", "profile_first", "dual_probe"}:
+    DM_ENTRY_MODE = "direct_compose_first"
+DM_CLOSED_DETECT_MODE = str(
+    os.environ.get("XMONITOR_DM_CLOSED_DETECT_MODE", "dual_stage_confirm")
+).strip().lower()
+if DM_CLOSED_DETECT_MODE not in {"dual_stage_confirm", "strict_hint_only"}:
+    DM_CLOSED_DETECT_MODE = "dual_stage_confirm"
+DM_UNKNOWN_FAILURE_POLICY = str(
+    os.environ.get("XMONITOR_DM_UNKNOWN_FAILURE_POLICY", "retry_queue")
+).strip().lower()
+if DM_UNKNOWN_FAILURE_POLICY not in {"retry_queue", "manual_only"}:
+    DM_UNKNOWN_FAILURE_POLICY = "retry_queue"
+try:
+    DM_TASK_MAX_RETRY = int(os.environ.get("XMONITOR_DM_MAX_RETRY", "4"))
+except Exception:
+    DM_TASK_MAX_RETRY = 4
+DM_TASK_MAX_RETRY = max(1, min(DM_TASK_MAX_RETRY, 8))
+try:
+    DM_USER_COOLDOWN_SEC = int(os.environ.get("XMONITOR_DM_USER_COOLDOWN_SEC", "90"))
+except Exception:
+    DM_USER_COOLDOWN_SEC = 90
+DM_USER_COOLDOWN_SEC = max(20, min(DM_USER_COOLDOWN_SEC, 900))
+
+
+def _parse_backoff_seconds(raw, default_values=(2, 5, 9, 15)):
+    values = []
+    text = str(raw or "").strip()
+    if text:
+        for part in re.split(r"[\s,，;；]+", text):
+            if not part:
+                continue
+            try:
+                sec = int(float(part))
+            except Exception:
+                continue
+            if sec > 0:
+                values.append(sec)
+    if not values:
+        values = list(default_values)
+    out = []
+    for sec in values:
+        if sec not in out:
+            out.append(sec)
+    return tuple(out[:8]) or tuple(default_values)
+
+
+DM_RETRY_BACKOFF_SEC = _parse_backoff_seconds(
+    os.environ.get("XMONITOR_DM_RETRY_BACKOFF_SEC", "2,5,9,15")
+)
+NOTIFY_FLOW_STAGE_ORDER = {
+    "reply_pending": 10,
+    "match_card": 20,
+    "share_link_ready": 30,
+    "reply_sent": 40,
+    "dm_opening": 50,
+    "dm_link_sent": 60,
+    "dm_text_sent": 70,
+    "dm_closed_confirmed": 80,
+    "done": 90,
+    "retry_waiting": 95,
+}
 SHARE_LINK_QUICK_PATH = str(
-    os.environ.get("XMONITOR_SHARE_LINK_QUICK_PATH", "0")
+    os.environ.get("XMONITOR_SHARE_LINK_QUICK_PATH", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
+SHARE_LINK_QUICK_PATH_MODE = str(
+    os.environ.get("XMONITOR_SHARE_LINK_QUICK_MODE", "always")
+).strip().lower()
+if SHARE_LINK_QUICK_PATH_MODE not in {"always", "adaptive", "off"}:
+    SHARE_LINK_QUICK_PATH_MODE = "always"
+REPLY_STATUS_FALLBACK_POLICY = str(
+    os.environ.get("XMONITOR_REPLY_STATUS_FALLBACK_POLICY", "high_priority_only")
+).strip().lower()
+if REPLY_STATUS_FALLBACK_POLICY not in {"high_priority_only", "always", "off"}:
+    REPLY_STATUS_FALLBACK_POLICY = "high_priority_only"
+try:
+    REPLY_STATUS_FALLBACK_MIN_SCORE = int(
+        os.environ.get("XMONITOR_REPLY_STATUS_FALLBACK_MIN_SCORE", "75")
+    )
+except Exception:
+    REPLY_STATUS_FALLBACK_MIN_SCORE = 75
 REPLY_ADAPTIVE_THROTTLE = str(
     os.environ.get("XMONITOR_REPLY_ADAPTIVE_THROTTLE", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
@@ -658,6 +738,8 @@ last_reply_prepare_refresh_ts = 0.0
 reply_outcome_recent = deque(maxlen=50)  # 最近回复成功/失败，用于自适应节流
 reply_failure_streak = 0
 reply_handle_failures = {}  # {handle: {"count": int, "first_ts": float, "cooldown_until": float, "last_err": str}}
+notify_dm_user_cooldown = {}  # {handle: {"until": float, "task_key": str}}
+notify_dm_user_cooldown_lock = threading.Lock()
 dm_unavailable_cache = {}  # {handle: expire_ts}
 dm_unavailable_cache_lock = threading.Lock()
 llm_filter_cache = {}  # {signature: {"ts": float, "skip": bool, "reason": str}}
@@ -1183,6 +1265,10 @@ def monitoring_loop():
 
             current_time = time.time()
 
+            retry_done = _process_notify_retry_queue(max_items=1)
+            if retry_done > 0:
+                log_to_ui("debug", f"🔁 已自动处理到期重试任务: {retry_done} 条")
+
             # ===== 通知随机间隔刷新扫描 =====
             if notify_enabled and monitor_active and (current_time - last_notification_scan >= notification_interval):
                 ensure_notification_tab(blocked_users)
@@ -1246,6 +1332,10 @@ def monitoring_loop():
                         last_notification_scan = now_ts
                         notification_interval = get_random_notification_interval()
                         log_to_ui("debug", f"📬 下次通知扫描间隔: {notification_interval:.1f}s")
+
+                    retry_done = _process_notify_retry_queue(max_items=1)
+                    if retry_done > 0:
+                        log_to_ui("debug", f"🔁 休息期已自动处理重试任务: {retry_done} 条")
 
                     if i % 10 == 0 and i > 0:
                         log_to_ui("info", f"⏳ 倒计时 {rest - i}s...")
@@ -5686,6 +5776,363 @@ def _wait_first_visible(tab, selectors, timeout=3.0, poll=0.12):
     return None
 
 
+def _find_pending_notify_item_by_key(item_key):
+    """按 key 定位通知项，返回索引与引用。"""
+    key = str(item_key or "").strip()
+    if not key:
+        return -1, None
+    with data_lock:
+        for idx, row in enumerate(pending_results):
+            if row.get("key") == key and row.get("source") == "通知页面":
+                return idx, row
+    return -1, None
+
+
+def _normalize_notify_flow_stage(stage):
+    text = str(stage or "").strip().lower()
+    return text if text in NOTIFY_FLOW_STAGE_ORDER else ""
+
+
+def _notify_stage_rank(stage):
+    return int(NOTIFY_FLOW_STAGE_ORDER.get(_normalize_notify_flow_stage(stage), 0))
+
+
+def _notify_stage_at_least(stage, baseline):
+    return _notify_stage_rank(stage) >= _notify_stage_rank(baseline)
+
+
+def _resolve_notify_resume_stage(row_like):
+    """解析任务应从哪个阶段恢复，避免 retry_waiting/reply_pending 覆盖真实进度。"""
+    row = row_like if isinstance(row_like, dict) else {}
+    stage = _normalize_notify_flow_stage(row.get("notify_flow_stage", ""))
+    resume_hint = _normalize_notify_flow_stage(row.get("notify_resume_stage", ""))
+    if stage == "retry_waiting":
+        return resume_hint or "reply_pending"
+    if resume_hint and _notify_stage_rank(resume_hint) > _notify_stage_rank(stage):
+        return resume_hint
+    return stage or "reply_pending"
+
+
+def _split_flow_error(error_text, default_code="E_REPLY_FAILED"):
+    msg = str(error_text or "").strip()
+    if not msg:
+        return "", ""
+    m = re.search(r"\b(E_[A-Z0-9_]+)\b", msg)
+    if m:
+        code = m.group(1).strip()
+        detail = msg.replace(code, "", 1).strip(" :,-")
+        return code, (detail or msg)
+    return str(default_code or "E_REPLY_FAILED"), msg
+
+
+def _update_notify_flow_state(
+    item_key,
+    stage=None,
+    error="",
+    retry_at=0.0,
+    attempt=None,
+    extra=None,
+    save=False,
+    error_code=None,
+    error_detail=None,
+):
+    """更新通知回复任务状态，便于断点恢复与前端可视化。"""
+    key = str(item_key or "").strip()
+    if not key:
+        return False
+
+    stage_text = _normalize_notify_flow_stage(stage) or str(stage or "").strip()
+    err_text = str(error or "").strip()
+    code_text = str(error_code or "").strip()
+    detail_text = str(error_detail or "").strip()
+    if err_text and (not code_text or not detail_text):
+        parsed_code, parsed_detail = _split_flow_error(err_text)
+        if not code_text:
+            code_text = parsed_code
+        if not detail_text:
+            detail_text = parsed_detail
+    now = time.time()
+    updated = False
+    with data_lock:
+        for row in pending_results:
+            if row.get("key") != key or row.get("source") != "通知页面":
+                continue
+            if stage_text:
+                row["notify_flow_stage"] = stage_text
+            row["notify_flow_error"] = detail_text or err_text
+            row["notify_flow_error_code"] = code_text
+            row["notify_flow_error_detail"] = detail_text or err_text
+            row["notify_flow_updated_at"] = now
+            row["notify_flow_updated_time"] = datetime.datetime.fromtimestamp(now).strftime("%H:%M:%S")
+            if attempt is not None:
+                try:
+                    row["notify_flow_attempt"] = int(attempt)
+                except Exception:
+                    row["notify_flow_attempt"] = attempt
+            if retry_at:
+                try:
+                    retry_ts = float(retry_at)
+                except Exception:
+                    retry_ts = 0.0
+                if retry_ts > 0:
+                    row["notify_retry_at"] = retry_ts
+                    row["notify_retry_time"] = datetime.datetime.fromtimestamp(retry_ts).strftime("%H:%M:%S")
+            else:
+                row["notify_retry_at"] = 0
+                row["notify_retry_time"] = ""
+            if not (detail_text or err_text):
+                row["notify_flow_error"] = ""
+                row["notify_flow_error_code"] = ""
+                row["notify_flow_error_detail"] = ""
+            if isinstance(extra, dict):
+                for k, v in extra.items():
+                    row[k] = v
+            updated = True
+            break
+    if updated and save:
+        save_state()
+    return updated
+
+
+def _clear_notify_flow_error(item_key, save=False):
+    return _update_notify_flow_state(
+        item_key,
+        error="",
+        retry_at=0.0,
+        save=save,
+        error_code="",
+        error_detail="",
+    )
+
+
+def _resolve_notify_retry_backoff_sec(attempt):
+    try:
+        idx = max(0, int(attempt) - 1)
+    except Exception:
+        idx = 0
+    if idx < len(DM_RETRY_BACKOFF_SEC):
+        return int(DM_RETRY_BACKOFF_SEC[idx])
+    return int(DM_RETRY_BACKOFF_SEC[-1]) if DM_RETRY_BACKOFF_SEC else 15
+
+
+def _is_dm_unknown_failure_retryable(err_text):
+    """未知失败是否允许进入重试队列。"""
+    msg = str(err_text or "").strip()
+    if not msg:
+        return True
+    if _is_dm_closed_error_text(msg):
+        return False
+    hard_stop_keywords = [
+        "缺少可回复的状态id",
+        "missing key",
+        "通知记录不存在",
+        "请先配置并验证 auth_token",
+    ]
+    lower_msg = msg.lower()
+    return not any(k in lower_msg for k in hard_stop_keywords)
+
+
+def _mark_notify_reply_success(key, message, dm_message, reply_time_text=None, save=True):
+    """标记通知任务回复链路完成。"""
+    key = str(key or "").strip()
+    if not key:
+        return False
+    reply_time = str(reply_time_text or "").strip() or datetime.datetime.now().strftime("%H:%M:%S")
+    updated = False
+    with data_lock:
+        for row in pending_results:
+            if row.get("key") != key or row.get("source") != "通知页面":
+                continue
+            row["notify_replied"] = True
+            row["notify_reply_text"] = str(message or "")
+            row["notify_dm_text"] = str(dm_message or "")
+            row["notify_reply_time"] = reply_time
+            row["notify_flow_stage"] = "done"
+            row["notify_flow_error"] = ""
+            row["notify_flow_error_code"] = ""
+            row["notify_flow_error_detail"] = ""
+            row["notify_retry_at"] = 0
+            row["notify_retry_time"] = ""
+            row["notify_flow_updated_at"] = time.time()
+            row["notify_flow_updated_time"] = datetime.datetime.now().strftime("%H:%M:%S")
+            updated = True
+            break
+    if updated and save:
+        save_state()
+    return updated
+
+
+def _schedule_notify_retry(item_key, err_text, attempt, reason="retry_queue", save=True):
+    """
+    按策略调度通知任务重试。
+    返回: (scheduled, retry_at, message)
+    """
+    key = str(item_key or "").strip()
+    err_msg = str(err_text or "").strip() or "E_REPLY_FAILED: 未知错误"
+    _, cur_row = _find_pending_notify_item_by_key(key)
+    resume_stage = _resolve_notify_resume_stage(cur_row or {})
+    try:
+        attempt_num = max(1, int(attempt))
+    except Exception:
+        attempt_num = 1
+
+    code, detail = _split_flow_error(err_msg)
+    if DM_UNKNOWN_FAILURE_POLICY != "retry_queue":
+        _update_notify_flow_state(
+            key,
+            stage="retry_waiting",
+            attempt=attempt_num,
+            error=detail,
+            error_code=code or "E_REPLY_FAILED",
+            error_detail=detail or err_msg,
+            retry_at=0,
+            extra={
+                "notify_retry_reason": f"{reason}:policy_disabled",
+                "notify_resume_stage": resume_stage,
+            },
+            save=save,
+        )
+        return False, 0.0, "重试队列已禁用，请人工重试"
+
+    if (not _is_dm_unknown_failure_retryable(err_msg)) or code == "E_DM_CLOSED_CONFIRMED":
+        _update_notify_flow_state(
+            key,
+            stage="retry_waiting",
+            attempt=attempt_num,
+            error=detail,
+            error_code=code or "E_REPLY_FAILED",
+            error_detail=detail or err_msg,
+            retry_at=0,
+            extra={
+                "notify_retry_reason": f"{reason}:not_retryable",
+                "notify_resume_stage": resume_stage,
+            },
+            save=save,
+        )
+        return False, 0.0, "错误不可自动重试，请人工处理"
+
+    if attempt_num >= DM_TASK_MAX_RETRY:
+        _update_notify_flow_state(
+            key,
+            stage="retry_waiting",
+            attempt=attempt_num,
+            error=detail,
+            error_code=code or "E_REPLY_FAILED",
+            error_detail=detail or err_msg,
+            retry_at=0,
+            extra={
+                "notify_retry_reason": f"{reason}:max_retry_reached",
+                "notify_resume_stage": resume_stage,
+            },
+            save=save,
+        )
+        return False, 0.0, f"已达到最大重试次数({DM_TASK_MAX_RETRY})，请人工重试"
+
+    backoff_sec = _resolve_notify_retry_backoff_sec(attempt_num)
+    retry_at = time.time() + max(1, int(backoff_sec))
+    _update_notify_flow_state(
+        key,
+        stage="retry_waiting",
+        attempt=attempt_num,
+        error=detail,
+        error_code=code or "E_REPLY_FAILED",
+        error_detail=detail or err_msg,
+        retry_at=retry_at,
+        extra={"notify_retry_reason": reason, "notify_resume_stage": resume_stage},
+        save=save,
+    )
+    return True, retry_at, f"已加入重试队列，{int(backoff_sec)}s 后重试"
+
+
+def _collect_due_notify_retry_items(limit=2):
+    now = time.time()
+    max_items = max(1, int(limit))
+    items = []
+    with data_lock:
+        for row in pending_results:
+            if row.get("source") != "通知页面":
+                continue
+            if bool(row.get("notify_replied", False)):
+                continue
+            if str(row.get("notify_flow_stage", "") or "").strip().lower() != "retry_waiting":
+                continue
+            retry_at = float(row.get("notify_retry_at", 0) or 0)
+            if retry_at <= 0 or retry_at > now:
+                continue
+            items.append(dict(row))
+            if len(items) >= max_items:
+                break
+    return items
+
+
+def _process_notify_retry_queue(max_items=1):
+    """后台自动处理到期的通知重试任务。"""
+    due_items = _collect_due_notify_retry_items(limit=max_items)
+    if not due_items:
+        return 0
+
+    done_count = 0
+    for item in due_items:
+        key = str(item.get("key", "") or "").strip()
+        if not key:
+            continue
+        reply_text = str(item.get("notify_reply_text", "") or "").strip()
+        dm_text = str(item.get("notify_dm_text", "") or "").strip()
+        if not reply_text or not dm_text:
+            _update_notify_flow_state(
+                key,
+                stage="retry_waiting",
+                error="缺少重试模板：请手动在通知行重新选择回复与私信模板",
+                error_code="E_MISSING_TEMPLATE",
+                error_detail="missing notify_reply_text or notify_dm_text",
+                retry_at=0,
+                save=True,
+            )
+            continue
+
+        try:
+            current_attempt = int(item.get("notify_flow_attempt", 0) or 0) + 1
+        except Exception:
+            current_attempt = 1
+        _, live_row = _find_pending_notify_item_by_key(key)
+        resume_stage = _resolve_notify_resume_stage(live_row or item)
+        _update_notify_flow_state(
+            key,
+            stage="reply_pending",
+            attempt=current_attempt,
+            error="",
+            retry_at=0,
+            extra={
+                "notify_retry_reason": "auto_retry_execute",
+                "notify_resume_stage": resume_stage,
+            },
+            save=True,
+        )
+
+        ok, err = send_notification_reply(item, reply_text, dm_message=dm_text)
+        if ok:
+            _record_reply_outcome(item.get("handle", ""), True, "")
+            _mark_notify_reply_success(key, reply_text, dm_text, save=True)
+            done_count += 1
+            log_to_ui("success", f"✅ 自动重试成功: {item.get('handle', '')}")
+            continue
+
+        _record_reply_outcome(item.get("handle", ""), False, err or "")
+        scheduled, _, schedule_msg = _schedule_notify_retry(
+            key,
+            err or "E_REPLY_FAILED: 自动重试失败",
+            attempt=current_attempt,
+            reason="auto_retry_queue",
+            save=True,
+        )
+        if scheduled:
+            log_to_ui("warn", f"⚠️ 自动重试失败，已重新排队: {item.get('handle', '')} - {schedule_msg}")
+        else:
+            log_to_ui("warn", f"⚠️ 自动重试失败，转人工处理: {item.get('handle', '')} - {schedule_msg}")
+
+    return done_count
+
+
 def _get_pending_notify_count():
     """返回当前待处理通知数量（粗略即可）。"""
     try:
@@ -5750,6 +6197,36 @@ def _check_reply_failure_budget(handle):
     return True, ""
 
 
+def _reserve_notify_dm_user_slot(handle, task_key=""):
+    """同一用户短时间内只允许一个私信任务，避免重复触发。"""
+    handle_norm = normalize_handle(handle)
+    if not handle_norm or DM_USER_COOLDOWN_SEC <= 0:
+        return True, 0.0
+    now = time.time()
+    task_key_text = str(task_key or "").strip()
+    with notify_dm_user_cooldown_lock:
+        record = notify_dm_user_cooldown.get(handle_norm, {})
+        next_ts = float(record.get("until", 0.0) or 0.0)
+        owner_task = str(record.get("task_key", "") or "").strip()
+        if next_ts > now and owner_task and owner_task != task_key_text:
+            return False, max(0.0, next_ts - now)
+
+        notify_dm_user_cooldown[handle_norm] = {
+            "until": now + float(DM_USER_COOLDOWN_SEC),
+            "task_key": task_key_text,
+        }
+
+        # 限制内存占用，顺便清理过期项
+        if len(notify_dm_user_cooldown) > 2048:
+            expired_handles = [
+                h for h, meta in notify_dm_user_cooldown.items()
+                if float((meta or {}).get("until", 0.0) or 0.0) <= now
+            ]
+            for h in expired_handles[:1024]:
+                notify_dm_user_cooldown.pop(h, None)
+    return True, 0.0
+
+
 def _record_reply_outcome(handle, ok, err=""):
     """记录回复结果，供自适应节流和失败熔断使用。"""
     global reply_failure_streak
@@ -5787,6 +6264,11 @@ def _record_reply_outcome(handle, ok, err=""):
 
 def _should_use_share_link_quick_path():
     """是否启用快速链接路径：只在长队列且近期稳定时启用。"""
+    mode = str(SHARE_LINK_QUICK_PATH_MODE or "always").strip().lower()
+    if mode == "off":
+        return False
+    if mode == "always":
+        return True
     if not SHARE_LINK_QUICK_PATH:
         return False
     queue_depth = _get_pending_notify_count()
@@ -5898,22 +6380,43 @@ def _paste_dm_text_exact(tab, editor, dm_text):
             const el = arguments[0];
             const text = String(arguments[1] || '');
             if (!el) return false;
-            el.focus();
-            if (el.value !== undefined) {
-                el.value = '';
-                el.value = text;
-            } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
-                el.textContent = '';
-                try {
-                    document.execCommand('insertText', false, text);
-                } catch (e) {
-                    el.textContent = text;
+            const dispatchInput = () => {
+              try {
+                el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+              } catch (e) {
+                el.dispatchEvent(new Event('input', { bubbles: true }));
+              }
+              try { el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' })); } catch (e) {}
+              el.dispatchEvent(new Event('change', { bubbles: true }));
+            };
+            const setValue = (val) => {
+              if (el.value !== undefined) {
+                const proto = Object.getPrototypeOf(el);
+                const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+                if (desc && typeof desc.set === 'function') {
+                  desc.set.call(el, val);
+                } else {
+                  el.value = val;
                 }
-            } else {
-                el.textContent = text;
+              } else if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                el.textContent = val;
+              } else {
+                el.textContent = val;
+              }
+              dispatchInput();
+            };
+            el.focus();
+            setValue('');
+            try {
+              if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                document.execCommand('insertText', false, text);
+                dispatchInput();
+              } else {
+                setValue(text);
+              }
+            } catch (e) {
+              setValue(text);
             }
-            el.dispatchEvent(new Event('input', {bubbles: true}));
-            el.dispatchEvent(new Event('change', {bubbles: true}));
             return true;
             """,
             editor,
@@ -5973,6 +6476,30 @@ def _refresh_dm_editor_state(tab, editor, dm_text):
             """,
             editor,
             text,
+        ))
+    except Exception:
+        return False
+
+
+def _poke_dm_editor_events(tab, editor):
+    """仅触发输入事件，不改写编辑器内容，避免链接被二次清空重填。"""
+    if not tab or not editor:
+        return False
+    try:
+        return bool(tab.run_js(
+            """
+            const el = arguments[0];
+            if (!el) return false;
+            try { el.focus(); } catch (e) {}
+            try {
+              el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText' }));
+            } catch (e) {
+              el.dispatchEvent(new Event('input', { bubbles: true }));
+            }
+            try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+            return true;
+            """,
+            editor,
         ))
     except Exception:
         return False
@@ -6040,7 +6567,7 @@ def _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
     """
     if not probes:
         return False
-    deadline = time.time() + max(0.3, float(wait_sec))
+    deadline = time.time() + max(0.2, float(wait_sec))
     while time.time() < deadline:
         for p in probes:
             prev = int(before_counts.get(p, 0))
@@ -6264,6 +6791,14 @@ def _mark_dm_unavailable(handle):
         return
     with dm_unavailable_cache_lock:
         dm_unavailable_cache[handle_norm] = time.time() + DM_UNAVAILABLE_CACHE_TTL_SEC
+
+
+def _clear_dm_unavailable_cache(handle):
+    handle_norm = normalize_handle(handle)
+    if not handle_norm:
+        return
+    with dm_unavailable_cache_lock:
+        dm_unavailable_cache.pop(handle_norm, None)
 
 
 def _get_status_link_from_item(item, matched_status_handle=None, matched_status_id=None):
@@ -6852,13 +7387,15 @@ def _warmup_dm_passcode_if_needed(tab, force=False):
         log_headless_debug(f"口令预热异常: {e}")
 
 
-def _open_dm_editor_for_handle(tab, handle):
+def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
     """打开某用户私信编辑框，返回编辑框元素。"""
     handle_norm = normalize_handle(handle)
     if not handle_norm:
         return None, "缺少目标用户handle"
-    if _is_dm_unavailable_cached(handle_norm):
+    if (not ignore_cached_unavailable) and _is_dm_unavailable_cached(handle_norm):
         return None, "该用户当前不可私信（缓存命中）"
+    entry_path = "init"
+    entry_stage = "init"
 
     dm_btn_selectors = [
         'css:[data-testid="sendDMFromProfile"]',
@@ -6902,11 +7439,49 @@ def _open_dm_editor_for_handle(tab, handle):
     def _find_dm_btn():
         return _wait_first_actionable(tab, dm_btn_selectors, timeout=1.8, poll=0.1)
 
+    def _is_valid_dm_editor(cand):
+        try:
+            ok = tab.run_js(
+                """
+                const el = arguments[0];
+                if (!el) return false;
+                const low = (s) => String(s || '').toLowerCase();
+                const attrText = [
+                  el.getAttribute('aria-label'),
+                  el.getAttribute('placeholder'),
+                  el.getAttribute('data-testid'),
+                  el.getAttribute('name')
+                ].map(low).join(' ');
+                const rejectKeys = [
+                  'search', '搜索', 'people', 'person', 'group', 'groups',
+                  'recipient', '收件人', 'to', 'new message', '新消息'
+                ];
+                if (rejectKeys.some((k) => attrText.includes(k))) return false;
+                if (el.closest('[data-testid="dmComposerTextInput"]')) return true;
+                const url = low(window.location.href || '');
+                if (url.includes('/i/chat/')) return true;
+                const root = el.closest('[role="dialog"]') || document;
+                const hasComposer = !!root.querySelector(
+                  '[data-testid="dmComposerTextInput"],textarea[data-testid="dm-composer-textarea"]'
+                );
+                if (hasComposer) return true;
+                const hasSend = !!root.querySelector(
+                  '[data-testid="dm-composer-send-button"],[data-testid="dmComposerSendButton"],button[data-testid*="dm-composer-send"]'
+                );
+                if (hasSend) return true;
+                return false;
+                """,
+                cand,
+            )
+            return bool(ok)
+        except Exception:
+            return False
+
     def _find_editor(timeout_each=2.5):
         for selector in editor_selectors:
             try:
                 cand = tab.ele(selector, timeout=timeout_each)
-                if cand and cand.states.is_displayed:
+                if cand and cand.states.is_displayed and _is_valid_dm_editor(cand):
                     return cand
             except Exception:
                 continue
@@ -6923,6 +7498,337 @@ def _open_dm_editor_for_handle(tab, handle):
             time.sleep(0.08)
         return None, ""
 
+    def _try_open_dm_via_direct_compose():
+        """优先走 messages/compose 直达会话，避免资料页按钮点击后落到消息列表小窗。"""
+        nonlocal entry_path, entry_stage
+        compose_urls = ["https://x.com/messages/compose", "https://x.com/messages"]
+        recipient_input_selectors = [
+            'css:[role="dialog"] input[placeholder*="Search"]',
+            'css:[role="dialog"] input[placeholder*="搜索"]',
+            'css:[role="dialog"] input[aria-label*="Search"]',
+            'css:[role="dialog"] input[aria-label*="搜索"]',
+            'css:[data-testid*="typeahead"] input',
+            'css:[data-testid*="Typeahead"] input',
+            'css:main input[placeholder*="Search"]',
+            'css:main input[placeholder*="搜索"]',
+        ]
+        next_btn_selectors = [
+            'css:button[data-testid="nextButton"]',
+            'css:[role="dialog"] [data-testid*="next"]',
+            'css:[data-testid*="DM"] [data-testid*="next"]',
+            'css:[role="dialog"] button[aria-label*="Next"]',
+            'css:[role="dialog"] button[aria-label*="下一步"]',
+            'css:[role="dialog"] button[aria-label*="继续"]',
+        ]
+        new_msg_btn_selectors = [
+            'css:a[href*="/messages/compose"]',
+            'css:[data-testid*="NewDM"]',
+            'css:[data-testid*="newDM"]',
+            'css:button[aria-label*="新消息"]',
+            'css:button[aria-label*="New message"]',
+        ]
+
+        def _page_mentions_handle():
+            try:
+                hit = tab.run_js(
+                    """
+                    const handle = String(arguments[0] || '').replace(/^@+/, '').toLowerCase();
+                    if (!handle) return false;
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const st = window.getComputedStyle(el);
+                      if (!st) return false;
+                      if (st.display === 'none' || st.visibility === 'hidden') return false;
+                      const r = el.getBoundingClientRect();
+                      return r.width > 0 && r.height > 0;
+                    };
+                    const roots = Array.from(document.querySelectorAll('[role="dialog"],main,[data-testid*="DM"],[data-testid*="dm"]'));
+                    for (const root of roots) {
+                      if (!isVisible(root)) continue;
+                      const txt = String(root.innerText || root.textContent || '').toLowerCase();
+                      if (!txt) continue;
+                      if (txt.includes('@' + handle) || txt.includes(handle)) return true;
+                    }
+                    return false;
+                    """,
+                    handle_norm,
+                )
+                return bool(hit)
+            except Exception:
+                return False
+
+        for idx, url in enumerate(compose_urls, start=1):
+            entry_path = "direct_compose"
+            entry_stage = f"open_{idx}"
+            try:
+                tab.get(url)
+                _wait_document_ready(tab, timeout=5.2)
+                _dm_humanized_idle(tab, 0.2, 0.45, f"直达私信入口加载{idx}")
+            except Exception as e_open:
+                log_headless_debug(f"直达私信入口打开失败({idx}): {e_open}")
+                continue
+
+            handled = _handle_dm_passcode_prompt(tab)
+            if handled:
+                _dm_humanized_idle(tab, 0.2, 0.45, "直达私信入口口令处理后等待")
+
+            editor_now, editor_state = _wait_editor_or_closed(timeout_sec=1.2)
+            if editor_now and _page_mentions_handle():
+                entry_stage = f"compose_ready_{idx}"
+                return editor_now, ""
+            if editor_state == "closed":
+                return None, "closed"
+
+            # messages 首页场景：主动点“新消息”
+            new_btn = _wait_first_actionable(tab, new_msg_btn_selectors, timeout=1.6, poll=0.1)
+            if new_btn:
+                _click_with_prompt_guard(tab, new_btn, "直达入口点击新消息")
+                _dm_humanized_idle(tab, 0.12, 0.28, "点击新消息后等待")
+
+            recipient_input = _wait_first_visible(tab, recipient_input_selectors, timeout=2.8, poll=0.1)
+            if not recipient_input:
+                entry_stage = f"recipient_input_missing_{idx}"
+                continue
+
+            try:
+                recipient_input.click()
+            except Exception:
+                pass
+            typed_ok = False
+            try:
+                recipient_input.input(f"@{handle_norm}", clear=True)
+                typed_ok = True
+            except Exception:
+                try:
+                    tab.run_js(
+                        """
+                        const el = arguments[0];
+                        const text = String(arguments[1] || '');
+                        if (!el) return false;
+                        el.focus();
+                        if (el.value !== undefined) {
+                          el.value = text;
+                          el.dispatchEvent(new Event('input', { bubbles: true }));
+                          el.dispatchEvent(new Event('change', { bubbles: true }));
+                          return true;
+                        }
+                        return false;
+                        """,
+                        recipient_input,
+                        f"@{handle_norm}",
+                    )
+                    typed_ok = True
+                except Exception:
+                    typed_ok = False
+            if not typed_ok:
+                entry_stage = f"recipient_input_failed_{idx}"
+                continue
+
+            _dm_humanized_idle(tab, 0.2, 0.42, "输入收件人后等待候选")
+
+            selected = False
+            try:
+                pick_state = tab.run_js(
+                    """
+                    const handle = String(arguments[0] || '').replace(/^@+/, '').toLowerCase();
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const st = window.getComputedStyle(el);
+                      if (!st) return false;
+                      if (st.display === 'none' || st.visibility === 'hidden') return false;
+                      const r = el.getBoundingClientRect();
+                      return r.width > 0 && r.height > 0;
+                    };
+                    const clickNode = (el) => {
+                      if (!el) return false;
+                      const node = el.closest('a,button,[role="button"],[role="option"],[role="link"]') || el;
+                      if (!isVisible(node)) return false;
+                      try { node.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+                      try { node.click(); } catch (e) { return false; }
+                      return true;
+                    };
+                    const roots = Array.from(document.querySelectorAll('[role="dialog"],[data-testid*="typeahead"],[data-testid*="Typeahead"],main'));
+                    for (const root of roots) {
+                      if (!isVisible(root)) continue;
+                      const nodes = Array.from(root.querySelectorAll('[role="option"],[data-testid*="TypeaheadUser"],[data-testid*="conversation"],a,button,[role="button"]'));
+                      for (const n of nodes) {
+                        if (!isVisible(n)) continue;
+                        const txt = String(n.innerText || n.textContent || '').trim().toLowerCase();
+                        if (!txt) continue;
+                        if (!txt.includes('@' + handle) && !txt.includes(handle)) continue;
+                        if (clickNode(n)) return { selected: true };
+                      }
+                    }
+                    return { selected: false };
+                    """,
+                    handle_norm,
+                ) or {}
+                selected = bool(pick_state.get("selected", False))
+            except Exception:
+                selected = False
+
+            if not selected:
+                try:
+                    recipient_input.input('\n', clear=False)
+                except Exception:
+                    pass
+
+            next_btn = _wait_first_actionable(tab, next_btn_selectors, timeout=1.3, poll=0.1)
+            if next_btn:
+                _click_with_prompt_guard(tab, next_btn, "直达入口点击下一步")
+                _dm_humanized_idle(tab, 0.12, 0.3, "点击下一步后等待")
+            else:
+                try:
+                    tab.run_js(
+                        """
+                        const isVisible = (el) => {
+                          if (!el) return false;
+                          const st = window.getComputedStyle(el);
+                          if (!st) return false;
+                          if (st.display === 'none' || st.visibility === 'hidden') return false;
+                          const r = el.getBoundingClientRect();
+                          return r.width > 0 && r.height > 0;
+                        };
+                        const keys = ['next', '下一步', '继续', '开始'];
+                        for (const btn of Array.from(document.querySelectorAll('[role="dialog"] button,[role="dialog"] [role="button"]'))) {
+                          if (!isVisible(btn)) continue;
+                          if (btn.disabled || btn.getAttribute('aria-disabled') === 'true') continue;
+                          const txt = String(btn.innerText || btn.textContent || '').trim().toLowerCase();
+                          if (!txt) continue;
+                          if (!keys.some((k) => txt.includes(k))) continue;
+                          btn.click();
+                          return true;
+                        }
+                        return false;
+                        """
+                    )
+                except Exception:
+                    pass
+
+            editor_now, editor_state = _wait_editor_or_closed(timeout_sec=3.8)
+            if editor_now:
+                entry_stage = f"compose_editor_ready_{idx}"
+                return editor_now, ""
+            if editor_state == "closed":
+                return None, "closed"
+
+        return None, ""
+
+    def _try_rescue_dm_popup():
+        """
+        私信入口点击后若未直接出现输入框，尝试点击消息小窗中的“新消息/目标会话”入口。
+        兼容 X 新版点击私信后先弹出会话列表而非直接进入 composer 的场景。
+        """
+        try:
+            result = tab.run_js(
+                """
+                const handle = String(arguments[0] || '').replace(/^@+/, '').trim().toLowerCase();
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const st = window.getComputedStyle(el);
+                  if (!st) return false;
+                  if (st.display === 'none' || st.visibility === 'hidden') return false;
+                  const r = el.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                };
+                const isClickable = (el) => {
+                  if (!el) return false;
+                  if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                  const role = String(el.getAttribute('role') || '').toLowerCase();
+                  const tag = String(el.tagName || '').toLowerCase();
+                  if (tag === 'button' || tag === 'a') return true;
+                  if (role === 'button' || role === 'link') return true;
+                  return !!el.closest('a,button,[role="button"],[role="link"]');
+                };
+                const clickEl = (el) => {
+                  if (!el) return false;
+                  const node = (isClickable(el) ? el : (el.closest('a,button,[role="button"],[role="link"]') || el));
+                  if (!node || !isVisible(node)) return false;
+                  try { node.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+                  const evOpts = { bubbles: true, cancelable: true, composed: true, view: window };
+                  try { node.dispatchEvent(new MouseEvent('pointerdown', evOpts)); } catch (e) {}
+                  try { node.dispatchEvent(new MouseEvent('mousedown', evOpts)); } catch (e) {}
+                  try { node.dispatchEvent(new MouseEvent('mouseup', evOpts)); } catch (e) {}
+                  try { node.click(); } catch (e) { return false; }
+                  return true;
+                };
+
+                const dmSelectors = [
+                  '[data-testid="sendDMFromProfile"]',
+                  'button[data-testid="sendDMFromProfile"]',
+                  '[data-testid="sendDM"]',
+                  'button[data-testid="sendDM"]',
+                  'a[href*="/messages/compose"]',
+                  '[data-testid*="NewDM"]',
+                  '[data-testid*="newDM"]',
+                  'button[aria-label*="新消息"]',
+                  'button[aria-label*="Message"]',
+                  '[role="button"][aria-label*="Message"]'
+                ];
+                for (const s of dmSelectors) {
+                  const nodes = Array.from(document.querySelectorAll(s));
+                  for (const n of nodes) {
+                    if (!isVisible(n)) continue;
+                    if (!clickEl(n)) continue;
+                    return { clicked: true, path: 'selector', selector: s };
+                  }
+                }
+
+                const convoRoots = Array.from(document.querySelectorAll(
+                  '[role="dialog"],[data-testid*="DM"],[data-testid*="dm"],[data-testid*="sheet"],[aria-label*="Messages"],[aria-label*="消息"]'
+                )).filter(isVisible);
+                for (const root of convoRoots) {
+                  const convoNodes = Array.from(root.querySelectorAll(
+                    '[data-testid*="conversation"],a[href*="/messages/"],div[role="link"],button,[role="button"]'
+                  ));
+                  for (const n of convoNodes) {
+                    if (!isVisible(n)) continue;
+                    const txt = String(n.innerText || n.textContent || '').toLowerCase();
+                    if (!txt) continue;
+                    if (handle && !txt.includes(handle)) continue;
+                    if (!clickEl(n)) continue;
+                    return { clicked: true, path: 'conversation', selector: 'conversation_node' };
+                  }
+                }
+
+                const dialogButtons = Array.from(document.querySelectorAll(
+                  '[role="dialog"] button,[role="dialog"] [role="button"],[data-testid*="sheet"] button,[data-testid*="DM"] button'
+                ));
+                const btnKeywords = ['message', '发消息', '私信', 'new message', '新消息', 'next', '继续', 'chat'];
+                for (const n of dialogButtons) {
+                  if (!isVisible(n)) continue;
+                  const txt = String(n.innerText || n.textContent || '').trim().toLowerCase();
+                  if (!txt) continue;
+                  if (!btnKeywords.some((k) => txt.includes(k))) continue;
+                  if (!clickEl(n)) continue;
+                  return { clicked: true, path: 'dialog_button', selector: 'dialog_btn' };
+                }
+                return { clicked: false, path: 'none' };
+                """,
+                handle_norm,
+            ) or {}
+        except Exception as e:
+            log_headless_debug(f"私信弹窗兜底点击异常: {e}")
+            return False
+
+        if bool(result.get("clicked")):
+            log_to_ui(
+                "debug",
+                f"📨 私信弹窗兜底点击成功: path={result.get('path', '')} selector={result.get('selector', '')}"
+            )
+            time.sleep(random.uniform(0.2, 0.45))
+            return True
+        return False
+
+    if DM_ENTRY_MODE in {"direct_compose_first", "dual_probe"}:
+        editor_direct, direct_state = _try_open_dm_via_direct_compose()
+        if editor_direct:
+            return editor_direct, ""
+        if direct_state == "closed":
+            _mark_dm_unavailable(handle_norm)
+            return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+
+    entry_path = "profile_click"
     open_attempts = DM_EDITOR_OPEN_RETRY_HEADLESS if headless_mode else DM_EDITOR_OPEN_RETRY_NORMAL
     for attempt in range(open_attempts):
         if attempt == 0:
@@ -6967,6 +7873,21 @@ def _open_dm_editor_for_handle(tab, handle):
             continue
         time.sleep(random.uniform(0.28, 0.62))
 
+        # 第一轮快速检查：若未进入编辑框，尝试识别并点击消息小窗会话入口。
+        editor, editor_state = _wait_editor_or_closed(timeout_sec=1.4)
+        if editor:
+            return editor, ""
+        if editor_state == "closed":
+            _mark_dm_unavailable(handle_norm)
+            return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+        if _try_rescue_dm_popup():
+            editor, editor_state = _wait_editor_or_closed(timeout_sec=2.2)
+            if editor:
+                return editor, ""
+            if editor_state == "closed":
+                _mark_dm_unavailable(handle_norm)
+                return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+
         handled_after_click = _handle_dm_passcode_prompt(tab)
         if handled_after_click:
             # 保留二次点击兜底，兼容被打断后回到资料页的场景
@@ -6994,6 +7915,17 @@ def _open_dm_editor_for_handle(tab, handle):
     if _has_cannot_dm_hint():
         _mark_dm_unavailable(handle_norm)
         return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+
+    # profile_first 模式下，只有在资料页入口失败时才回退到直达私信搜索路径。
+    if DM_ENTRY_MODE == "profile_first":
+        editor_direct_fallback, direct_state = _try_open_dm_via_direct_compose()
+        if editor_direct_fallback:
+            log_to_ui("debug", f"📨 资料页私信入口失败，已回退直达私信入口: @{handle_norm}")
+            return editor_direct_fallback, ""
+        if direct_state == "closed":
+            _mark_dm_unavailable(handle_norm)
+            return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+
     _capture_runtime_diagnostic(
         tab,
         "open_dm_editor_failed",
@@ -7003,6 +7935,9 @@ def _open_dm_editor_for_handle(tab, handle):
             "handle": handle_norm,
             "open_attempts": open_attempts,
             "headless_mode": bool(headless_mode),
+            "dm_entry_mode": DM_ENTRY_MODE,
+            "entry_path": entry_path,
+            "entry_stage": entry_stage,
         }
     )
     return None, "未打开私信输入框（可能被页面状态打断）"
@@ -7032,12 +7967,46 @@ def _send_dm_message(tab, text):
         'css:button[aria-label*="Send"]',
     ]
 
+    def _is_valid_dm_editor(editor_el):
+        try:
+            ok = tab.run_js(
+                """
+                const el = arguments[0];
+                if (!el) return false;
+                const low = (s) => String(s || '').toLowerCase();
+                const attrs = [
+                  el.getAttribute('aria-label'),
+                  el.getAttribute('placeholder'),
+                  el.getAttribute('data-testid'),
+                  el.getAttribute('name')
+                ].map(low).join(' ');
+                const rejectKeys = [
+                  'search', '搜索', 'recipient', '收件人', 'people', 'group', 'new message', '新消息'
+                ];
+                if (rejectKeys.some((k) => attrs.includes(k))) return false;
+                if (el.closest('[data-testid="dmComposerTextInput"]')) return true;
+                const url = low(window.location.href || '');
+                if (url.includes('/i/chat/')) return true;
+                const root = el.closest('[role="dialog"]') || document;
+                if (root.querySelector('[data-testid="dmComposerTextInput"],textarea[data-testid="dm-composer-textarea"]')) {
+                  return true;
+                }
+                return !!root.querySelector(
+                  '[data-testid="dm-composer-send-button"],[data-testid="dmComposerSendButton"],button[data-testid*="dm-composer-send"]'
+                );
+                """,
+                editor_el,
+            )
+            return bool(ok)
+        except Exception:
+            return False
+
     def _find_editor(rounds=2, timeout_each=1.5):
         for _ in range(max(1, rounds)):
             for selector in editor_selectors:
                 try:
                     cand = tab.ele(selector, timeout=timeout_each)
-                    if cand and cand.states.is_displayed:
+                    if cand and cand.states.is_displayed and _is_valid_dm_editor(cand):
                         return cand
                 except Exception:
                     continue
@@ -7107,7 +8076,7 @@ def _send_dm_message(tab, text):
 
     def _wait_send_button_after_input(editor_el, expected_text, link_mode=False):
         """输入后等待发送按钮可点击；链接模式下进行额外状态唤醒。"""
-        def _wait_link_preview_ready(timeout_sec=3.6):
+        def _wait_link_preview_ready(timeout_sec=2.8):
             """链接消息发送前，等待上方预览/卡片渲染就绪。"""
             deadline = time.time() + max(1.0, float(timeout_sec))
             status_id = _pick_best_status_id(expected_text)
@@ -7167,28 +8136,43 @@ def _send_dm_message(tab, text):
                 has_input_link = bool(state.get("hasInputLink"))
                 if has_preview or has_input_link or (input_empty and btn):
                     return True
-                _dm_humanized_idle(tab, 0.12, 0.24, "等待链接预览加载")
+                _dm_humanized_idle(tab, 0.06, 0.14, "等待链接预览加载")
             return False
 
         if link_mode:
-            _wait_link_preview_ready(timeout_sec=3.8)
+            _wait_link_preview_ready(timeout_sec=3.0)
         btn = _find_send_btn(rounds=2, timeout_each=1.0)
         if btn:
             return btn
         if not link_mode:
             return None
 
-        for _ in range(3):
-            _dm_humanized_idle(tab, 0.12, 0.24, "链接消息等待发送按钮")
-            if _refresh_dm_editor_state(tab, editor_el, expected_text):
-                _dm_humanized_idle(tab, 0.06, 0.14, "链接消息状态刷新后等待")
+        for _ in range(2):
+            _dm_humanized_idle(tab, 0.06, 0.14, "链接消息等待发送按钮")
+            if _poke_dm_editor_events(tab, editor_el):
+                _dm_humanized_idle(tab, 0.03, 0.08, "链接消息状态刷新后等待")
+            try:
+                current_text = tab.run_js(
+                    """
+                    const el = arguments[0];
+                    if (!el) return '';
+                    return String((el.value !== undefined) ? (el.value || '') : (el.textContent || ''));
+                    """,
+                    editor_el
+                )
+            except Exception:
+                current_text = ""
+            if not _normalize_text_for_compare(current_text):
+                # 链接在 X 里偶发被异步清空，按钮不会出现；仅在空输入框时回填一次。
+                _paste_dm_text_exact(tab, editor_el, expected_text)
+                _dm_humanized_idle(tab, 0.05, 0.12, "链接回填后等待按钮")
             btn = _find_send_btn(rounds=2, timeout_each=1.0)
             if btn:
                 return btn
         return None
 
     max_attempts = DM_SEND_RETRY_HEADLESS if headless_mode else DM_SEND_RETRY_NORMAL
-    last_err = "发送私信失败"
+    last_err = ""
     dm_text = _sanitize_dm_message_text(text)
     link_only_mode = _is_link_only_message(dm_text)
     probes = _build_dm_message_probes(dm_text)
@@ -7196,7 +8180,7 @@ def _send_dm_message(tab, text):
     for attempt in range(1, max_attempts + 1):
         _throttle_dm_action_if_needed(f"私信发送尝试{attempt}")
         _prepare_reply_prompt_guard(tab, f"私信发送尝试{attempt}")
-        _dm_humanized_idle(tab, 0.08, 0.32, f"私信发送尝试{attempt}")
+        _dm_humanized_idle(tab, 0.04, 0.16, f"私信发送尝试{attempt}")
         before_counts = {p: _count_dm_probe_occurrence(tab, p) for p in probes}
 
         editor = _find_editor(rounds=2, timeout_each=1.4)
@@ -7205,7 +8189,7 @@ def _send_dm_message(tab, text):
             editor = _find_editor(rounds=2, timeout_each=1.6)
         if not editor:
             last_err = "未找到私信输入框"
-            time.sleep(random.uniform(0.15, 0.35))
+            time.sleep(random.uniform(0.05, 0.12))
             continue
 
         try:
@@ -7218,11 +8202,11 @@ def _send_dm_message(tab, text):
             typed_ok = _humanized_type_dm_text(tab, editor, dm_text)
         if not typed_ok:
             last_err = "输入私信内容失败"
-            time.sleep(random.uniform(0.15, 0.35))
+            time.sleep(random.uniform(0.05, 0.12))
             continue
         if not _editor_has_text(editor, dm_text):
             if link_only_mode:
-                _refresh_dm_editor_state(tab, editor, dm_text)
+                _poke_dm_editor_events(tab, editor)
                 if not _editor_has_text(editor, dm_text):
                     last_err = "输入后链接状态未稳定写入编辑器"
                     _dm_humanized_idle(tab, 0.08, 0.2, "链接输入校验失败后等待")
@@ -7232,15 +8216,15 @@ def _send_dm_message(tab, text):
                 _dm_humanized_idle(tab, 0.08, 0.2, "私信输入校验失败后等待")
                 continue
 
-        _dm_humanized_idle(tab, 0.08, 0.24, "私信发送前")
+        _dm_humanized_idle(tab, 0.04, 0.12, "私信发送前")
         send_btn = _wait_send_button_after_input(editor, dm_text, link_mode=link_only_mode)
         if send_btn:
             clicked_send, click_err = _click_with_prompt_guard(tab, send_btn, "点击私信发送按钮")
             if clicked_send:
-                _dm_humanized_idle(tab, 0.18, 0.42, "私信发送后确认")
+                _dm_humanized_idle(tab, 0.06, 0.16, "私信发送后确认")
                 if _composer_cleared(editor):
                     return True, ""
-                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.55):
                     log_headless_debug("私信发送后输入框未清空，但已确认消息落库，按成功处理")
                     return True, ""
                 if DM_ASSUME_SUCCESS_AFTER_CLICK:
@@ -7249,6 +8233,32 @@ def _send_dm_message(tab, text):
                 last_err = "点击私信发送后输入框未清空"
                 continue
             last_err = click_err
+        elif link_only_mode and _editor_has_text(editor, dm_text):
+            # 发送按钮偶发未渲染时，尝试 Enter 直发（仅在编辑器确有内容时触发）。
+            _dm_humanized_idle(tab, 0.02, 0.08, "私信发送Enter兜底前")
+            try:
+                enter_sent = bool(tab.run_js(
+                    """
+                    const el = arguments[0];
+                    if (!el) return false;
+                    try { el.focus(); } catch (e) {}
+                    const ev = { key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true };
+                    try { el.dispatchEvent(new KeyboardEvent('keydown', ev)); } catch (e) {}
+                    try { el.dispatchEvent(new KeyboardEvent('keypress', ev)); } catch (e) {}
+                    try { el.dispatchEvent(new KeyboardEvent('keyup', ev)); } catch (e) {}
+                    return true;
+                    """,
+                    editor
+                ))
+            except Exception:
+                enter_sent = False
+            if enter_sent:
+                _dm_humanized_idle(tab, 0.06, 0.16, "私信发送Enter兜底后")
+                if _composer_cleared(editor):
+                    return True, ""
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.75):
+                    return True, ""
+            last_err = "发送按钮未出现且Enter兜底未确认发送"
 
         # 兜底：直接用 DOM 点击私信发送按钮
         _dm_humanized_idle(tab, 0.06, 0.18, "私信发送DOM兜底前")
@@ -7283,10 +8293,10 @@ def _send_dm_message(tab, text):
                 """
             )
             if clicked:
-                _dm_humanized_idle(tab, 0.18, 0.42, "私信发送DOM兜底后")
+                _dm_humanized_idle(tab, 0.06, 0.16, "私信发送DOM兜底后")
                 if _composer_cleared(editor):
                     return True, ""
-                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.1):
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.5):
                     log_headless_debug("DOM发送后已确认消息落库，按成功处理")
                     return True, ""
                 if DM_ASSUME_SUCCESS_AFTER_CLICK:
@@ -7298,9 +8308,9 @@ def _send_dm_message(tab, text):
             pass
 
         if not last_err:
-            last_err = "未找到可点击的私信发送按钮"
+            last_err = "未找到可点击的私信发送按钮（可能输入框内容被清空）"
 
-        time.sleep(random.uniform(0.2, 0.45))
+        time.sleep(random.uniform(0.06, 0.16))
 
     _capture_runtime_diagnostic(
         tab,
@@ -7323,6 +8333,15 @@ def _send_dm_message_with_retry(tab, text, handle=""):
     handle_norm = normalize_handle(handle)
 
     for attempt in range(1, max_attempts + 1):
+        if handle_norm:
+            dm_context_ok = _ensure_dm_context_for_handle(tab, handle_norm)
+            if not dm_context_ok:
+                last_err = "E_DM_CONTEXT_LOST: 当前页面不在私信上下文，且恢复失败"
+                if attempt < max_attempts:
+                    _dm_humanized_idle(tab, 0.22, 0.56, f"私信上下文恢复失败等待{attempt}")
+                    continue
+                break
+
         ok, err = _send_dm_message(tab, text)
         if ok:
             return True, ""
@@ -7373,6 +8392,66 @@ def _is_dm_closed_error_text(dm_err_text):
     ])
 
 
+def _is_dm_context_url(url_text):
+    low = str(url_text or "").lower()
+    return ("/messages" in low) or ("/i/chat/" in low)
+
+
+def _ensure_dm_context_for_handle(tab, handle):
+    """保证当前页面处于可发送私信的上下文，避免流程被跳回主页。"""
+    handle_norm = normalize_handle(handle)
+    try:
+        current_url = str(tab.url or "")
+    except Exception:
+        current_url = ""
+    if _is_dm_context_url(current_url):
+        return True
+    if not handle_norm:
+        return False
+
+    editor, dm_err = _open_dm_editor_for_handle(tab, handle_norm)
+    if editor:
+        return True
+    log_to_ui(
+        "debug",
+        f"📨 DM上下文守卫未恢复会话: handle=@{handle_norm}, err={dm_err or '-'}, url={current_url or '-'}"
+    )
+    return False
+
+
+def _confirm_dm_closed_dual_stage(tab, handle):
+    """
+    双阶段确认“不可私信”：
+    - strict_hint_only: 看到明确禁发文案即判定关闭
+    - dual_stage_confirm: 在忽略缓存后再探测一次，仍命中关闭才确认
+    """
+    handle_norm = normalize_handle(handle)
+    if not handle_norm:
+        return False, "missing_handle"
+
+    if DM_CLOSED_DETECT_MODE == "strict_hint_only":
+        return True, "strict_hint_only"
+
+    _clear_dm_unavailable_cache(handle_norm)
+    try:
+        retry_editor, retry_err = _open_dm_editor_for_handle(
+            tab,
+            handle_norm,
+            ignore_cached_unavailable=True
+        )
+    except Exception as e:
+        retry_editor, retry_err = None, f"confirm_exception:{e}"
+
+    if retry_editor:
+        return False, "editor_opened_on_confirm"
+
+    retry_err_text = str(retry_err or "")
+    if _is_dm_closed_error_text(retry_err_text):
+        return True, "closed_hint_confirmed_twice"
+
+    return False, f"confirm_not_closed:{retry_err_text[:80]}"
+
+
 def _run_dm_send_sequence_once(tab, dm_handle, share_link, dm_text, mark_func=None, progress=None):
     """执行一次完整私信发送（开私信 -> 发链接 -> 发文案）。"""
     if progress is None:
@@ -7381,7 +8460,15 @@ def _run_dm_send_sequence_once(tab, dm_handle, share_link, dm_text, mark_func=No
     if not dm_editor:
         dm_err_text = str(dm_err or "")
         if _is_dm_closed_error_text(dm_err_text):
-            return False, dm_err_text, True
+            confirmed_closed, close_reason = _confirm_dm_closed_dual_stage(tab, dm_handle)
+            if confirmed_closed:
+                log_to_ui("info", f"📨 私信关闭已确认: @{normalize_handle(dm_handle)} ({close_reason})")
+                return False, dm_err_text, True
+            log_to_ui(
+                "warn",
+                f"⚠️ 私信关闭判定未通过二次确认，改为重试队列: @{normalize_handle(dm_handle)} ({close_reason})"
+            )
+            return False, f"E_DM_EDITOR_NOT_FOUND: 二次确认未判定关闭 ({close_reason})", False
         return False, f"打开私信失败: {dm_err}", False
     if callable(mark_func):
         mark_func("open_dm")
@@ -7412,13 +8499,23 @@ def _run_dm_send_sequence_once(tab, dm_handle, share_link, dm_text, mark_func=No
     return True, "", False
 
 
-def _run_dm_send_with_recovery(tab, dm_handle, share_link, dm_text, mark_func=None, best_effort=False):
+def _run_dm_send_with_recovery(
+    tab,
+    dm_handle,
+    share_link,
+    dm_text,
+    mark_func=None,
+    best_effort=False,
+    progress=None,
+):
     """私信发送恢复策略：原标签页 -> 重建标签页 -> 重启浏览器 -> 有头兜底。"""
     global headless_mode
     handle_norm = normalize_handle(dm_handle)
     last_err = "发送私信失败"
     work_tab = tab
-    progress = {"link_sent": False, "text_sent": False}
+    progress = dict(progress or {})
+    progress.setdefault("link_sent", False)
+    progress.setdefault("text_sent", False)
 
     strategies = [("当前标签页", lambda: work_tab)]
     if (not best_effort) and DM_RECOVERY_ENABLE_RECREATE_TAB:
@@ -7527,6 +8624,7 @@ def send_notification_reply(item, message, dm_message=""):
         return False, "该通知缺少可回复的状态ID（可能是兜底通知记录）"
 
     handle_hint = item.get("handle", "")
+    task_key = str(item.get("key", "") or "").strip()
 
     with reply_action_lock:
         _throttle_reply_action_if_needed()
@@ -7536,6 +8634,30 @@ def send_notification_reply(item, message, dm_message=""):
 
         def _mark(stage_name):
             stage_marks[stage_name] = time.perf_counter() - flow_started_at
+            stage_map = {
+                "match_card": "match_card",
+                "prepare_share_link": "share_link_ready",
+                "send_reply": "reply_sent",
+                "open_dm": "dm_opening",
+                "send_dm_link": "dm_link_sent",
+                "send_dm_text": "dm_text_sent",
+                "fallback_reply": "dm_closed_confirmed",
+            }
+            mapped = stage_map.get(str(stage_name or "").strip())
+            if mapped:
+                _mark_stage(mapped)
+
+        def _mark_stage(stage_name, error="", retry_at=0.0, extra=None, save=False):
+            if not task_key:
+                return
+            _update_notify_flow_state(
+                task_key,
+                stage=stage_name,
+                error=error,
+                retry_at=retry_at,
+                extra=extra,
+                save=save,
+            )
 
         try:
             tab = ensure_reply_work_tab()
@@ -7546,6 +8668,31 @@ def send_notification_reply(item, message, dm_message=""):
         try:
             _prepare_reply_prompt_guard(tab, "回复流程启动")
             log_to_ui("info", f"💬 开始执行通知回复(复用全局浏览器): {handle_hint} -> status {status_id}")
+            _, row_live = _find_pending_notify_item_by_key(task_key)
+            row_snapshot = dict(row_live or {})
+            resume_stage = _resolve_notify_resume_stage(row_snapshot)
+            if resume_stage == "reply_pending":
+                _mark_stage("reply_pending", error="", extra={"notify_resume_stage": resume_stage})
+            else:
+                # 断点续跑场景保持原阶段，不回退到 reply_pending，避免重复发消息。
+                _mark_stage(resume_stage, error="", retry_at=0.0, extra={"notify_resume_stage": resume_stage})
+
+            saved_share_link = _normalize_dm_share_link(
+                str(row_snapshot.get("notify_share_link", "") or "").strip(),
+                status_id=status_id,
+                status_handle=item.get("status_handle", "") or item.get("handle", ""),
+                fallback_url=_get_status_link_from_item(item),
+            )
+            need_reply = not _notify_stage_at_least(resume_stage, "reply_sent")
+            need_share = not _notify_stage_at_least(resume_stage, "share_link_ready")
+            dm_progress = {
+                "link_sent": _notify_stage_at_least(resume_stage, "dm_link_sent"),
+                "text_sent": _notify_stage_at_least(resume_stage, "dm_text_sent"),
+            }
+            if dm_progress["text_sent"] and (not need_reply) and (not need_share):
+                _mark_stage("done", error="", retry_at=0.0, save=True)
+                return True, ""
+
             _reply_humanized_idle(tab, 0.18, 0.42, "回复流程启动")
 
             try:
@@ -7606,13 +8753,148 @@ def send_notification_reply(item, message, dm_message=""):
 
             def _match_target_card():
                 """在通知页匹配目标卡片并返回匹配结果。"""
+                def _should_allow_status_fallback():
+                    """根据策略和意向强度判断是否允许回退到 status 页面。"""
+                    policy = str(REPLY_STATUS_FALLBACK_POLICY or "high_priority_only").strip().lower()
+                    if policy == "always":
+                        return True, "policy=always"
+                    if policy == "off":
+                        return False, "policy=off"
+
+                    intent_level = str(item.get("intent_level", "") or "").strip().lower()
+                    try:
+                        intent_score = int(float(item.get("intent_score", 0) or 0))
+                    except Exception:
+                        intent_score = 0
+
+                    force_notify_raw = item.get("force_notify", False)
+                    if isinstance(force_notify_raw, str):
+                        force_notify = force_notify_raw.strip().lower() in {"1", "true", "yes", "y", "on"}
+                    else:
+                        force_notify = bool(force_notify_raw)
+                    if force_notify:
+                        return True, "force_notify=true"
+
+                    if intent_level == "high":
+                        return True, "intent_level=high"
+
+                    if intent_score >= int(REPLY_STATUS_FALLBACK_MIN_SCORE):
+                        return True, f"intent_score={intent_score}"
+
+                    strong_signal_keys = {
+                        "short_reply_intent_signal",
+                        "performance_consult_signal",
+                        "business_consult_signal",
+                        "force_intent_keyword",
+                        "product_consult_signal",
+                        "product_contact_combo",
+                    }
+                    raw_signals = item.get("intent_signals", [])
+                    if not isinstance(raw_signals, (list, tuple)):
+                        raw_signals = [raw_signals]
+                    signal_hits = []
+                    for sig in raw_signals:
+                        sig_norm = str(sig or "").strip().lower()
+                        if sig_norm in strong_signal_keys and sig_norm not in signal_hits:
+                            signal_hits.append(sig_norm)
+                    if signal_hits:
+                        return True, f"signal={'|'.join(signal_hits[:3])}"
+
+                    content_low = _normalize_content_for_filter(item.get("content", "")).lower()
+                    keyword_hits = _find_keyword_hits(content_low, INTENT_FORCE_NOTIFY_KEYWORDS)
+                    if keyword_hits:
+                        return True, f"keyword={'|'.join(keyword_hits[:3])}"
+
+                    return False, (
+                        f"policy=high_priority_only, unmet "
+                        f"(force={force_notify}, level={intent_level or '-'}, score={intent_score})"
+                    )
+
+                def _fallback_match_on_status_page():
+                    """通知页匹配失败时，回退到 status 会话页定位评论者卡片并回复。"""
+                    fallback_urls = []
+                    for cand in [
+                        str(item.get("status_url", "") or "").strip(),
+                        _get_status_link_from_item(item),
+                        (
+                            f"https://x.com/{normalize_handle(item.get('status_handle', ''))}/status/{status_id}"
+                            if status_id and normalize_handle(item.get("status_handle", ""))
+                            else ""
+                        ),
+                        (f"https://x.com/i/status/{status_id}" if status_id else ""),
+                    ]:
+                        c = str(cand or "").strip()
+                        if not c:
+                            continue
+                        if c.startswith("/"):
+                            c = f"https://x.com{c}"
+                        elif c.startswith("x.com/"):
+                            c = f"https://{c}"
+                        if c not in fallback_urls:
+                            fallback_urls.append(c)
+
+                    if not fallback_urls:
+                        return None, None, 0, None, None, "通知页未命中，且缺少可用 status 链接兜底"
+
+                    for idx, url in enumerate(fallback_urls, start=1):
+                        _prepare_reply_prompt_guard(tab, f"会话页兜底匹配{idx}")
+                        try:
+                            tab.get(url)
+                            _wait_document_ready(tab, timeout=5.2)
+                            _reply_humanized_idle(tab, 0.24, 0.56, f"会话页兜底加载{idx}")
+                        except Exception:
+                            continue
+
+                        try:
+                            tab.wait.ele_displayed('tag:article', timeout=4)
+                        except Exception:
+                            pass
+
+                        for sweep in range(3):
+                            target_article_fb, target_score_fb = _match_reply_target_article(
+                                tab,
+                                status_id,
+                                item.get("handle", ""),
+                                item.get("content", ""),
+                            )
+                            if target_article_fb and target_score_fb >= 120:
+                                try:
+                                    target_reply_btn_fb = target_article_fb.ele('css:[data-testid="reply"]', timeout=0.6)
+                                except Exception:
+                                    target_reply_btn_fb = None
+                                if target_reply_btn_fb and target_reply_btn_fb.states.is_displayed:
+                                    matched_handle_fb = normalize_handle(
+                                        item.get("status_handle", "") or item.get("handle", "")
+                                    )
+                                    matched_status_id_fb = str(status_id or "")
+                                    log_to_ui(
+                                        "info",
+                                        f"💬 通知页未命中，已回退会话页定位成功(score={target_score_fb}, url={url})"
+                                    )
+                                    return (
+                                        target_article_fb,
+                                        target_reply_btn_fb,
+                                        target_score_fb,
+                                        matched_handle_fb,
+                                        matched_status_id_fb,
+                                        "",
+                                    )
+
+                            try:
+                                tab.run_js('window.scrollBy(0, 760);')
+                                _reply_humanized_idle(tab, 0.16, 0.4, f"会话页兜底滚动{sweep + 1}")
+                            except Exception:
+                                pass
+
+                    return None, None, 0, None, None, "未在通知页定位到目标评论卡片，且会话页兜底未命中"
+
                 target_article = None
                 target_reply_btn = None
                 target_score = 0
                 required_score = 260 if status_id else 120
-                for attempt in range(4):
+                for attempt in range(3):
                     _prepare_reply_prompt_guard(tab, f"匹配通知卡片尝试{attempt + 1}")
-                    if attempt == 3 and not target_article:
+                    if attempt == 2 and not target_article:
                         _prepare_notifications_view(force_refresh=True)
                         log_to_ui("debug", "💬 匹配未命中，执行一次刷新后重试")
                     target_article, target_reply_btn, target_score = _match_notification_card_for_reply(
@@ -7633,10 +8915,43 @@ def send_notification_reply(item, message, dm_message=""):
                         pass
 
                 if not target_article:
-                    return None, None, 0, None, None, "未在通知页定位到目标评论卡片"
+                    allow_fallback, fallback_reason = _should_allow_status_fallback()
+                    if not allow_fallback:
+                        log_to_ui("debug", f"💬 状态页兜底已跳过: {fallback_reason}")
+                        return (
+                            None,
+                            None,
+                            0,
+                            None,
+                            None,
+                            f"未在通知页定位到目标评论卡片（已跳过状态页兜底: {fallback_reason}）",
+                        )
+                    log_to_ui("debug", f"💬 通知页未命中，执行状态页兜底: {fallback_reason}")
+                    return _fallback_match_on_status_page()
 
                 if target_score < required_score:
-                    return None, None, target_score, None, None, f"通知卡片匹配置信度不足(score={target_score})，已阻止误回复"
+                    # 通知页低置信度时，尝试会话页兜底，避免通知结构变动导致误丢单。
+                    allow_fallback, fallback_reason = _should_allow_status_fallback()
+                    if not allow_fallback:
+                        log_to_ui(
+                            "debug",
+                            f"💬 状态页兜底已跳过: {fallback_reason}, score={target_score}, required={required_score}"
+                        )
+                        return (
+                            None,
+                            None,
+                            target_score,
+                            None,
+                            None,
+                            "通知页命中低置信目标且状态页兜底被策略跳过: "
+                            f"{fallback_reason} (score={target_score}, required={required_score})",
+                        )
+                    log_to_ui(
+                        "debug",
+                        f"💬 通知页低置信命中，执行状态页兜底: {fallback_reason}, "
+                        f"score={target_score}, required={required_score}"
+                    )
+                    return _fallback_match_on_status_page()
 
                 try:
                     matched_handle, matched_status_id = _extract_notification_status_info(target_article)
@@ -7789,7 +9104,7 @@ def send_notification_reply(item, message, dm_message=""):
                     return False, f"回复输入后文本未生效(当前长度={len(_normalize_text_for_compare(editor_now_text))})"
 
                 log_to_ui("debug", f"💬 已填充回复内容(len={len(_normalize_text_for_compare(editor_now_text))})")
-                _reply_humanized_idle(tab, 0.28, 0.62, "回复输入后等待按钮激活")
+                _reply_humanized_idle(tab, 0.1, 0.26, "回复输入后等待按钮激活")
 
                 send_btn = None
                 send_selectors = [
@@ -7797,7 +9112,7 @@ def send_notification_reply(item, message, dm_message=""):
                     'css:button[data-testid="tweetButton"]',
                     'css:[data-testid="tweetButtonInline"]',
                 ]
-                send_btn = _wait_first_actionable(tab, send_selectors, timeout=2.6, poll=0.1)
+                send_btn = _wait_first_actionable(tab, send_selectors, timeout=1.4, poll=0.08)
                 if not send_btn:
                     try:
                         tab.run_js(
@@ -7817,8 +9132,8 @@ def send_notification_reply(item, message, dm_message=""):
                         )
                     except Exception:
                         pass
-                    _reply_humanized_idle(tab, 0.2, 0.5, "回复发送按钮二次等待")
-                    send_btn = _wait_first_actionable(tab, send_selectors, timeout=2.0, poll=0.1)
+                    _reply_humanized_idle(tab, 0.08, 0.22, "回复发送按钮二次等待")
+                    send_btn = _wait_first_actionable(tab, send_selectors, timeout=1.2, poll=0.08)
 
                 if not send_btn:
                     # 兜底：仅在当前回复弹窗上下文里点击发送，避免误点页面其它按钮
@@ -7859,7 +9174,7 @@ def send_notification_reply(item, message, dm_message=""):
                         clicked_inline = False
                     if clicked_inline:
                         log_to_ui("debug", "💬 已通过弹窗内DOM兜底点击回复发送按钮")
-                        _reply_humanized_idle(tab, 0.48, 1.02, "回复发送后稳定等待")
+                        _reply_humanized_idle(tab, 0.15, 0.38, "回复发送后稳定等待")
                         return True, ""
                     _capture_runtime_diagnostic(
                         tab,
@@ -7879,100 +9194,133 @@ def send_notification_reply(item, message, dm_message=""):
                     )
                     return False, "未找到可点击的右下角回复按钮"
 
-                _reply_humanized_idle(tab, 0.26, 0.58, "点击右下角回复按钮前")
+                _reply_humanized_idle(tab, 0.08, 0.22, "点击右下角回复按钮前")
                 clicked_send, click_send_err = _click_with_prompt_guard(tab, send_btn, "点击右下角回复发送按钮")
                 if not clicked_send:
                     return False, click_send_err
                 log_to_ui("debug", "💬 已点击右下角回复按钮")
-                _reply_humanized_idle(tab, 0.48, 1.02, "回复发送后稳定等待")
+                _reply_humanized_idle(tab, 0.16, 0.36, "回复发送后稳定等待")
                 return True, ""
 
-            _prepare_notifications_view(force_refresh=False)
-            log_to_ui("debug", "💬 已准备通知视图，开始定位目标通知卡片")
-            _reply_humanized_idle(tab, 0.2, 0.48, "定位通知卡片前")
+            target_article = None
+            target_reply_btn = None
+            target_score = 0
+            matched_handle = normalize_handle(item.get("status_handle", "") or item.get("handle", ""))
+            matched_status_id = str(status_id or "")
 
-            # 在通知页中定位目标通知卡片（只点该卡片左下角回复）
-            target_article, target_reply_btn, target_score, matched_handle, matched_status_id, match_err = _match_target_card()
-            if match_err:
-                _capture_runtime_diagnostic(
-                    tab,
-                    "match_target_card_failed",
-                    err=match_err,
-                    selectors=['tag:article', 'css:[data-testid="reply"]'],
-                    extra={"status_id": status_id, "handle_hint": handle_hint}
+            if need_reply or need_share:
+                _prepare_notifications_view(force_refresh=False)
+                log_to_ui("debug", "💬 已准备通知视图，开始定位目标通知卡片")
+                _reply_humanized_idle(tab, 0.2, 0.48, "定位通知卡片前")
+
+                # 在通知页中定位目标通知卡片（只点该卡片左下角回复）
+                target_article, target_reply_btn, target_score, matched_handle, matched_status_id, match_err = _match_target_card()
+                if match_err:
+                    _capture_runtime_diagnostic(
+                        tab,
+                        "match_target_card_failed",
+                        err=match_err,
+                        selectors=['tag:article', 'css:[data-testid="reply"]'],
+                        extra={"status_id": status_id, "handle_hint": handle_hint}
+                    )
+                    return False, match_err
+                _mark("match_card")
+                _mark_stage("match_card")
+                log_to_ui(
+                    "debug",
+                    f"💬 已定位通知卡片 score={target_score}, status_id={matched_status_id}, handle={matched_handle or ''}"
                 )
-                return False, match_err
-            _mark("match_card")
-            log_to_ui(
-                "debug",
-                f"💬 已定位通知卡片 score={target_score}, status_id={matched_status_id}, handle={matched_handle or ''}"
-            )
-            _reply_humanized_idle(tab, 0.18, 0.44, "定位卡片后稳定等待")
-
-            share_link_fallback = _get_status_link_from_item(item, matched_handle, matched_status_id)
-            use_quick_share_link = bool(
-                share_link_fallback and "/status/" in share_link_fallback and _should_use_share_link_quick_path()
-            )
-            if use_quick_share_link:
-                share_link, share_err = share_link_fallback, ""
-                log_to_ui("debug", "🔗 已启用快速链接路径（长队列稳定模式）")
+                _reply_humanized_idle(tab, 0.18, 0.44, "定位卡片后稳定等待")
             else:
-                _prepare_reply_prompt_guard(tab, "复制分享链接前")
-                _reply_humanized_idle(tab, 0.14, 0.36, "复制分享链接前")
-                share_link, share_err = _click_share_copy_link(tab, target_article, share_link_fallback)
-            if share_err:
-                log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
-            if not share_link:
-                _capture_runtime_diagnostic(
-                    tab,
-                    "share_link_missing",
-                    err="无法确定要发送的链接",
-                    selectors=[
-                        'css:button[aria-label*="分享"]',
-                        'css:button[aria-label*="Share"]',
-                        'css:[data-testid="share"]',
-                    ],
-                    extra={"status_id": matched_status_id, "handle": matched_handle}
+                log_to_ui("info", f"🔁 断点续跑：跳过通知卡片匹配（stage={resume_stage}）")
+
+            share_link = str(saved_share_link or "").strip()
+            if need_share:
+                share_link_fallback = _get_status_link_from_item(item, matched_handle, matched_status_id)
+                use_quick_share_link = bool(
+                    share_link_fallback and "/status/" in share_link_fallback and _should_use_share_link_quick_path()
                 )
-                return False, "无法确定要发送的链接"
-            # 直接使用复制得到的链接，不做手动拼接；只做最小格式清洗
-            share_link_raw = str(share_link or "").strip()
-            m_url = re.search(r'https?://[^\s<>"\']+', share_link_raw, flags=re.IGNORECASE)
-            if m_url:
-                share_link = m_url.group(0).strip()
-            elif share_link_raw.startswith("x.com/"):
-                share_link = f"https://{share_link_raw}"
-            elif share_link_raw.startswith("/"):
-                share_link = f"https://x.com{share_link_raw}"
+                if use_quick_share_link:
+                    share_link, share_err = share_link_fallback, ""
+                    log_to_ui("debug", "🔗 已启用快速链接路径（长队列稳定模式）")
+                else:
+                    _prepare_reply_prompt_guard(tab, "复制分享链接前")
+                    _reply_humanized_idle(tab, 0.14, 0.36, "复制分享链接前")
+                    share_link, share_err = _click_share_copy_link(tab, target_article, share_link_fallback)
+                if share_err:
+                    log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
+                if not share_link:
+                    _capture_runtime_diagnostic(
+                        tab,
+                        "share_link_missing",
+                        err="无法确定要发送的链接",
+                        selectors=[
+                            'css:button[aria-label*="分享"]',
+                            'css:button[aria-label*="Share"]',
+                            'css:[data-testid="share"]',
+                        ],
+                        extra={"status_id": matched_status_id, "handle": matched_handle}
+                    )
+                    return False, "无法确定要发送的链接"
+                # 直接使用复制得到的链接，不做手动拼接；只做最小格式清洗
+                share_link_raw = str(share_link or "").strip()
+                m_url = re.search(r'https?://[^\s<>"\']+', share_link_raw, flags=re.IGNORECASE)
+                if m_url:
+                    share_link = m_url.group(0).strip()
+                elif share_link_raw.startswith("x.com/"):
+                    share_link = f"https://{share_link_raw}"
+                elif share_link_raw.startswith("/"):
+                    share_link = f"https://x.com{share_link_raw}"
+                else:
+                    share_link = (share_link_raw.split() or [""])[0].strip()
+                if not re.match(r'^https?://', share_link, flags=re.IGNORECASE):
+                    return False, f"复制链接格式异常: {share_link[:80]}"
+                _mark("prepare_share_link")
+                _mark_stage("share_link_ready", extra={"notify_share_link": share_link}, save=True)
+                log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
+                _reply_humanized_idle(tab, 0.16, 0.4, "发送回复前")
             else:
-                share_link = (share_link_raw.split() or [""])[0].strip()
-            if not re.match(r'^https?://', share_link, flags=re.IGNORECASE):
-                return False, f"复制链接格式异常: {share_link[:80]}"
-            _mark("prepare_share_link")
-            log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
-            _reply_humanized_idle(tab, 0.16, 0.4, "发送回复前")
+                share_link = _normalize_dm_share_link(
+                    share_link,
+                    status_id=matched_status_id or status_id,
+                    status_handle=matched_handle or item.get("handle", ""),
+                    fallback_url=_get_status_link_from_item(item, matched_handle, matched_status_id),
+                )
+                if not share_link:
+                    return False, "断点续跑缺少可用分享链接，请重新执行本条通知"
+                log_to_ui("info", f"🔁 断点续跑：复用已生成链接（stage={resume_stage}）")
 
-            ok_reply, err_reply = _send_reply_from_button(target_reply_btn, target_score, message)
-            if not ok_reply:
-                return False, err_reply
-            _mark("send_reply")
+            if need_reply:
+                ok_reply, err_reply = _send_reply_from_button(target_reply_btn, target_score, message)
+                if not ok_reply:
+                    return False, err_reply
+                _mark("send_reply")
+                _mark_stage("reply_sent", extra={"notify_share_link": share_link}, save=True)
+            else:
+                log_to_ui("info", f"🔁 断点续跑：跳过公开回复发送（stage={resume_stage}）")
 
             dm_handle = item.get("handle", "")
             dm_text = _sanitize_dm_message_text(dm_message)
             if not dm_text:
                 dm_text = (dm_message_templates[0] if dm_message_templates else DM_FOLLOWUP_TEXT)
             dm_text = _sanitize_dm_message_text(dm_text)
+            slot_ok, slot_wait = _reserve_notify_dm_user_slot(dm_handle, task_key=task_key)
+            if not slot_ok:
+                return False, f"E_DM_USER_COOLDOWN: @{normalize_handle(dm_handle)} 私信冷却中，请 {slot_wait:.1f}s 后重试"
+            _mark_stage("dm_opening", extra={"notify_share_link": share_link}, save=True)
             ok_dm, dm_err, dm_closed, dm_tab = _run_dm_send_with_recovery(
                 tab,
                 dm_handle,
                 share_link,
                 dm_text,
-                mark_func=_mark
+                mark_func=_mark,
+                progress=dm_progress,
             )
             if dm_tab:
                 tab = dm_tab
             if not ok_dm:
                 if dm_closed:
+                    _mark_stage("dm_closed_confirmed", extra={"notify_share_link": share_link}, save=True)
                     _mark("dm_open_failed")
                     log_to_ui("warn", "⚠️ 目标用户未开启私信，准备发送补充评论后结束私信流程")
                     try:
@@ -7999,6 +9347,7 @@ def send_notification_reply(item, message, dm_message=""):
                         f"总计{total_cost:.2f}s"
                     )
                     log_to_ui("info", "💬 用户私信关闭，已发送补充评论并结束私信发送流程")
+                    _mark_stage("done", save=True)
                     return True, ""
                 return False, dm_err
 
@@ -8010,7 +9359,7 @@ def send_notification_reply(item, message, dm_message=""):
                 f"开私信{stage_marks.get('open_dm', 0):.2f}s, 发链接{stage_marks.get('send_dm_link', 0):.2f}s, "
                 f"发文案{stage_marks.get('send_dm_text', 0):.2f}s, 总计{total_cost:.2f}s"
             )
-
+            _mark_stage("done", save=True)
             return True, ""
         except Exception as e:
             if _is_unhandled_prompt_error(e):
@@ -8215,21 +9564,53 @@ def notify_reply():
 
     with data_lock:
         target = None
-        target_idx = -1
-        for idx, item in enumerate(pending_results):
+        for item in pending_results:
             if item.get('key') == key and item.get('source') == '通知页面':
                 target = dict(item)
-                target_idx = idx
                 break
 
     if not target:
         return jsonify({"status": "err", "msg": "通知记录不存在"}), 404
+
+    with data_lock:
+        for row in pending_results:
+            if row.get("key") == key and row.get("source") == "通知页面":
+                row["notify_reply_text"] = message
+                row["notify_dm_text"] = dm_message
+                if not str(row.get("notify_flow_stage", "")).strip():
+                    row["notify_flow_stage"] = "reply_pending"
+                break
+    save_state()
 
     target_handle = target.get('handle', '')
     allowed, budget_msg = _check_reply_failure_budget(target_handle)
     if not allowed:
         log_to_ui("warn", f"⏸️ 触发失败预算熔断: {target_handle} - {budget_msg}")
         return jsonify({"status": "err", "msg": budget_msg}), 429
+
+    base_attempt = 0
+    try:
+        base_attempt = int(target.get("notify_flow_attempt", 0) or 0)
+    except Exception:
+        base_attempt = 0
+    cur_attempt = max(1, base_attempt + 1)
+    # 手动点击“回复”属于显式业务动作：必须从公开回复重新开始，
+    # 不能沿用旧的 dm_opening 断点，否则会出现“未先回复就私信”。
+    resume_stage = "reply_pending"
+    _update_notify_flow_state(
+        key,
+        stage="reply_pending",
+        attempt=cur_attempt,
+        error="",
+        retry_at=0,
+        extra={
+            "notify_resume_stage": resume_stage,
+            "notify_retry_reason": "manual_notify_reply_execute",
+            # 强制重新走一遍“匹配卡片 -> 公开回复 -> 复制链接 -> 私信”链路
+            "notify_share_link": "",
+        },
+        save=True,
+    )
 
     max_attempts = 1 + (max(0, int(UNHANDLED_PROMPT_AUTO_RETRY)) if headless_mode else 0)
     ok, err = False, "通知回复失败"
@@ -8259,42 +9640,133 @@ def notify_reply():
 
     _record_reply_outcome(target_handle, ok, err if not ok else "")
     if not ok:
+        flow_err_code, flow_err_detail = _split_flow_error(err)
+        scheduled, retry_at, schedule_msg = _schedule_notify_retry(
+            key,
+            err,
+            attempt=cur_attempt,
+            reason="manual_notify_reply",
+            save=True,
+        )
         log_to_ui("warn", f"⚠️ 通知回复失败: {err}")
-        return jsonify({"status": "err", "msg": err}), 500
+        if scheduled:
+            return jsonify({
+                "status": "retry_waiting",
+                "msg": schedule_msg,
+                "flow_stage": "retry_waiting",
+                "flow_error_code": flow_err_code,
+                "flow_error_detail": flow_err_detail,
+                "retry_at": retry_at,
+                "retry_time": datetime.datetime.fromtimestamp(retry_at).strftime("%H:%M:%S"),
+                "attempt": cur_attempt,
+            }), 202
+        return jsonify({
+            "status": "err",
+            "msg": f"{err}（{schedule_msg}）",
+            "flow_stage": "retry_waiting",
+            "flow_error_code": flow_err_code,
+            "flow_error_detail": flow_err_detail,
+            "retry_at": 0,
+            "retry_time": "",
+            "attempt": cur_attempt,
+        }), 500
 
     reply_time_text = datetime.datetime.now().strftime("%H:%M:%S")
-    with data_lock:
-        if target_idx >= 0 and target_idx < len(pending_results):
-            row = pending_results[target_idx]
-            # 双保险：避免并发期间顺序变化导致 idx 指向错误记录
-            if row.get('key') == key and row.get('source') == '通知页面':
-                row['notify_replied'] = True
-                row['notify_reply_text'] = message
-                row['notify_dm_text'] = dm_message
-                row['notify_reply_time'] = reply_time_text
-            else:
-                for row2 in pending_results:
-                    if row2.get('key') == key and row2.get('source') == '通知页面':
-                        row2['notify_replied'] = True
-                        row2['notify_reply_text'] = message
-                        row2['notify_dm_text'] = dm_message
-                        row2['notify_reply_time'] = reply_time_text
-                        break
-        else:
-            for row2 in pending_results:
-                if row2.get('key') == key and row2.get('source') == '通知页面':
-                    row2['notify_replied'] = True
-                    row2['notify_reply_text'] = message
-                    row2['notify_dm_text'] = dm_message
-                    row2['notify_reply_time'] = reply_time_text
-                    break
-    save_state()
+    _mark_notify_reply_success(key, message, dm_message, reply_time_text=reply_time_text, save=True)
 
     log_to_ui("success", f"✅ 已发送通知回复: {target_handle} -> {message[:30]}")
     return jsonify({
         "status": "ok",
         "reply_time": reply_time_text,
+        "flow_stage": "done",
+        "retry_at": 0,
+        "retry_time": "",
+        "attempt": cur_attempt,
     })
+
+
+@app.route('/api/notify_retry', methods=['POST'])
+def notify_retry():
+    """手动触发 retry_waiting 通知任务立即重试。"""
+    key = str(request.json.get('key', '') or '').strip()
+    if not key:
+        return jsonify({"status": "err", "msg": "missing key"}), 400
+
+    _, row = _find_pending_notify_item_by_key(key)
+    if not row:
+        return jsonify({"status": "err", "msg": "通知记录不存在"}), 404
+
+    item = dict(row)
+    if bool(item.get("notify_replied", False)):
+        return jsonify({"status": "ok", "msg": "该任务已完成", "flow_stage": "done"})
+
+    reply_text = str(item.get("notify_reply_text", "") or "").strip()
+    dm_text = str(item.get("notify_dm_text", "") or "").strip()
+    if not reply_text or not dm_text:
+        return jsonify({"status": "err", "msg": "缺少回复或私信模板，请先在该行重新选择后点击回复"}), 400
+
+    try:
+        attempt = int(item.get("notify_flow_attempt", 0) or 0) + 1
+    except Exception:
+        attempt = 1
+    resume_stage = _resolve_notify_resume_stage(item)
+    _update_notify_flow_state(
+        key,
+        stage="reply_pending",
+        attempt=attempt,
+        error="",
+        retry_at=0,
+        extra={
+            "notify_resume_stage": resume_stage,
+            "notify_retry_reason": "manual_retry_execute",
+        },
+        save=True,
+    )
+
+    ok, err = send_notification_reply(item, reply_text, dm_message=dm_text)
+    _record_reply_outcome(item.get("handle", ""), ok, err if not ok else "")
+    if ok:
+        reply_time_text = datetime.datetime.now().strftime("%H:%M:%S")
+        _mark_notify_reply_success(key, reply_text, dm_text, reply_time_text=reply_time_text, save=True)
+        return jsonify({
+            "status": "ok",
+            "msg": "重试成功",
+            "flow_stage": "done",
+            "reply_time": reply_time_text,
+            "retry_at": 0,
+            "retry_time": "",
+            "attempt": attempt,
+        })
+
+    scheduled, retry_at, schedule_msg = _schedule_notify_retry(
+        key,
+        err,
+        attempt=attempt,
+        reason="manual_retry_api",
+        save=True,
+    )
+    flow_err_code, flow_err_detail = _split_flow_error(err)
+    if scheduled:
+        return jsonify({
+            "status": "retry_waiting",
+            "msg": schedule_msg,
+            "flow_stage": "retry_waiting",
+            "flow_error_code": flow_err_code,
+            "flow_error_detail": flow_err_detail,
+            "retry_at": retry_at,
+            "retry_time": datetime.datetime.fromtimestamp(retry_at).strftime("%H:%M:%S"),
+            "attempt": attempt,
+        }), 202
+    return jsonify({
+        "status": "err",
+        "msg": f"{err}（{schedule_msg}）",
+        "flow_stage": "retry_waiting",
+        "flow_error_code": flow_err_code,
+        "flow_error_detail": flow_err_detail,
+        "retry_at": 0,
+        "retry_time": "",
+        "attempt": attempt,
+    }), 500
 
 
 @app.route('/api/template/add', methods=['POST'])
@@ -8403,6 +9875,43 @@ def set_delegated_account():
         "delegated_account": delegated_account,
         "delegated_enabled": delegated_enabled,
     })
+
+
+@app.route('/api/open_user_replies_page', methods=['POST'])
+def open_user_replies_page():
+    """在程序控制浏览器中打开目标用户回复页（新标签）。"""
+    payload = request.get_json(silent=True) or {}
+    raw_handle = str(payload.get('handle', '') or '').strip()
+    handle = normalize_handle(raw_handle)
+    if not handle:
+        return jsonify({"status": "err", "msg": "请输入有效的推特 @ID"}), 400
+    if not re.fullmatch(r"[a-z0-9_]{1,30}", handle):
+        return jsonify({"status": "err", "msg": "推特ID格式不合法"}), 400
+
+    target_url = f"https://x.com/{handle}/with_replies"
+
+    try:
+        with browser_lock:
+            browser = global_browser if (browser_initialized and global_browser) else None
+
+        if browser is None:
+            if not global_token.strip():
+                return jsonify({"status": "err", "msg": "请先配置 Token 并启动监控后再跳转"}), 400
+            browser = init_global_browser()
+
+        with browser_lock:
+            tab = browser.new_tab()
+            tab.get(target_url)
+
+        log_to_ui("info", f"🔗 已打开用户回复页: @{handle}")
+        return jsonify({
+            "status": "ok",
+            "handle": f"@{handle}",
+            "url": target_url,
+        })
+    except Exception as e:
+        log_to_ui("warn", f"⚠️ 打开用户回复页失败 @{handle}: {e}")
+        return jsonify({"status": "err", "msg": f"打开失败: {e}"}), 500
 
 
 def _extract_llm_runtime_from_payload(payload):
