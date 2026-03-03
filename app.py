@@ -235,8 +235,8 @@ NOTIFICATION_REPLY_ONLY_MODE = str(
     os.environ.get("XMONITOR_NOTIFY_REPLY_ONLY", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
 ENGINE_VERSION = "v11.3"
-REPLY_ACTION_GAP_MIN_SEC = 1.4
-REPLY_ACTION_GAP_MAX_SEC = 2.8
+REPLY_ACTION_GAP_MIN_SEC = 1.0
+REPLY_ACTION_GAP_MAX_SEC = 2.0
 REPLY_PREPARE_REFRESH_MIN_GAP_SEC = 18.0
 REPLY_PROMPT_GUARD_MAX_RETRY = 2
 try:
@@ -247,10 +247,10 @@ DM_EDITOR_OPEN_RETRY_HEADLESS = 4
 DM_EDITOR_OPEN_RETRY_NORMAL = 3
 DM_SEND_RETRY_HEADLESS = 3
 DM_SEND_RETRY_NORMAL = 2
-DM_ACTION_GAP_MIN_SEC = 0.8
-DM_ACTION_GAP_MAX_SEC = 1.9
-DM_BETWEEN_MESSAGES_MIN_SEC = 0.35
-DM_BETWEEN_MESSAGES_MAX_SEC = 0.9
+DM_ACTION_GAP_MIN_SEC = 0.45
+DM_ACTION_GAP_MAX_SEC = 1.2
+DM_BETWEEN_MESSAGES_MIN_SEC = 0.2
+DM_BETWEEN_MESSAGES_MAX_SEC = 0.55
 DM_HUMAN_SCROLL_CHANCE = 0.18
 DM_SEND_FOLLOWUP_TEXT = str(
     os.environ.get("XMONITOR_DM_SEND_FOLLOWUP_TEXT", "1")
@@ -7411,9 +7411,9 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
         'css:textarea[data-testid="dm-composer-textarea"]',
         'css:textarea[placeholder="Message"]',
         'css:textarea[placeholder*="消息"]',
-        'css:[data-testid="dmComposerTextInput"]',
         'css:[data-testid="dmComposerTextInput"] [contenteditable="true"]',
         'css:div[role="textbox"][contenteditable="true"]',
+        'css:[data-testid="dmComposerTextInput"]',
     ]
     cannot_dm_keywords = [
         "cannot send direct messages",
@@ -8001,11 +8001,24 @@ def _send_dm_message(tab, text):
         except Exception:
             return False
 
+    def _promote_dm_editor_candidate(cand):
+        """若命中外层容器，优先提升到真正可编辑节点。"""
+        if not cand:
+            return cand
+        try:
+            inner = cand.ele('css:[contenteditable="true"]', timeout=0)
+            if inner and inner.states.is_displayed:
+                return inner
+        except Exception:
+            pass
+        return cand
+
     def _find_editor(rounds=2, timeout_each=1.5):
         for _ in range(max(1, rounds)):
             for selector in editor_selectors:
                 try:
                     cand = tab.ele(selector, timeout=timeout_each)
+                    cand = _promote_dm_editor_candidate(cand)
                     if cand and cand.states.is_displayed and _is_valid_dm_editor(cand):
                         return cand
                 except Exception:
@@ -8067,12 +8080,93 @@ def _send_dm_message(tab, text):
             # 命中次数>=2 说明发生了拼接/重复，不视为成功
             if current.count(exp) >= 2:
                 return False
+            # DraftJS 常出现少量空白/换行差异，放宽“包含”判定
+            if exp and (exp in current):
+                return True
+            if current and (current in exp) and len(current) >= max(12, int(len(exp) * 0.72)):
+                return True
             # 长文仅允许很小偏差（如末尾标点/空格）
             if current.endswith(exp) and (len(current) - len(exp)) <= 6:
                 return True
             return False
         except Exception:
             return False
+
+    def _force_fill_dm_editor_text(editor_el, expected_text):
+        """DraftJS 文本框强制回填：选择全量后写入，适配 contenteditable 输入丢失场景。"""
+        text = str(expected_text or "")
+        if not text:
+            return False
+        try:
+            ok = tab.run_js(
+                """
+                const el = arguments[0];
+                const text = String(arguments[1] || '');
+                if (!el) return false;
+                const dispatchAll = () => {
+                  try {
+                    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: text }));
+                  } catch (e) {}
+                  try {
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: text }));
+                  } catch (e) {
+                    el.dispatchEvent(new Event('input', { bubbles: true }));
+                  }
+                  try { el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Process', code: 'Process' })); } catch (e) {}
+                  try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                };
+                const setValue = (val) => {
+                  if (el.value !== undefined) {
+                    const proto = Object.getPrototypeOf(el);
+                    const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+                    if (desc && typeof desc.set === 'function') {
+                      desc.set.call(el, val);
+                    } else {
+                      el.value = val;
+                    }
+                  } else {
+                    el.textContent = val;
+                  }
+                  dispatchAll();
+                };
+                try { el.focus(); } catch (e) {}
+                if (el.value !== undefined) {
+                  setValue(text);
+                  return true;
+                }
+                try {
+                  const sel = window.getSelection && window.getSelection();
+                  if (sel) {
+                    sel.removeAllRanges();
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    sel.addRange(range);
+                  }
+                } catch (e) {}
+                let done = false;
+                try {
+                  done = !!document.execCommand('insertText', false, text);
+                } catch (e) {}
+                if (!done || !String(el.textContent || '').trim()) {
+                  setValue(text);
+                } else {
+                  dispatchAll();
+                }
+                return true;
+                """,
+                editor_el,
+                text
+            )
+            if ok and _editor_has_text(editor_el, text):
+                return True
+        except Exception:
+            pass
+
+        try:
+            editor_el.input(text, clear=True)
+        except Exception:
+            return False
+        return _editor_has_text(editor_el, text)
 
     def _wait_send_button_after_input(editor_el, expected_text, link_mode=False):
         """输入后等待发送按钮可点击；链接模式下进行额外状态唤醒。"""
@@ -8212,9 +8306,15 @@ def _send_dm_message(tab, text):
                     _dm_humanized_idle(tab, 0.08, 0.2, "链接输入校验失败后等待")
                     continue
             else:
-                last_err = "输入后文本未稳定写入编辑器"
-                _dm_humanized_idle(tab, 0.08, 0.2, "私信输入校验失败后等待")
-                continue
+                _dm_humanized_idle(tab, 0.04, 0.12, "私信文本二次回填前")
+                recovered = _force_fill_dm_editor_text(editor, dm_text)
+                if not recovered and not _editor_has_text(editor, dm_text):
+                    # 最后一次走常规 input，避免 JS 注入与 DraftJS 状态机不同步
+                    recovered = _humanized_type_dm_text(tab, editor, dm_text)
+                if not recovered and not _editor_has_text(editor, dm_text):
+                    last_err = "输入后文本未稳定写入编辑器"
+                    _dm_humanized_idle(tab, 0.08, 0.2, "私信输入校验失败后等待")
+                    continue
 
         _dm_humanized_idle(tab, 0.04, 0.12, "私信发送前")
         send_btn = _wait_send_button_after_input(editor, dm_text, link_mode=link_only_mode)
@@ -8351,11 +8451,14 @@ def _send_dm_message_with_retry(tab, text, handle=""):
             break
 
         _prepare_reply_prompt_guard(tab, f"私信重试准备{attempt}")
-        need_reopen = any(k in last_err for k in ["输入框", "发送按钮", "点击私信发送"])
+        need_reopen = _is_dm_context_or_editor_error_text(last_err)
         if need_reopen and handle_norm:
-            _dm_humanized_idle(tab, 0.12, 0.28, f"私信重试{attempt}重开编辑器前")
+            _dm_humanized_idle(tab, 0.08, 0.18, f"私信重试{attempt}重开编辑器前")
             _open_dm_editor_for_handle(tab, handle_norm)
-        _dm_humanized_idle(tab, 0.22, 0.68, f"私信重试{attempt}间隔")
+        if _is_dm_soft_send_error_text(last_err):
+            _dm_humanized_idle(tab, 0.06, 0.16, f"私信重试{attempt}快速间隔")
+        else:
+            _dm_humanized_idle(tab, 0.16, 0.42, f"私信重试{attempt}间隔")
 
     _capture_runtime_diagnostic(
         tab,
@@ -8390,6 +8493,40 @@ def _is_dm_closed_error_text(dm_err_text):
         "can't be messaged",
         "unable to message",
     ])
+
+
+def _is_dm_soft_send_error_text(err_text):
+    """发送阶段软错误：更适合当前会话快速重试，不进入慢恢复链路。"""
+    text = str(err_text or "")
+    if not text:
+        return False
+    keywords = [
+        "发送按钮未出现",
+        "未找到可点击的私信发送按钮",
+        "输入后文本未稳定写入编辑器",
+        "输入后链接状态未稳定写入编辑器",
+        "点击私信发送后输入框未清空",
+        "DOM点击发送后输入框未清空",
+        "Enter兜底未确认发送",
+        "输入私信内容失败",
+    ]
+    return any(k in text for k in keywords)
+
+
+def _is_dm_context_or_editor_error_text(err_text):
+    """上下文/编辑器错误：适合重开编辑器或重建页面恢复。"""
+    text = str(err_text or "")
+    if not text:
+        return False
+    keywords = [
+        "未找到私信输入框",
+        "E_DM_CONTEXT_LOST",
+        "当前页面不在私信上下文",
+        "打开私信失败",
+        "未打开私信输入框",
+        "E_DM_EDITOR_NOT_FOUND",
+    ]
+    return any(k in text for k in keywords)
 
 
 def _is_dm_context_url(url_text):
@@ -8543,6 +8680,9 @@ def _run_dm_send_with_recovery(
 
         last_err = str(err or last_err)
         log_to_ui("warn", f"⚠️ 私信发送失败({label}): {last_err}")
+        if _is_dm_soft_send_error_text(last_err):
+            log_to_ui("debug", f"📨 软错误快速返回（跳过慢恢复）: {last_err[:80]}")
+            return False, last_err, False, work_tab
         _capture_runtime_diagnostic(
             work_tab,
             f"dm_recovery_{idx}",
@@ -8563,7 +8703,6 @@ def _run_dm_send_with_recovery(
                 "progress": dict(progress),
             }
         )
-
     if (not best_effort) and headless_mode and DM_RECOVERY_ENABLE_HEADFUL_FALLBACK:
         display_ok = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
         if DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY and not display_ok:
@@ -9174,7 +9313,7 @@ def send_notification_reply(item, message, dm_message=""):
                         clicked_inline = False
                     if clicked_inline:
                         log_to_ui("debug", "💬 已通过弹窗内DOM兜底点击回复发送按钮")
-                        _reply_humanized_idle(tab, 0.15, 0.38, "回复发送后稳定等待")
+                        _reply_humanized_idle(tab, 0.08, 0.2, "回复发送后稳定等待")
                         return True, ""
                     _capture_runtime_diagnostic(
                         tab,
@@ -9194,12 +9333,12 @@ def send_notification_reply(item, message, dm_message=""):
                     )
                     return False, "未找到可点击的右下角回复按钮"
 
-                _reply_humanized_idle(tab, 0.08, 0.22, "点击右下角回复按钮前")
+                _reply_humanized_idle(tab, 0.05, 0.14, "点击右下角回复按钮前")
                 clicked_send, click_send_err = _click_with_prompt_guard(tab, send_btn, "点击右下角回复发送按钮")
                 if not clicked_send:
                     return False, click_send_err
                 log_to_ui("debug", "💬 已点击右下角回复按钮")
-                _reply_humanized_idle(tab, 0.16, 0.36, "回复发送后稳定等待")
+                _reply_humanized_idle(tab, 0.08, 0.2, "回复发送后稳定等待")
                 return True, ""
 
             target_article = None
@@ -9211,7 +9350,7 @@ def send_notification_reply(item, message, dm_message=""):
             if need_reply or need_share:
                 _prepare_notifications_view(force_refresh=False)
                 log_to_ui("debug", "💬 已准备通知视图，开始定位目标通知卡片")
-                _reply_humanized_idle(tab, 0.2, 0.48, "定位通知卡片前")
+                _reply_humanized_idle(tab, 0.1, 0.26, "定位通知卡片前")
 
                 # 在通知页中定位目标通知卡片（只点该卡片左下角回复）
                 target_article, target_reply_btn, target_score, matched_handle, matched_status_id, match_err = _match_target_card()
@@ -9230,7 +9369,7 @@ def send_notification_reply(item, message, dm_message=""):
                     "debug",
                     f"💬 已定位通知卡片 score={target_score}, status_id={matched_status_id}, handle={matched_handle or ''}"
                 )
-                _reply_humanized_idle(tab, 0.18, 0.44, "定位卡片后稳定等待")
+                _reply_humanized_idle(tab, 0.08, 0.22, "定位卡片后稳定等待")
             else:
                 log_to_ui("info", f"🔁 断点续跑：跳过通知卡片匹配（stage={resume_stage}）")
 
@@ -9245,7 +9384,7 @@ def send_notification_reply(item, message, dm_message=""):
                     log_to_ui("debug", "🔗 已启用快速链接路径（长队列稳定模式）")
                 else:
                     _prepare_reply_prompt_guard(tab, "复制分享链接前")
-                    _reply_humanized_idle(tab, 0.14, 0.36, "复制分享链接前")
+                    _reply_humanized_idle(tab, 0.06, 0.18, "复制分享链接前")
                     share_link, share_err = _click_share_copy_link(tab, target_article, share_link_fallback)
                 if share_err:
                     log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
@@ -9278,7 +9417,7 @@ def send_notification_reply(item, message, dm_message=""):
                 _mark("prepare_share_link")
                 _mark_stage("share_link_ready", extra={"notify_share_link": share_link}, save=True)
                 log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
-                _reply_humanized_idle(tab, 0.16, 0.4, "发送回复前")
+                _reply_humanized_idle(tab, 0.08, 0.2, "发送回复前")
             else:
                 share_link = _normalize_dm_share_link(
                     share_link,
