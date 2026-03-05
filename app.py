@@ -13,6 +13,7 @@ import json
 import logging
 import hashlib
 import unicodedata
+import difflib
 import base64
 import uuid
 import concurrent.futures
@@ -344,6 +345,7 @@ NOTIFY_FLOW_STAGE_ORDER = {
     "reply_sent": 40,
     "dm_opening": 50,
     "dm_link_sent": 60,
+    "dm_text_generating": 65,
     "dm_text_sent": 70,
     "dm_closed_confirmed": 80,
     "done": 90,
@@ -466,6 +468,60 @@ DEFAULT_NOTIFY_REPLY_TEMPLATES = [
     '大佬 我给您私信介绍了',
 ]
 DEFAULT_DM_TEMPLATES = [DM_FOLLOWUP_TEXT]
+DM_LLM_REWRITE_DEFAULT_PROMPT = (
+    "你是私信文案改写助手。\n"
+    "任务：将给定模板改写成自然、简洁、礼貌、口语化的中文私信。\n"
+    "要求：\n"
+    "1. 不要改变核心业务信息与联系方式。\n"
+    "2. 不要输出解释，只输出最终私信正文。\n"
+    "3. 语气真诚，不夸张，不添加模板中没有的承诺。\n"
+    "4. 必须明显重写句式，不得大段复用原句；连续复用原文不得超过8个字。\n"
+    "5. 在不改变核心信息的前提下，可替换同义表达并重排语序。\n"
+    "6. 避免模板腔，不要总用“您好，我是……感谢关注”这类固定开头。\n"
+    "模板如下：\n"
+    "{template}"
+)
+DM_LLM_REWRITE_ENABLED = str(
+    os.environ.get("XMONITOR_DM_LLM_REWRITE_ENABLED", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+DM_LLM_REWRITE_PROMPT_TEMPLATE = str(
+    os.environ.get("XMONITOR_DM_LLM_REWRITE_PROMPT_TEMPLATE", DM_LLM_REWRITE_DEFAULT_PROMPT) or DM_LLM_REWRITE_DEFAULT_PROMPT
+).strip()
+try:
+    DM_LLM_REWRITE_MAX_CHARS = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_CHARS", "260"))
+except Exception:
+    DM_LLM_REWRITE_MAX_CHARS = 260
+DM_LLM_REWRITE_MAX_CHARS = max(80, min(1200, DM_LLM_REWRITE_MAX_CHARS))
+try:
+    DM_LLM_REWRITE_TEMPERATURE = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_TEMPERATURE", "0.7"))
+except Exception:
+    DM_LLM_REWRITE_TEMPERATURE = 0.7
+DM_LLM_REWRITE_TEMPERATURE = max(0.0, min(1.2, DM_LLM_REWRITE_TEMPERATURE))
+try:
+    DM_LLM_REWRITE_MAX_REGEN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_REGEN", "2"))
+except Exception:
+    DM_LLM_REWRITE_MAX_REGEN = 2
+DM_LLM_REWRITE_MAX_REGEN = max(0, min(5, DM_LLM_REWRITE_MAX_REGEN))
+try:
+    DM_LLM_REWRITE_DEDUPE_SIZE = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_DEDUPE_SIZE", "200"))
+except Exception:
+    DM_LLM_REWRITE_DEDUPE_SIZE = 200
+DM_LLM_REWRITE_DEDUPE_SIZE = max(50, min(1000, DM_LLM_REWRITE_DEDUPE_SIZE))
+try:
+    DM_LLM_REWRITE_SIMILARITY_MAX = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_SIMILARITY_MAX", "0.86"))
+except Exception:
+    DM_LLM_REWRITE_SIMILARITY_MAX = 0.86
+DM_LLM_REWRITE_SIMILARITY_MAX = max(0.60, min(0.98, DM_LLM_REWRITE_SIMILARITY_MAX))
+try:
+    DM_LLM_REWRITE_MIN_DIFF_CHARS = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MIN_DIFF_CHARS", "18"))
+except Exception:
+    DM_LLM_REWRITE_MIN_DIFF_CHARS = 18
+DM_LLM_REWRITE_MIN_DIFF_CHARS = max(8, min(120, DM_LLM_REWRITE_MIN_DIFF_CHARS))
+try:
+    DM_LLM_REWRITE_MAX_SHARED_RUN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_SHARED_RUN", "14"))
+except Exception:
+    DM_LLM_REWRITE_MAX_SHARED_RUN = 14
+DM_LLM_REWRITE_MAX_SHARED_RUN = max(6, min(28, DM_LLM_REWRITE_MAX_SHARED_RUN))
 DM_CLOSED_FALLBACK_REPLY_TEXT = "大佬 您的私信是关闭的，如果有需要可以给我私信呀"
 # 私信口令（Enter Passcode）自动处理默认启用，可用环境变量覆盖
 DM_PASSCODE = str(os.environ.get("XMONITOR_DM_PASSCODE", "1234") or "").strip()
@@ -795,6 +851,8 @@ dm_unavailable_cache = {}  # {handle: expire_ts}
 dm_unavailable_cache_lock = threading.Lock()
 llm_filter_cache = {}  # {signature: {"ts": float, "skip": bool, "reason": str}}
 llm_filter_cache_lock = threading.Lock()
+dm_llm_rewrite_history = deque(maxlen=DM_LLM_REWRITE_DEDUPE_SIZE)  # 最近改写签名
+dm_llm_rewrite_lock = threading.Lock()
 
 # --- 线程池 (根据任务数动态调整) ---
 task_executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -1548,6 +1606,13 @@ def save_state():
         "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
         "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
         "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+        "dm_llm_rewrite_enabled": bool(DM_LLM_REWRITE_ENABLED),
+        "dm_llm_rewrite_prompt_template": str(DM_LLM_REWRITE_PROMPT_TEMPLATE or ""),
+        "dm_llm_rewrite_max_chars": int(DM_LLM_REWRITE_MAX_CHARS),
+        "dm_llm_rewrite_temperature": float(DM_LLM_REWRITE_TEMPERATURE),
+        "dm_llm_rewrite_max_regen": int(DM_LLM_REWRITE_MAX_REGEN),
+        "dm_llm_rewrite_dedupe_size": int(DM_LLM_REWRITE_DEDUPE_SIZE),
+        "dm_llm_rewrite_history": list(dm_llm_rewrite_history),
         "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
     }
     try:
@@ -1561,6 +1626,8 @@ def load_state():
     global global_token, monitor_tasks, monitor_active, processed_users, pending_results, notification_monitoring, delegated_account, delegated_enabled, history_ids, headless_mode, content_dedupe, notify_reply_templates, dm_message_templates
     global LLM_FILTER_ENABLED, LLM_FILTER_BASE_URL, LLM_FILTER_API_KEY, LLM_FILTER_MODEL, LLM_FILTER_TIMEOUT_SEC
     global LLM_FILTER_PROMPT_TEMPLATE, LLM_INTENT_PROMPT_TEMPLATE
+    global DM_LLM_REWRITE_ENABLED, DM_LLM_REWRITE_PROMPT_TEMPLATE, DM_LLM_REWRITE_MAX_CHARS
+    global DM_LLM_REWRITE_TEMPERATURE, DM_LLM_REWRITE_MAX_REGEN, DM_LLM_REWRITE_DEDUPE_SIZE, dm_llm_rewrite_history
     global NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT, NOTIFY_VOICE_BLOCK_KEYWORDS
     ensure_data_dir()
 
@@ -1598,6 +1665,37 @@ def load_state():
                 LLM_INTENT_PROMPT_TEMPLATE = str(
                     data.get("llm_intent_prompt_template", LLM_INTENT_PROMPT_TEMPLATE) or ""
                 ).strip()
+                DM_LLM_REWRITE_ENABLED = bool(data.get("dm_llm_rewrite_enabled", DM_LLM_REWRITE_ENABLED))
+                DM_LLM_REWRITE_PROMPT_TEMPLATE = str(
+                    data.get("dm_llm_rewrite_prompt_template", DM_LLM_REWRITE_PROMPT_TEMPLATE) or ""
+                ).strip() or DM_LLM_REWRITE_DEFAULT_PROMPT
+                try:
+                    DM_LLM_REWRITE_MAX_CHARS = int(data.get("dm_llm_rewrite_max_chars", DM_LLM_REWRITE_MAX_CHARS))
+                except Exception:
+                    pass
+                DM_LLM_REWRITE_MAX_CHARS = max(80, min(1200, int(DM_LLM_REWRITE_MAX_CHARS)))
+                try:
+                    DM_LLM_REWRITE_TEMPERATURE = float(data.get("dm_llm_rewrite_temperature", DM_LLM_REWRITE_TEMPERATURE))
+                except Exception:
+                    pass
+                DM_LLM_REWRITE_TEMPERATURE = max(0.0, min(1.2, float(DM_LLM_REWRITE_TEMPERATURE)))
+                try:
+                    DM_LLM_REWRITE_MAX_REGEN = int(data.get("dm_llm_rewrite_max_regen", DM_LLM_REWRITE_MAX_REGEN))
+                except Exception:
+                    pass
+                DM_LLM_REWRITE_MAX_REGEN = max(0, min(5, int(DM_LLM_REWRITE_MAX_REGEN)))
+                try:
+                    loaded_dedupe_size = int(data.get("dm_llm_rewrite_dedupe_size", DM_LLM_REWRITE_DEDUPE_SIZE))
+                except Exception:
+                    loaded_dedupe_size = DM_LLM_REWRITE_DEDUPE_SIZE
+                DM_LLM_REWRITE_DEDUPE_SIZE = max(50, min(1000, int(loaded_dedupe_size)))
+                loaded_hist = data.get("dm_llm_rewrite_history", []) or []
+                if not isinstance(loaded_hist, list):
+                    loaded_hist = []
+                dm_llm_rewrite_history = deque(
+                    [str(x or "").strip() for x in loaded_hist if str(x or "").strip()],
+                    maxlen=DM_LLM_REWRITE_DEDUPE_SIZE,
+                )
                 NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = str(
                     data.get("notify_voice_block_keywords_text", NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ""
                 ).strip()
@@ -2373,7 +2471,8 @@ def _call_openai_compatible_json(
     api_key=None,
     model=None,
     timeout_sec=None,
-    max_tokens=120
+    max_tokens=120,
+    temperature=0.0,
 ):
     endpoint = _llm_filter_endpoint(base_url=base_url)
     model_name = str(model if model is not None else LLM_FILTER_MODEL or "").strip()
@@ -2387,7 +2486,7 @@ def _call_openai_compatible_json(
 
     base_payload = {
         "model": model_name,
-        "temperature": 0,
+        "temperature": max(0.0, min(1.2, float(temperature))),
         "max_tokens": int(max(32, min(512, int(max_tokens)))),
         "messages": [
             {"role": "system", "content": str(system_prompt or "").strip()},
@@ -2501,6 +2600,267 @@ def _call_ollama_native_json(system_prompt, user_prompt, *, base_url=None, model
     msg = data.get("message") or {}
     content_text = str(msg.get("content") or "")
     return _parse_json_object_from_text(content_text), content_text
+
+
+def _normalize_dm_rewrite_signature(text):
+    raw = normalize_content_for_dedupe(_normalize_text_for_compare(text or ""))
+    if not raw:
+        return ""
+    raw = re.sub(r"[^0-9a-z\u4e00-\u9fff]+", "", raw.lower())
+    if not raw:
+        return ""
+    return hashlib.md5(raw.encode("utf-8")).hexdigest()
+
+
+def _build_dm_llm_rewrite_prompt(template_text):
+    tpl = str(DM_LLM_REWRITE_PROMPT_TEMPLATE or "").strip() or DM_LLM_REWRITE_DEFAULT_PROMPT
+    template_clean = _sanitize_dm_message_text(template_text)
+    if "{template}" in tpl or "{{template}}" in tpl:
+        return tpl.replace("{{template}}", template_clean).replace("{template}", template_clean)
+    return f"{tpl}\n模板如下：\n{template_clean}"
+
+
+def _dm_rewrite_longest_common_substring_len(source_text, generated_text):
+    src = _normalize_text_for_compare(source_text or "")
+    dst = _normalize_text_for_compare(generated_text or "")
+    if not src or not dst:
+        return 0
+    # 联系方式、长数字是业务硬信息，允许保留，不参与“连续复用”判断
+    src = re.sub(r"(工程师)?微信\s*[:：]?\s*[0-9a-zA-Z_-]{4,}", "<contact>", src, flags=re.IGNORECASE)
+    dst = re.sub(r"(工程师)?微信\s*[:：]?\s*[0-9a-zA-Z_-]{4,}", "<contact>", dst, flags=re.IGNORECASE)
+    src = re.sub(r"\d{6,}", "<num>", src)
+    dst = re.sub(r"\d{6,}", "<num>", dst)
+    rows = len(src) + 1
+    cols = len(dst) + 1
+    dp = [0] * cols
+    max_len = 0
+    for i in range(1, rows):
+        prev = 0
+        for j in range(1, cols):
+            cur = dp[j]
+            if src[i - 1] == dst[j - 1]:
+                dp[j] = prev + 1
+                if dp[j] > max_len:
+                    max_len = dp[j]
+            else:
+                dp[j] = 0
+            prev = cur
+    return max_len
+
+
+def _extract_dm_rewrite_forbidden_phrases(template_text, max_items=5):
+    text = _sanitize_dm_message_text(template_text)
+    if not text:
+        return []
+    items = []
+    seen = set()
+    parts = re.split(r"[，。！？；;,\n]+", text)
+    for part in parts:
+        p = str(part or "").strip()
+        if len(p) < 9 or len(p) > 28:
+            continue
+        # 联系方式和数字串允许复用，避免误伤核心信息
+        if re.search(r"\d{4,}", p):
+            continue
+        sig = normalize_content_for_dedupe(p.lower())
+        if not sig or sig in seen:
+            continue
+        seen.add(sig)
+        items.append(p)
+        if len(items) >= max(1, int(max_items)):
+            break
+    return items
+
+
+def _dm_rewrite_contains_forbidden_phrase(generated_text, forbidden_phrases):
+    if not forbidden_phrases:
+        return ""
+    dst = normalize_content_for_dedupe(_normalize_text_for_compare(generated_text or ""))
+    if not dst:
+        return ""
+    for phrase in forbidden_phrases:
+        p = normalize_content_for_dedupe(_normalize_text_for_compare(phrase or ""))
+        if p and p in dst:
+            return phrase
+    return ""
+
+
+def _dm_rewrite_similarity_score(source_text, generated_text):
+    src = _normalize_text_for_compare(source_text or "")
+    dst = _normalize_text_for_compare(generated_text or "")
+    if not src or not dst:
+        return 0.0
+    try:
+        return float(difflib.SequenceMatcher(None, src, dst).ratio())
+    except Exception:
+        return 0.0
+
+
+def _dm_rewrite_is_too_similar(source_text, generated_text):
+    src = _normalize_text_for_compare(source_text or "")
+    dst = _normalize_text_for_compare(generated_text or "")
+    if not src or not dst:
+        return False, 0.0, 0, 0
+    score = _dm_rewrite_similarity_score(src, dst)
+    diff_chars = abs(len(src) - len(dst))
+    shared_run = _dm_rewrite_longest_common_substring_len(src, dst)
+    if src == dst:
+        return True, score, diff_chars, shared_run
+    too_similar = (score >= float(DM_LLM_REWRITE_SIMILARITY_MAX)) and (diff_chars < int(DM_LLM_REWRITE_MIN_DIFF_CHARS))
+    if shared_run >= int(DM_LLM_REWRITE_MAX_SHARED_RUN) and score >= 0.45:
+        too_similar = True
+    return bool(too_similar), score, diff_chars, shared_run
+
+
+def _record_dm_llm_rewrite_signature(sig):
+    if not sig:
+        return
+    with dm_llm_rewrite_lock:
+        dm_llm_rewrite_history.append(sig)
+
+
+def _is_dm_llm_rewrite_duplicate(sig):
+    if not sig:
+        return False
+    with dm_llm_rewrite_lock:
+        return sig in dm_llm_rewrite_history
+
+
+def _generate_dm_text_with_llm(template_text):
+    """根据模板生成第二条私信文案（总是生成，失败即返回错误）。"""
+    template_clean = _sanitize_dm_message_text(template_text)
+    if not template_clean:
+        return False, "", {
+            "error_code": "E_DM_LLM_TEMPLATE_EMPTY",
+            "error_detail": "私信模板为空，无法生成",
+            "llm_used": False,
+            "latency_ms": 0,
+        }
+    if not _llm_runtime_ready():
+        return False, "", {
+            "error_code": "E_DM_LLM_NOT_READY",
+            "error_detail": "LLM模型未就绪，请检查 Base URL 和模型名",
+            "llm_used": False,
+            "latency_ms": 0,
+        }
+
+    prompt = _build_dm_llm_rewrite_prompt(template_clean)
+    forbidden_phrases = _extract_dm_rewrite_forbidden_phrases(template_clean)
+    if forbidden_phrases:
+        banned = "\n".join(f"- {x}" for x in forbidden_phrases)
+        prompt = (
+            f"{prompt}\n\n请避免原样复用下面这些模板短语（可同义改写）：\n"
+            f"{banned}"
+        )
+    attempts = max(1, int(DM_LLM_REWRITE_MAX_REGEN) + 1)
+    last_meta = {
+        "error_code": "E_DM_LLM_GENERATE_FAILED",
+        "error_detail": "未知错误",
+        "llm_used": True,
+        "latency_ms": 0,
+    }
+    style_hints = [
+        "开头不要使用“您好，我是…”，换成自然一点的开场",
+        "减少“感谢您的关注和支持”这种固定套话，改成同义表达",
+        "一句一意，优先短句，读起来像真人即兴输入",
+        "先给价值点，再给联系方式，结尾一句行动建议",
+        "语气礼貌但干练，不要出现公文感",
+        "保持销售目标明确，但像聊天而不是公告",
+    ]
+
+    for attempt in range(1, attempts + 1):
+        started = time.perf_counter()
+        try:
+            style_hint = random.choice(style_hints)
+            result_obj, raw_text = _call_openai_compatible_json(
+                "你是私信改写助手。只输出JSON，不要输出模板原句。",
+                (
+                    prompt
+                    + f"\n\n补充风格要求：{style_hint}。"
+                    + "\n请输出JSON：{\"text\":\"改写后的私信正文\"}"
+                ),
+                max_tokens=min(512, max(96, int(DM_LLM_REWRITE_MAX_CHARS * 2))),
+                timeout_sec=LLM_FILTER_TIMEOUT_SEC,
+                temperature=DM_LLM_REWRITE_TEMPERATURE,
+            )
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            generated = ""
+            if isinstance(result_obj, dict):
+                generated = str(
+                    result_obj.get("text")
+                    or result_obj.get("message")
+                    or result_obj.get("content")
+                    or ""
+                )
+            if not generated:
+                generated = str(raw_text or "")
+            generated = _sanitize_dm_message_text(generated)
+            if len(generated) > int(DM_LLM_REWRITE_MAX_CHARS):
+                generated = generated[: int(DM_LLM_REWRITE_MAX_CHARS)].rstrip()
+
+            if not generated:
+                last_meta = {
+                    "error_code": "E_DM_LLM_EMPTY_OUTPUT",
+                    "error_detail": "LLM返回为空",
+                    "llm_used": True,
+                    "latency_ms": latency_ms,
+                }
+                continue
+
+            copied_phrase = _dm_rewrite_contains_forbidden_phrase(generated, forbidden_phrases)
+            if copied_phrase:
+                last_meta = {
+                    "error_code": "E_DM_LLM_COPY_PHRASE",
+                    "error_detail": f"命中原句短语复用: {copied_phrase}",
+                    "llm_used": True,
+                    "latency_ms": latency_ms,
+                }
+                continue
+
+            too_similar, sim_score, diff_chars, shared_run = _dm_rewrite_is_too_similar(template_clean, generated)
+            if too_similar:
+                last_meta = {
+                    "error_code": "E_DM_LLM_TOO_SIMILAR",
+                    "error_detail": (
+                        f"改写与模板过于相似(sim={sim_score:.3f}, diff={diff_chars}, shared={shared_run})"
+                    ),
+                    "llm_used": True,
+                    "latency_ms": latency_ms,
+                }
+                continue
+
+            sig = _normalize_dm_rewrite_signature(generated)
+            if _is_dm_llm_rewrite_duplicate(sig):
+                last_meta = {
+                    "error_code": "E_DM_LLM_DUPLICATE_TEXT",
+                    "error_detail": f"生成文案命中最近{DM_LLM_REWRITE_DEDUPE_SIZE}条去重窗口",
+                    "llm_used": True,
+                    "latency_ms": latency_ms,
+                }
+                continue
+
+            _record_dm_llm_rewrite_signature(sig)
+            return True, generated, {
+                "error_code": "",
+                "error_detail": "",
+                "llm_used": True,
+                "latency_ms": latency_ms,
+                "regen_attempt": attempt,
+            }
+        except Exception as e:
+            latency_ms = int((time.perf_counter() - started) * 1000)
+            err_text = str(e or "").strip()
+            err_code = "E_DM_LLM_GENERATE_FAILED"
+            if "timed out" in err_text.lower():
+                err_code = "E_DM_LLM_TIMEOUT"
+            last_meta = {
+                "error_code": err_code,
+                "error_detail": err_text or "LLM改写失败",
+                "llm_used": True,
+                "latency_ms": latency_ms,
+            }
+
+    return False, "", last_meta
 
 
 def _call_openai_compatible_filter_api(content):
@@ -4862,7 +5222,8 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
                         (f"https://x.com/i/status/{status_id}" if status_id else "")
                     )
                 })
-                log_to_ui("success", f"📬 新通知[{notification_type}]: {handle} - {content[:20]}...")
+                if NOTIFICATION_VERBOSE_TRACE:
+                    log_to_ui("debug", f"📬 [NotifyCandidate][{notification_type}] {handle} - {content[:20]}...")
                 if idx <= trace_limit:
                     trace_logs.append(
                         f"A{idx:02d} pass handle={handle} status_id={status_id} age={age_minutes} content={_normalize_one_line(content)}"
@@ -4941,9 +5302,11 @@ def scan_task_worker(task, page, blocked_users):
                     continue
                 should_skip_policy, _ = should_skip_content_by_policy(item.get("content", ""))
                 if should_skip_policy:
+                    history_ids.add(item["key"])
                     skipped_policy += 1
                     continue
                 if should_skip_duplicate_content(item.get("handle", ""), item.get("content", "")):
+                    history_ids.add(item["key"])
                     skipped_dup_content += 1
                     continue
                 history_ids.add(item["key"])
@@ -5565,6 +5928,8 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
                     if item["key"] in history_ids:
                         continue
                     if should_skip_duplicate_content(item.get("handle", ""), item.get("content", "")):
+                        # 同用户重复内容会被过滤，仍记录key避免下一轮重复命中
+                        history_ids.add(item["key"])
                         skipped_dup_content += 1
                         continue
                     history_ids.add(item["key"])
@@ -8842,7 +9207,15 @@ def _confirm_dm_closed_dual_stage(tab, handle):
     return False, f"confirm_not_closed:{retry_err_text[:80]}"
 
 
-def _run_dm_send_sequence_once(tab, dm_handle, share_link, dm_text, mark_func=None, progress=None):
+def _run_dm_send_sequence_once(
+    tab,
+    dm_handle,
+    share_link,
+    dm_text,
+    mark_func=None,
+    progress=None,
+    dm_text_supplier=None,
+):
     """执行一次完整私信发送（开私信 -> 发链接 -> 发文案）。"""
     if progress is None:
         progress = {"link_sent": False, "text_sent": False}
@@ -8875,9 +9248,19 @@ def _run_dm_send_sequence_once(tab, dm_handle, share_link, dm_text, mark_func=No
         log_to_ui("debug", "📨 跳过重复发送私信链接（本流程已成功发送）")
 
     if not progress.get("text_sent"):
+        dm_text_final = _sanitize_dm_message_text(dm_text)
+        if callable(dm_text_supplier):
+            ok_gen, dm_text_generated, gen_meta = dm_text_supplier()
+            if not ok_gen:
+                err_code = str((gen_meta or {}).get("error_code", "E_DM_LLM_GENERATE_FAILED") or "E_DM_LLM_GENERATE_FAILED")
+                err_detail = str((gen_meta or {}).get("error_detail", "") or "第二条私信文案生成失败")
+                return False, f"{err_code}: {err_detail}", False
+            dm_text_final = _sanitize_dm_message_text(dm_text_generated)
+        if not dm_text_final:
+            return False, "E_DM_TEXT_EMPTY: 第二条私信文案为空", False
         _prepare_reply_prompt_guard(tab, "第二条私信前")
         _humanized_gap_between_dm_messages(tab)
-        ok_dm_2, err_dm_2 = _send_dm_message_with_retry(tab, dm_text, handle=dm_handle)
+        ok_dm_2, err_dm_2 = _send_dm_message_with_retry(tab, dm_text_final, handle=dm_handle)
         if not ok_dm_2:
             return False, f"发送私信文案失败: {err_dm_2}", False
         progress["text_sent"] = True
@@ -8897,6 +9280,7 @@ def _run_dm_send_with_recovery(
     mark_func=None,
     best_effort=False,
     progress=None,
+    dm_text_supplier=None,
 ):
     """私信发送恢复策略：原标签页 -> 重建标签页 -> 重启浏览器 -> 有头兜底。"""
     global headless_mode
@@ -8923,7 +9307,13 @@ def _run_dm_send_with_recovery(
                 continue
 
             ok, err, dm_closed = _run_dm_send_sequence_once(
-                work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
+                work_tab,
+                handle_norm,
+                share_link,
+                dm_text,
+                mark_func=mark_func,
+                progress=progress,
+                dm_text_supplier=dm_text_supplier,
             )
             if ok:
                 if idx > 1:
@@ -8976,7 +9366,13 @@ def _run_dm_send_with_recovery(
                 restart_global_browser()
                 work_tab = ensure_reply_work_tab(force_recreate=True)
                 ok, err, dm_closed = _run_dm_send_sequence_once(
-                    work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
+                    work_tab,
+                    handle_norm,
+                    share_link,
+                    dm_text,
+                    mark_func=mark_func,
+                    progress=progress,
+                    dm_text_supplier=dm_text_supplier,
                 )
                 if ok:
                     return True, "", False, work_tab
@@ -9017,7 +9413,13 @@ def _run_dm_send_with_recovery(
                         restart_global_browser()
                     work_tab = ensure_reply_work_tab(force_recreate=True)
                     ok, err, dm_closed = _run_dm_send_sequence_once(
-                        work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
+                        work_tab,
+                        handle_norm,
+                        share_link,
+                        dm_text,
+                        mark_func=mark_func,
+                        progress=progress,
+                        dm_text_supplier=dm_text_supplier,
                     )
                     if ok:
                         log_to_ui("success", "✅ 有头兜底私信发送成功")
@@ -9740,10 +10142,72 @@ def send_notification_reply(item, message, dm_message=""):
                 log_to_ui("info", f"🔁 断点续跑：跳过公开回复发送（stage={resume_stage}）")
 
             dm_handle = item.get("handle", "")
-            dm_text = _sanitize_dm_message_text(dm_message)
-            if not dm_text:
-                dm_text = (dm_message_templates[0] if dm_message_templates else DM_FOLLOWUP_TEXT)
-            dm_text = _sanitize_dm_message_text(dm_text)
+            dm_template_text = _sanitize_dm_message_text(dm_message)
+            if not dm_template_text:
+                dm_template_text = (dm_message_templates[0] if dm_message_templates else DM_FOLLOWUP_TEXT)
+            dm_template_text = _sanitize_dm_message_text(dm_template_text)
+
+            def _build_dm_text_supplier():
+                def _supplier():
+                    if not DM_LLM_REWRITE_ENABLED:
+                        return True, dm_template_text, {
+                            "error_code": "",
+                            "error_detail": "",
+                            "llm_used": False,
+                            "latency_ms": 0,
+                        }
+                    _mark_stage(
+                        "dm_text_generating",
+                        error="",
+                        extra={
+                            "notify_share_link": share_link,
+                            "notify_dm_template_text": dm_template_text,
+                            "notify_dm_llm_used": True,
+                        },
+                        save=True,
+                    )
+                    ok_gen, dm_text_generated, meta = _generate_dm_text_with_llm(dm_template_text)
+                    meta = meta or {}
+                    if ok_gen:
+                        _update_notify_flow_state(
+                            task_key,
+                            stage="dm_text_generating",
+                            error="",
+                            retry_at=0.0,
+                            extra={
+                                "notify_share_link": share_link,
+                                "notify_dm_template_text": dm_template_text,
+                                "notify_dm_text_generated": dm_text_generated,
+                                "notify_dm_llm_used": bool(meta.get("llm_used", True)),
+                                "notify_dm_llm_latency_ms": int(meta.get("latency_ms", 0) or 0),
+                                "notify_dm_llm_regen_attempt": int(meta.get("regen_attempt", 1) or 1),
+                                "notify_dm_llm_error_code": "",
+                                "notify_dm_llm_error_detail": "",
+                            },
+                            save=True,
+                        )
+                    else:
+                        err_code = str(meta.get("error_code", "E_DM_LLM_GENERATE_FAILED") or "E_DM_LLM_GENERATE_FAILED")
+                        err_detail = str(meta.get("error_detail", "") or "第二条私信文案生成失败")
+                        _update_notify_flow_state(
+                            task_key,
+                            stage="dm_text_generating",
+                            error=f"{err_code}: {err_detail}",
+                            retry_at=0.0,
+                            extra={
+                                "notify_share_link": share_link,
+                                "notify_dm_template_text": dm_template_text,
+                                "notify_dm_llm_used": bool(meta.get("llm_used", True)),
+                                "notify_dm_llm_latency_ms": int(meta.get("latency_ms", 0) or 0),
+                                "notify_dm_llm_error_code": err_code,
+                                "notify_dm_llm_error_detail": err_detail,
+                            },
+                            save=True,
+                        )
+                    return ok_gen, dm_text_generated, meta
+
+                return _supplier
+
             slot_ok, slot_wait = _reserve_notify_dm_user_slot(dm_handle, task_key=task_key)
             if not slot_ok:
                 return False, f"E_DM_USER_COOLDOWN: @{normalize_handle(dm_handle)} 私信冷却中，请 {slot_wait:.1f}s 后重试"
@@ -9752,9 +10216,10 @@ def send_notification_reply(item, message, dm_message=""):
                 tab,
                 dm_handle,
                 share_link,
-                dm_text,
+                dm_template_text,
                 mark_func=_mark,
                 progress=dm_progress,
+                dm_text_supplier=_build_dm_text_supplier(),
             )
             if dm_tab:
                 tab = dm_tab
@@ -9887,6 +10352,12 @@ def state():
             "llm_filter_timeout_max_sec": float(LLM_FILTER_TIMEOUT_MAX_SEC),
             "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
             "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+            "dm_llm_rewrite_enabled": bool(DM_LLM_REWRITE_ENABLED),
+            "dm_llm_rewrite_prompt_template": str(DM_LLM_REWRITE_PROMPT_TEMPLATE or ""),
+            "dm_llm_rewrite_max_chars": int(DM_LLM_REWRITE_MAX_CHARS),
+            "dm_llm_rewrite_temperature": float(DM_LLM_REWRITE_TEMPERATURE),
+            "dm_llm_rewrite_max_regen": int(DM_LLM_REWRITE_MAX_REGEN),
+            "dm_llm_rewrite_dedupe_size": int(DM_LLM_REWRITE_DEDUPE_SIZE),
             "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
             "notification_reply_only_mode": bool(NOTIFICATION_REPLY_ONLY_MODE),
             **_build_notify_tts_runtime_payload(include_secrets=True),
@@ -10020,6 +10491,12 @@ def notify_reply():
             if row.get("key") == key and row.get("source") == "通知页面":
                 row["notify_reply_text"] = message
                 row["notify_dm_text"] = dm_message
+                row["notify_dm_text_generated"] = ""
+                row["notify_dm_llm_used"] = bool(DM_LLM_REWRITE_ENABLED)
+                row["notify_dm_llm_latency_ms"] = 0
+                row["notify_dm_llm_regen_attempt"] = 0
+                row["notify_dm_llm_error_code"] = ""
+                row["notify_dm_llm_error_detail"] = ""
                 if not str(row.get("notify_flow_stage", "")).strip():
                     row["notify_flow_stage"] = "reply_pending"
                 break
@@ -10464,6 +10941,8 @@ def set_llm_filter_config():
     """设置LLM内容过滤配置（OpenAI兼容接口）。"""
     global LLM_FILTER_ENABLED, LLM_FILTER_BASE_URL, LLM_FILTER_API_KEY, LLM_FILTER_MODEL, LLM_FILTER_TIMEOUT_SEC
     global LLM_FILTER_PROMPT_TEMPLATE, LLM_INTENT_PROMPT_TEMPLATE
+    global DM_LLM_REWRITE_ENABLED, DM_LLM_REWRITE_PROMPT_TEMPLATE, DM_LLM_REWRITE_MAX_CHARS
+    global DM_LLM_REWRITE_TEMPERATURE, DM_LLM_REWRITE_MAX_REGEN, DM_LLM_REWRITE_DEDUPE_SIZE, dm_llm_rewrite_history
     global NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT, NOTIFY_VOICE_BLOCK_KEYWORDS
     payload = request.get_json(silent=True) or {}
 
@@ -10480,11 +10959,37 @@ def set_llm_filter_config():
     notify_voice_block_keywords_text = str(
         payload.get('notify_voice_block_keywords_text', NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ''
     ).strip()
+    dm_llm_rewrite_enabled = bool(payload.get('dm_llm_rewrite_enabled', DM_LLM_REWRITE_ENABLED))
+    dm_llm_rewrite_prompt_template = str(
+        payload.get('dm_llm_rewrite_prompt_template', DM_LLM_REWRITE_PROMPT_TEMPLATE) or ''
+    ).strip() or DM_LLM_REWRITE_DEFAULT_PROMPT
+    try:
+        dm_llm_rewrite_max_chars = int(payload.get('dm_llm_rewrite_max_chars', DM_LLM_REWRITE_MAX_CHARS))
+    except Exception:
+        dm_llm_rewrite_max_chars = DM_LLM_REWRITE_MAX_CHARS
+    dm_llm_rewrite_max_chars = max(80, min(1200, int(dm_llm_rewrite_max_chars)))
+    try:
+        dm_llm_rewrite_temperature = float(payload.get('dm_llm_rewrite_temperature', DM_LLM_REWRITE_TEMPERATURE))
+    except Exception:
+        dm_llm_rewrite_temperature = DM_LLM_REWRITE_TEMPERATURE
+    dm_llm_rewrite_temperature = max(0.0, min(1.2, float(dm_llm_rewrite_temperature)))
+    try:
+        dm_llm_rewrite_max_regen = int(payload.get('dm_llm_rewrite_max_regen', DM_LLM_REWRITE_MAX_REGEN))
+    except Exception:
+        dm_llm_rewrite_max_regen = DM_LLM_REWRITE_MAX_REGEN
+    dm_llm_rewrite_max_regen = max(0, min(5, int(dm_llm_rewrite_max_regen)))
+    try:
+        dm_llm_rewrite_dedupe_size = int(payload.get('dm_llm_rewrite_dedupe_size', DM_LLM_REWRITE_DEDUPE_SIZE))
+    except Exception:
+        dm_llm_rewrite_dedupe_size = DM_LLM_REWRITE_DEDUPE_SIZE
+    dm_llm_rewrite_dedupe_size = max(50, min(1000, int(dm_llm_rewrite_dedupe_size)))
     timeout_sec = clamp_llm_timeout(payload.get('timeout_sec', LLM_FILTER_TIMEOUT_SEC))
     if len(filter_prompt_template) > 12000:
         return jsonify({"status": "err", "msg": "过滤 Prompt 过长（最大12000字符）"}), 400
     if len(intent_prompt_template) > 12000:
         return jsonify({"status": "err", "msg": "意向 Prompt 过长（最大12000字符）"}), 400
+    if len(dm_llm_rewrite_prompt_template) > 12000:
+        return jsonify({"status": "err", "msg": "私信改写 Prompt 过长（最大12000字符）"}), 400
 
     notify_voice_block_keywords = tuple(
         dict.fromkeys(
@@ -10504,6 +11009,16 @@ def set_llm_filter_config():
         LLM_FILTER_TIMEOUT_SEC = timeout_sec
         LLM_FILTER_PROMPT_TEMPLATE = filter_prompt_template
         LLM_INTENT_PROMPT_TEMPLATE = intent_prompt_template
+        DM_LLM_REWRITE_ENABLED = dm_llm_rewrite_enabled
+        DM_LLM_REWRITE_PROMPT_TEMPLATE = dm_llm_rewrite_prompt_template
+        DM_LLM_REWRITE_MAX_CHARS = dm_llm_rewrite_max_chars
+        DM_LLM_REWRITE_TEMPERATURE = dm_llm_rewrite_temperature
+        DM_LLM_REWRITE_MAX_REGEN = dm_llm_rewrite_max_regen
+        if DM_LLM_REWRITE_DEDUPE_SIZE != dm_llm_rewrite_dedupe_size:
+            DM_LLM_REWRITE_DEDUPE_SIZE = dm_llm_rewrite_dedupe_size
+            dm_llm_rewrite_history = deque(list(dm_llm_rewrite_history), maxlen=DM_LLM_REWRITE_DEDUPE_SIZE)
+        else:
+            DM_LLM_REWRITE_DEDUPE_SIZE = dm_llm_rewrite_dedupe_size
         NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = notify_voice_block_keywords_text
         NOTIFY_VOICE_BLOCK_KEYWORDS = notify_voice_block_keywords
     with llm_filter_cache_lock:
@@ -10529,6 +11044,12 @@ def set_llm_filter_config():
         "llm_filter_timeout_max_sec": float(LLM_FILTER_TIMEOUT_MAX_SEC),
         "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
         "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
+        "dm_llm_rewrite_enabled": bool(DM_LLM_REWRITE_ENABLED),
+        "dm_llm_rewrite_prompt_template": str(DM_LLM_REWRITE_PROMPT_TEMPLATE or ""),
+        "dm_llm_rewrite_max_chars": int(DM_LLM_REWRITE_MAX_CHARS),
+        "dm_llm_rewrite_temperature": float(DM_LLM_REWRITE_TEMPERATURE),
+        "dm_llm_rewrite_max_regen": int(DM_LLM_REWRITE_MAX_REGEN),
+        "dm_llm_rewrite_dedupe_size": int(DM_LLM_REWRITE_DEDUPE_SIZE),
         "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
         "notify_voice_block_keywords": list(NOTIFY_VOICE_BLOCK_KEYWORDS),
     })

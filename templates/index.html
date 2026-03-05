@@ -1037,6 +1037,17 @@
                                 <input type="text" id="llmTimeoutSec" placeholder="超时秒数（2-120）" value="8">
                                 <textarea id="llmIntentPromptTemplate" class="template-textarea" placeholder="意向分析 Prompt（可选，支持 {content} 占位）"></textarea>
                                 <textarea id="llmFilterPromptTemplate" class="template-textarea" placeholder="内容过滤 Prompt（可选，支持 {content} 占位）"></textarea>
+                                <label class="switch-container" onclick="event.stopPropagation()" style="margin:10px 0 8px;">
+                                    <div class="switch">
+                                        <input type="checkbox" id="dmLlmRewriteEnabled">
+                                        <span class="switch-slider"></span>
+                                    </div>
+                                    <div class="switch-label">
+                                        <div class="switch-label-title">第二条私信启用LLM改写</div>
+                                        <div class="switch-label-desc">基于私信模板生成新话术，减少重复</div>
+                                    </div>
+                                </label>
+                                <textarea id="dmLlmRewritePromptTemplate" class="template-textarea" placeholder="第二条私信改写 Prompt（支持 {template} 占位）"></textarea>
                                 <textarea id="notifyVoiceBlockKeywords" class="template-textarea" placeholder="通知不播报关键词（逗号或换行分隔；仅影响语音，不影响通知显示）"></textarea>
                                 <div class="template-editor-actions">
                                     <button class="btn-primary btn-sm" onclick="saveLlmFilterConfig()">💾 保存配置</button>
@@ -1855,6 +1866,8 @@
             document.getElementById('llmTimeoutSec').value = d.llm_filter_timeout_sec || 8;
             document.getElementById('llmIntentPromptTemplate').value = d.llm_intent_prompt_template || '';
             document.getElementById('llmFilterPromptTemplate').value = d.llm_filter_prompt_template || '';
+            document.getElementById('dmLlmRewriteEnabled').checked = (d.dm_llm_rewrite_enabled !== false);
+            document.getElementById('dmLlmRewritePromptTemplate').value = d.dm_llm_rewrite_prompt_template || '';
             document.getElementById('notifyVoiceBlockKeywords').value = d.notify_voice_block_keywords_text || '';
             refreshNotifyVoiceBlockKeywordsFromInput();
             syncTemplatesFromPayload(d);
@@ -2116,6 +2129,8 @@
             const apiKey = document.getElementById('llmApiKey').value.trim() || 'EMPTY';
             const llmIntentPromptTemplate = (document.getElementById('llmIntentPromptTemplate').value || '').trim();
             const llmFilterPromptTemplate = (document.getElementById('llmFilterPromptTemplate').value || '').trim();
+            const dmLlmRewriteEnabled = !!document.getElementById('dmLlmRewriteEnabled').checked;
+            const dmLlmRewritePromptTemplate = (document.getElementById('dmLlmRewritePromptTemplate').value || '').trim();
             const notifyVoiceBlockKeywordsText = (document.getElementById('notifyVoiceBlockKeywords').value || '').trim();
             let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
             if(Number.isNaN(timeoutSec)) timeoutSec = 8;
@@ -2139,12 +2154,16 @@
                     timeout_sec: timeoutSec,
                     llm_intent_prompt_template: llmIntentPromptTemplate,
                     llm_filter_prompt_template: llmFilterPromptTemplate,
+                    dm_llm_rewrite_enabled: dmLlmRewriteEnabled,
+                    dm_llm_rewrite_prompt_template: dmLlmRewritePromptTemplate,
                     notify_voice_block_keywords_text: notifyVoiceBlockKeywordsText
                 })
             }).then(r=>r.json()).then(d => {
                 if(d.status === 'ok') {
                     document.getElementById('llmIntentPromptTemplate').value = d.llm_intent_prompt_template || llmIntentPromptTemplate;
                     document.getElementById('llmFilterPromptTemplate').value = d.llm_filter_prompt_template || llmFilterPromptTemplate;
+                    document.getElementById('dmLlmRewriteEnabled').checked = (d.dm_llm_rewrite_enabled !== false);
+                    document.getElementById('dmLlmRewritePromptTemplate').value = d.dm_llm_rewrite_prompt_template || dmLlmRewritePromptTemplate;
                     document.getElementById('notifyVoiceBlockKeywords').value = d.notify_voice_block_keywords_text || notifyVoiceBlockKeywordsText;
                     refreshNotifyVoiceBlockKeywordsFromInput();
                     alert(`✅ LLM过滤配置已保存${enabled ? '并启用' : '（当前禁用）'}`);
@@ -2584,6 +2603,7 @@
             reply_sent: '首评已发',
             dm_opening: '打开私信',
             dm_link_sent: '私信链接已发',
+            dm_text_generating: '生成私信文案',
             dm_text_sent: '私信文案已发',
             dm_closed_confirmed: '私信关闭已确认',
             retry_waiting: '等待重试',
