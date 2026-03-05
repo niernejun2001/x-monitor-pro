@@ -149,6 +149,13 @@ processed_users = set() # 已屏蔽/已私信的用户集合
 pending_results = []    # 关键修复：待处理的结果列表（持久化）
 history_ids = set()     # 本次运行的抓取去重
 msg_queue = queue.Queue()
+try:
+    UPDATES_EVENT_BUFFER_MAX = int(os.environ.get("XMONITOR_UPDATES_EVENT_BUFFER_MAX", "5000"))
+except Exception:
+    UPDATES_EVENT_BUFFER_MAX = 5000
+UPDATES_EVENT_BUFFER_MAX = max(200, min(50000, int(UPDATES_EVENT_BUFFER_MAX)))
+updates_event_seq = 0
+updates_event_buffer = deque(maxlen=UPDATES_EVENT_BUFFER_MAX)
 global_token = ""
 delegated_account = ""  # 新增：委派账户用户名（格式：@username 或 username）
 delegated_enabled = False  # 委派账户功能开关（仅当为 True 时才会执行委派切换）
@@ -251,6 +258,29 @@ DM_ACTION_GAP_MIN_SEC = 0.45
 DM_ACTION_GAP_MAX_SEC = 1.2
 DM_BETWEEN_MESSAGES_MIN_SEC = 0.2
 DM_BETWEEN_MESSAGES_MAX_SEC = 0.55
+try:
+    DM_TEXT_VERIFY_TIMEOUT_SEC = float(os.environ.get("XMONITOR_DM_TEXT_VERIFY_TIMEOUT_SEC", "1.2"))
+except Exception:
+    DM_TEXT_VERIFY_TIMEOUT_SEC = 1.2
+DM_TEXT_VERIFY_TIMEOUT_SEC = max(0.5, min(4.0, DM_TEXT_VERIFY_TIMEOUT_SEC))
+try:
+    DM_SOFT_RETRY_MIN_SEC = float(os.environ.get("XMONITOR_DM_SOFT_RETRY_MIN_SEC", "0.08"))
+except Exception:
+    DM_SOFT_RETRY_MIN_SEC = 0.08
+try:
+    DM_SOFT_RETRY_MAX_SEC = float(os.environ.get("XMONITOR_DM_SOFT_RETRY_MAX_SEC", "0.18"))
+except Exception:
+    DM_SOFT_RETRY_MAX_SEC = 0.18
+if DM_SOFT_RETRY_MAX_SEC < DM_SOFT_RETRY_MIN_SEC:
+    DM_SOFT_RETRY_MAX_SEC = DM_SOFT_RETRY_MIN_SEC
+try:
+    DM_CONTEXT_RESTART_THRESHOLD = int(os.environ.get("XMONITOR_DM_CONTEXT_RESTART_THRESHOLD", "2"))
+except Exception:
+    DM_CONTEXT_RESTART_THRESHOLD = 2
+DM_CONTEXT_RESTART_THRESHOLD = max(1, min(6, DM_CONTEXT_RESTART_THRESHOLD))
+DM_CRITICAL_LOCK_ENABLED = str(
+    os.environ.get("XMONITOR_DM_CRITICAL_LOCK_ENABLED", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
 DM_HUMAN_SCROLL_CHANCE = 0.18
 DM_SEND_FOLLOWUP_TEXT = str(
     os.environ.get("XMONITOR_DM_SEND_FOLLOWUP_TEXT", "1")
@@ -703,6 +733,22 @@ try:
 except Exception:
     LLM_FILTER_TIMEOUT_SEC = 8.0
 try:
+    LLM_FILTER_TIMEOUT_MAX_SEC = float(os.environ.get("XMONITOR_LLM_TIMEOUT_MAX_SEC", "120"))
+except Exception:
+    LLM_FILTER_TIMEOUT_MAX_SEC = 120.0
+LLM_FILTER_TIMEOUT_MAX_SEC = max(10.0, min(300.0, float(LLM_FILTER_TIMEOUT_MAX_SEC)))
+
+
+def clamp_llm_timeout(raw_timeout):
+    try:
+        timeout_val = float(raw_timeout)
+    except Exception:
+        timeout_val = float(LLM_FILTER_TIMEOUT_SEC)
+    return max(2.0, min(float(LLM_FILTER_TIMEOUT_MAX_SEC), timeout_val))
+
+
+LLM_FILTER_TIMEOUT_SEC = clamp_llm_timeout(LLM_FILTER_TIMEOUT_SEC)
+try:
     LLM_FILTER_CACHE_TTL_SEC = int(os.environ.get("XMONITOR_LLM_CACHE_TTL_SEC", str(6 * 3600)))
 except Exception:
     LLM_FILTER_CACHE_TTL_SEC = 6 * 3600
@@ -729,6 +775,11 @@ reply_flow_active = False
 dm_passcode_warmed = False
 dm_passcode_lock = threading.Lock()
 dm_rate_limit_lock = threading.Lock()
+dm_critical_lock = threading.RLock()
+dm_critical_state_lock = threading.Lock()
+dm_critical_depth = 0
+dm_critical_started_at = 0.0
+dm_critical_last_skip_log_ts = 0.0
 reply_metrics_lock = threading.Lock()
 notify_reply_templates = list(DEFAULT_NOTIFY_REPLY_TEMPLATES)
 dm_message_templates = list(DEFAULT_DM_TEMPLATES)
@@ -758,6 +809,48 @@ notification_refresh_interval = random.uniform(NOTIFICATION_REFRESH_INTERVAL_MIN
 notification_last_refresh_at = 0.0
 notification_disconnect_streak = 0
 notification_empty_article_streak = 0
+
+
+def _enter_dm_critical(section="dm_send"):
+    """进入私信关键区，期间尽量避免通知页刷新/切换。"""
+    global dm_critical_depth, dm_critical_started_at
+    if not DM_CRITICAL_LOCK_ENABLED:
+        return False
+    dm_critical_lock.acquire()
+    with dm_critical_state_lock:
+        dm_critical_depth += 1
+        if dm_critical_depth == 1:
+            dm_critical_started_at = time.time()
+    return True
+
+
+def _leave_dm_critical():
+    """退出私信关键区。"""
+    global dm_critical_depth, dm_critical_started_at
+    if not DM_CRITICAL_LOCK_ENABLED:
+        return
+    with dm_critical_state_lock:
+        dm_critical_depth = max(0, int(dm_critical_depth) - 1)
+        if dm_critical_depth == 0:
+            dm_critical_started_at = 0.0
+    try:
+        dm_critical_lock.release()
+    except Exception:
+        pass
+
+
+def _is_dm_critical_active():
+    with dm_critical_state_lock:
+        return int(dm_critical_depth) > 0
+
+
+def _maybe_log_dm_critical_skip():
+    """限频输出“因私信关键区跳过通知刷新”的日志。"""
+    global dm_critical_last_skip_log_ts
+    now = time.time()
+    if (now - dm_critical_last_skip_log_ts) >= 3.0:
+        dm_critical_last_skip_log_ts = now
+        log_to_ui("debug", "📨 私信关键区进行中，已延后通知扫描/刷新")
 
 
 def is_persistent_browser_profile_dir(path):
@@ -1154,6 +1247,9 @@ def run_headful_soft_maintenance(blocked_users, notify_enabled):
 
     if not notify_enabled:
         return True
+    if _is_dm_critical_active():
+        _maybe_log_dm_critical_skip()
+        return True
 
     try:
         ensure_notification_tab(blocked_users)
@@ -1265,17 +1361,21 @@ def monitoring_loop():
 
             current_time = time.time()
 
-            retry_done = _process_notify_retry_queue(max_items=1)
-            if retry_done > 0:
-                log_to_ui("debug", f"🔁 已自动处理到期重试任务: {retry_done} 条")
+            if not _is_dm_critical_active():
+                retry_done = _process_notify_retry_queue(max_items=1)
+                if retry_done > 0:
+                    log_to_ui("debug", f"🔁 已自动处理到期重试任务: {retry_done} 条")
 
             # ===== 通知随机间隔刷新扫描 =====
             if notify_enabled and monitor_active and (current_time - last_notification_scan >= notification_interval):
-                ensure_notification_tab(blocked_users)
-                scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
-                last_notification_scan = current_time
-                notification_interval = get_random_notification_interval()
-                log_to_ui("debug", f"📬 下次通知扫描间隔: {notification_interval:.1f}s")
+                if _is_dm_critical_active():
+                    _maybe_log_dm_critical_skip()
+                else:
+                    ensure_notification_tab(blocked_users)
+                    scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
+                    last_notification_scan = current_time
+                    notification_interval = get_random_notification_interval()
+                    log_to_ui("debug", f"📬 下次通知扫描间隔: {notification_interval:.1f}s")
 
             # ===== 推文任务扫描（按原有间隔）=====
             if current_tasks:
@@ -1327,15 +1427,19 @@ def monitoring_loop():
                         notify_enabled = notification_monitoring
                     now_ts = time.time()
                     if notify_enabled and (now_ts - last_notification_scan >= notification_interval):
-                        ensure_notification_tab(blocked_users)
-                        scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
-                        last_notification_scan = now_ts
-                        notification_interval = get_random_notification_interval()
-                        log_to_ui("debug", f"📬 下次通知扫描间隔: {notification_interval:.1f}s")
+                        if _is_dm_critical_active():
+                            _maybe_log_dm_critical_skip()
+                        else:
+                            ensure_notification_tab(blocked_users)
+                            scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
+                            last_notification_scan = now_ts
+                            notification_interval = get_random_notification_interval()
+                            log_to_ui("debug", f"📬 下次通知扫描间隔: {notification_interval:.1f}s")
 
-                    retry_done = _process_notify_retry_queue(max_items=1)
-                    if retry_done > 0:
-                        log_to_ui("debug", f"🔁 休息期已自动处理重试任务: {retry_done} 条")
+                    if not _is_dm_critical_active():
+                        retry_done = _process_notify_retry_queue(max_items=1)
+                        if retry_done > 0:
+                            log_to_ui("debug", f"🔁 休息期已自动处理重试任务: {retry_done} 条")
 
                     if i % 10 == 0 and i > 0:
                         log_to_ui("info", f"⏳ 倒计时 {rest - i}s...")
@@ -1353,6 +1457,11 @@ def monitoring_loop():
 
             # 浏览器维护重启（按时间随机，避免频繁重启导致登录态抖动）
             if (time.time() - last_maintenance_time) >= maintenance_interval:
+                if _is_dm_critical_active():
+                    _maybe_log_dm_critical_skip()
+                    last_maintenance_time = time.time()
+                    maintenance_interval = get_random_maintenance_interval()
+                    continue
                 if (not headless_mode) and (not HEADFUL_MAINTENANCE_RESTART):
                     # 有头模式默认不重启整浏览器，避免打断人工操作。
                     log_to_ui("info", "🛠️ 有头维护：执行轻量保活（不重启浏览器）")
@@ -1480,7 +1589,7 @@ def load_state():
                 LLM_FILTER_API_KEY = str(data.get("llm_filter_api_key", LLM_FILTER_API_KEY) or "").strip()
                 LLM_FILTER_MODEL = str(data.get("llm_filter_model", LLM_FILTER_MODEL) or "").strip()
                 try:
-                    LLM_FILTER_TIMEOUT_SEC = max(2.0, min(30.0, float(data.get("llm_filter_timeout_sec", LLM_FILTER_TIMEOUT_SEC))))
+                    LLM_FILTER_TIMEOUT_SEC = clamp_llm_timeout(data.get("llm_filter_timeout_sec", LLM_FILTER_TIMEOUT_SEC))
                 except Exception:
                     pass
                 LLM_FILTER_PROMPT_TEMPLATE = str(
@@ -1672,6 +1781,44 @@ def log_to_ui(level, msg):
     except Exception:
         pass
     msg_queue.put({"type": "log", "level": level, "msg": msg})
+
+
+def publish_new_data_event(item):
+    """发布前端增量事件（广播语义，多客户端互不抢占）。"""
+    global updates_event_seq
+    if not isinstance(item, dict):
+        return 0
+    snapshot = dict(item)
+    with data_lock:
+        updates_event_seq += 1
+        seq = int(updates_event_seq)
+        updates_event_buffer.append({
+            "seq": seq,
+            "ts": time.time(),
+            "data": snapshot,
+        })
+    return seq
+
+
+def enqueue_new_data(item):
+    """统一的新数据入前端通道。"""
+    publish_new_data_event(item)
+
+
+def drain_msg_queue(collect_new_data=False):
+    """
+    清理旧队列消息，避免日志消息堆积导致内存持续增长。
+    仅用于兼容旧逻辑；新前端增量基于 updates_event_buffer。
+    """
+    out = []
+    try:
+        while True:
+            m = msg_queue.get_nowait()
+            if collect_new_data and isinstance(m, dict) and m.get("type") == "new_data":
+                out.append(m.get("data"))
+    except queue.Empty:
+        pass
+    return out
 
 
 def is_headless_verbose_logging_enabled():
@@ -2236,11 +2383,7 @@ def _call_openai_compatible_json(
         raise ValueError("LLM 模型名未配置")
 
     api_key_val = str(api_key if api_key is not None else LLM_FILTER_API_KEY or "EMPTY").strip() or "EMPTY"
-    try:
-        timeout_val = float(timeout_sec if timeout_sec is not None else LLM_FILTER_TIMEOUT_SEC)
-    except Exception:
-        timeout_val = float(LLM_FILTER_TIMEOUT_SEC)
-    timeout_val = max(2.0, min(30.0, timeout_val))
+    timeout_val = clamp_llm_timeout(timeout_sec if timeout_sec is not None else LLM_FILTER_TIMEOUT_SEC)
 
     base_payload = {
         "model": model_name,
@@ -2334,11 +2477,7 @@ def _call_ollama_native_json(system_prompt, user_prompt, *, base_url=None, model
     if not model_name:
         raise ValueError("LLM 模型名未配置")
 
-    try:
-        timeout_val = float(timeout_sec if timeout_sec is not None else LLM_FILTER_TIMEOUT_SEC)
-    except Exception:
-        timeout_val = float(LLM_FILTER_TIMEOUT_SEC)
-    timeout_val = max(2.0, min(30.0, timeout_val))
+    timeout_val = clamp_llm_timeout(timeout_sec if timeout_sec is not None else LLM_FILTER_TIMEOUT_SEC)
 
     payload = {
         "model": model_name,
@@ -4809,7 +4948,7 @@ def scan_task_worker(task, page, blocked_users):
                     continue
                 history_ids.add(item["key"])
                 pending_results.append(item)
-                msg_queue.put({"type": "new_data", "data": item})
+                enqueue_new_data(item)
                 count += 1
 
         with data_lock:
@@ -4899,7 +5038,7 @@ def scan_task_with_tab(task, blocked_users):
                     continue
                 history_ids.add(item["key"])
                 pending_results.append(item)
-                msg_queue.put({"type": "new_data", "data": item})
+                enqueue_new_data(item)
                 count += 1
                 log_to_ui("success", f"📥 已添加到队列: {item['handle']}")
 
@@ -5464,7 +5603,7 @@ def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
 
                 with data_lock:
                     pending_results.append(item)
-                msg_queue.put({"type": "new_data", "data": item})
+                enqueue_new_data(item)
                 new_count += 1
             if new_count > 0:
                 save_state()
@@ -7291,6 +7430,7 @@ def _handle_dm_passcode_prompt(tab):
         # 仍未通过时，短暂停后进入下一轮
         time.sleep(random.uniform(0.25, 0.55))
 
+    session_state = _read_dm_session_state(tab, "")
     _capture_runtime_diagnostic(
         tab,
         "dm_passcode_prompt_blocking",
@@ -7952,9 +8092,9 @@ def _send_dm_message(tab, text):
         'css:textarea[data-testid="dm-composer-textarea"]',
         'css:textarea[placeholder="Message"]',
         'css:textarea[placeholder*="消息"]',
-        'css:[data-testid="dmComposerTextInput"]',
         'css:[data-testid="dmComposerTextInput"] [contenteditable="true"]',
         'css:div[role="textbox"][contenteditable="true"]',
+        'css:[data-testid="dmComposerTextInput"]',
     ]
     send_btn_selectors = [
         'css:button[data-testid="dm-composer-send-button"]',
@@ -7984,6 +8124,13 @@ def _send_dm_message(tab, text):
                   'search', '搜索', 'recipient', '收件人', 'people', 'group', 'new message', '新消息'
                 ];
                 if (rejectKeys.some((k) => attrs.includes(k))) return false;
+                const editable = !!(
+                  el.value !== undefined ||
+                  el.isContentEditable ||
+                  el.getAttribute('contenteditable') === 'true' ||
+                  el.querySelector('textarea,[contenteditable="true"]')
+                );
+                if (!editable) return false;
                 if (el.closest('[data-testid="dmComposerTextInput"]')) return true;
                 const url = low(window.location.href || '');
                 if (url.includes('/i/chat/')) return true;
@@ -8239,6 +8386,14 @@ def _send_dm_message(tab, text):
         if btn:
             return btn
         if not link_mode:
+            deadline = time.time() + max(0.6, float(DM_TEXT_VERIFY_TIMEOUT_SEC))
+            while time.time() < deadline:
+                if _editor_has_text(editor_el, expected_text):
+                    _poke_dm_editor_events(tab, editor_el)
+                btn = _find_send_btn(rounds=1, timeout_each=0.6)
+                if btn:
+                    return btn
+                _dm_humanized_idle(tab, 0.03, 0.1, "文本消息等待发送按钮")
             return None
 
         for _ in range(2):
@@ -8271,6 +8426,7 @@ def _send_dm_message(tab, text):
     link_only_mode = _is_link_only_message(dm_text)
     probes = _build_dm_message_probes(dm_text)
 
+    session_state = _read_dm_session_state(tab, "")
     for attempt in range(1, max_attempts + 1):
         _throttle_dm_action_if_needed(f"私信发送尝试{attempt}")
         _prepare_reply_prompt_guard(tab, f"私信发送尝试{attempt}")
@@ -8412,7 +8568,7 @@ def _send_dm_message(tab, text):
 
         time.sleep(random.uniform(0.06, 0.16))
 
-    _capture_runtime_diagnostic(
+        _capture_runtime_diagnostic(
         tab,
         "send_dm_message_failed",
         err=last_err,
@@ -8421,6 +8577,11 @@ def _send_dm_message(tab, text):
             "max_attempts": max_attempts,
             "message_len": len(dm_text),
             "headless_mode": bool(headless_mode),
+            "dm_error_class": _classify_dm_error_text(last_err),
+            "dm_url_ok": bool(session_state.get("url_ok")),
+            "dm_conversation_ok": bool(session_state.get("conversation_ok")),
+            "dm_editor_ok": bool(session_state.get("editor_ok")),
+            "dm_send_btn_enabled": bool(session_state.get("send_button_enabled")),
         }
     )
     return False, last_err
@@ -8431,12 +8592,19 @@ def _send_dm_message_with_retry(tab, text, handle=""):
     max_attempts = DM_SEND_RETRY_HEADLESS if headless_mode else DM_SEND_RETRY_NORMAL
     last_err = "发送私信失败"
     handle_norm = normalize_handle(handle)
+    last_session_state = {}
 
     for attempt in range(1, max_attempts + 1):
         if handle_norm:
-            dm_context_ok = _ensure_dm_context_for_handle(tab, handle_norm)
-            if not dm_context_ok:
-                last_err = "E_DM_CONTEXT_LOST: 当前页面不在私信上下文，且恢复失败"
+            session_state = _ensure_dm_session_ready_for_handle(tab, handle_norm, allow_reopen=True)
+            last_session_state = dict(session_state or {})
+            if not session_state.get("ready"):
+                last_err = (
+                    "E_DM_CONTEXT_LOST: 当前页面不在可发送私信会话上下文，"
+                    f"url_ok={int(bool(session_state.get('url_ok')))}, "
+                    f"conversation_ok={int(bool(session_state.get('conversation_ok')))}, "
+                    f"editor_ok={int(bool(session_state.get('editor_ok')))}"
+                )
                 if attempt < max_attempts:
                     _dm_humanized_idle(tab, 0.22, 0.56, f"私信上下文恢复失败等待{attempt}")
                     continue
@@ -8456,7 +8624,7 @@ def _send_dm_message_with_retry(tab, text, handle=""):
             _dm_humanized_idle(tab, 0.08, 0.18, f"私信重试{attempt}重开编辑器前")
             _open_dm_editor_for_handle(tab, handle_norm)
         if _is_dm_soft_send_error_text(last_err):
-            _dm_humanized_idle(tab, 0.06, 0.16, f"私信重试{attempt}快速间隔")
+            _dm_humanized_idle(tab, DM_SOFT_RETRY_MIN_SEC, DM_SOFT_RETRY_MAX_SEC, f"私信重试{attempt}快速间隔")
         else:
             _dm_humanized_idle(tab, 0.16, 0.42, f"私信重试{attempt}间隔")
 
@@ -8475,6 +8643,11 @@ def _send_dm_message_with_retry(tab, text, handle=""):
             "max_attempts": max_attempts,
             "message_len": len(str(text or "")),
             "headless_mode": bool(headless_mode),
+            "dm_error_class": _classify_dm_error_text(last_err),
+            "dm_url_ok": bool(last_session_state.get("url_ok")),
+            "dm_conversation_ok": bool(last_session_state.get("conversation_ok")),
+            "dm_editor_ok": bool(last_session_state.get("editor_ok")),
+            "dm_send_btn_enabled": bool(last_session_state.get("send_button_enabled")),
         }
     )
     return False, last_err
@@ -8522,6 +8695,7 @@ def _is_dm_context_or_editor_error_text(err_text):
         "未找到私信输入框",
         "E_DM_CONTEXT_LOST",
         "当前页面不在私信上下文",
+        "当前页面不在可发送私信会话上下文",
         "打开私信失败",
         "未打开私信输入框",
         "E_DM_EDITOR_NOT_FOUND",
@@ -8532,6 +8706,85 @@ def _is_dm_context_or_editor_error_text(err_text):
 def _is_dm_context_url(url_text):
     low = str(url_text or "").lower()
     return ("/messages" in low) or ("/i/chat/" in low)
+
+
+def _classify_dm_error_text(err_text):
+    text = str(err_text or "")
+    if not text:
+        return "unknown"
+    if _is_dm_closed_error_text(text):
+        return "closed"
+    if _is_dm_soft_send_error_text(text):
+        return "soft_send"
+    if _is_dm_context_or_editor_error_text(text):
+        return "context"
+    return "unknown"
+
+
+def _read_dm_session_state(tab, handle=""):
+    """读取当前私信会话状态，用于发送前闸门判断。"""
+    handle_norm = normalize_handle(handle)
+    try:
+        url = str(tab.url or "")
+    except Exception:
+        url = ""
+    url_ok = _is_dm_context_url(url)
+    out = {
+        "url": url,
+        "url_ok": bool(url_ok),
+        "conversation_ok": bool(not handle_norm),
+        "editor_ok": False,
+        "send_button_present": False,
+        "send_button_enabled": False,
+        "ready": False,
+    }
+    try:
+        state = tab.run_js(
+            """
+            const target = String(arguments[0] || '').toLowerCase();
+            const lower = (v) => String(v || '').toLowerCase();
+            const text = lower((document.body && document.body.innerText) ? document.body.innerText : '');
+            const conversationOk = !target || text.includes('@' + target) || text.includes(target);
+            const editor = document.querySelector(
+              'textarea[data-testid="dm-composer-textarea"],textarea[placeholder="Message"],textarea[placeholder*="消息"],[data-testid="dmComposerTextInput"] [contenteditable="true"],div[role="textbox"][contenteditable="true"]'
+            );
+            const sendBtn = document.querySelector(
+              'button[data-testid="dm-composer-send-button"],[data-testid="dm-composer-send-button"],button[data-testid*="dm-composer-send"],[data-testid*="dm-composer-send"],[data-testid="dmComposerSendButton"],button[data-testid="dmComposerSendButton"],button[aria-label*="发送"],button[aria-label*="Send"]'
+            );
+            const sendDisabled = !!(sendBtn && (sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true'));
+            return {
+              conversationOk: !!(conversationOk || editor),
+              editorOk: !!editor,
+              sendPresent: !!sendBtn,
+              sendEnabled: !!(sendBtn && !sendDisabled),
+            };
+            """,
+            handle_norm,
+        ) or {}
+        out["conversation_ok"] = bool(state.get("conversationOk", out["conversation_ok"]))
+        out["editor_ok"] = bool(state.get("editorOk"))
+        out["send_button_present"] = bool(state.get("sendPresent"))
+        out["send_button_enabled"] = bool(state.get("sendEnabled"))
+    except Exception:
+        pass
+    out["ready"] = bool(out["url_ok"] and out["editor_ok"] and out["conversation_ok"])
+    return out
+
+
+def _ensure_dm_session_ready_for_handle(tab, handle, allow_reopen=True):
+    """发送前会话闸门：保证在目标私信会话中且编辑器可用。"""
+    handle_norm = normalize_handle(handle)
+    state = _read_dm_session_state(tab, handle_norm)
+    if state.get("ready"):
+        return state
+    if not allow_reopen:
+        return state
+    editor, err = _open_dm_editor_for_handle(tab, handle_norm)
+    state2 = _read_dm_session_state(tab, handle_norm)
+    state2["reopen_err"] = str(err or "")
+    state2["reopen_editor_found"] = bool(editor)
+    state2["ready"] = bool(state2.get("url_ok") and state2.get("editor_ok") and state2.get("conversation_ok"))
+    return state2
 
 
 def _ensure_dm_context_for_handle(tab, handle):
@@ -8650,106 +8903,154 @@ def _run_dm_send_with_recovery(
     handle_norm = normalize_handle(dm_handle)
     last_err = "发送私信失败"
     work_tab = tab
+    entered_critical = _enter_dm_critical("dm_send_recovery")
     progress = dict(progress or {})
     progress.setdefault("link_sent", False)
     progress.setdefault("text_sent", False)
+    context_failure_count = 0
 
     strategies = [("当前标签页", lambda: work_tab)]
     if (not best_effort) and DM_RECOVERY_ENABLE_RECREATE_TAB:
         strategies.append(("重建回复标签页", lambda: ensure_reply_work_tab(force_recreate=True)))
-    if (not best_effort) and DM_RECOVERY_ENABLE_RESTART_BROWSER:
-        strategies.append(("重启浏览器并重建标签页", lambda: (restart_global_browser(), ensure_reply_work_tab(force_recreate=True))[1]))
 
-    for idx, (label, tab_provider) in enumerate(strategies, start=1):
-        try:
-            work_tab = tab_provider()
-        except Exception as e:
-            last_err = f"{label}失败: {e}"
-            log_to_ui("warn", f"⚠️ 私信恢复步骤失败({idx}/{len(strategies)}): {last_err}")
-            continue
-
-        ok, err, dm_closed = _run_dm_send_sequence_once(
-            work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
-        )
-        if ok:
-            if idx > 1:
-                log_to_ui("success", f"✅ 私信发送已通过恢复策略成功: {label}")
-            return True, "", False, work_tab
-        if dm_closed:
-            return False, err, True, work_tab
-
-        last_err = str(err or last_err)
-        log_to_ui("warn", f"⚠️ 私信发送失败({label}): {last_err}")
-        if _is_dm_soft_send_error_text(last_err):
-            log_to_ui("debug", f"📨 软错误快速返回（跳过慢恢复）: {last_err[:80]}")
-            return False, last_err, False, work_tab
-        _capture_runtime_diagnostic(
-            work_tab,
-            f"dm_recovery_{idx}",
-            err=last_err,
-            selectors=[
-                'css:[data-testid="sendDMFromProfile"]',
-                'css:[data-testid="sendDM"]',
-                'css:textarea[data-testid="dm-composer-textarea"]',
-                'css:[data-testid="dmComposerTextInput"]',
-                'css:[data-testid="dm-composer-send-button"]',
-            ],
-            extra={
-                "strategy": label,
-                "strategy_idx": idx,
-                "headless_mode": bool(headless_mode),
-                "handle": handle_norm,
-                "message_len": len(str(dm_text or "")),
-                "progress": dict(progress),
-            }
-        )
-    if (not best_effort) and headless_mode and DM_RECOVERY_ENABLE_HEADFUL_FALLBACK:
-        display_ok = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
-        if DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY and not display_ok:
-            log_to_ui("warn", "⚠️ 有头兜底已启用但未检测到 DISPLAY，跳过本次有头兜底")
-        else:
-            prev_headless = bool(headless_mode)
-            switched = False
+    try:
+        for idx, (label, tab_provider) in enumerate(strategies, start=1):
             try:
-                if prev_headless:
-                    headless_mode = False
-                    switched = True
-                    log_to_ui("warn", "⚠️ 无头私信多次失败，临时切换有头模式执行本条私信兜底")
-                    restart_global_browser()
+                work_tab = tab_provider()
+            except Exception as e:
+                last_err = f"{label}失败: {e}"
+                log_to_ui("warn", f"⚠️ 私信恢复步骤失败({idx}/{len(strategies)}): {last_err}")
+                continue
+
+            ok, err, dm_closed = _run_dm_send_sequence_once(
+                work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
+            )
+            if ok:
+                if idx > 1:
+                    log_to_ui("success", f"✅ 私信发送已通过恢复策略成功: {label}")
+                return True, "", False, work_tab
+            if dm_closed:
+                return False, err, True, work_tab
+
+            last_err = str(err or last_err)
+            err_class = _classify_dm_error_text(last_err)
+            if err_class == "context":
+                context_failure_count += 1
+            else:
+                context_failure_count = 0
+
+            log_to_ui("warn", f"⚠️ 私信发送失败({label}): {last_err}")
+            if _is_dm_soft_send_error_text(last_err):
+                log_to_ui("debug", f"📨 软错误快速返回（跳过慢恢复）: {last_err[:80]}")
+                return False, last_err, False, work_tab
+            _capture_runtime_diagnostic(
+                work_tab,
+                f"dm_recovery_{idx}",
+                err=last_err,
+                selectors=[
+                    'css:[data-testid="sendDMFromProfile"]',
+                    'css:[data-testid="sendDM"]',
+                    'css:textarea[data-testid="dm-composer-textarea"]',
+                    'css:[data-testid="dmComposerTextInput"]',
+                    'css:[data-testid="dm-composer-send-button"]',
+                ],
+                extra={
+                    "strategy": label,
+                    "strategy_idx": idx,
+                    "headless_mode": bool(headless_mode),
+                    "handle": handle_norm,
+                    "message_len": len(str(dm_text or "")),
+                    "progress": dict(progress),
+                    "dm_error_class": err_class,
+                    "dm_context_failure_count": context_failure_count,
+                }
+            )
+
+        if (
+            (not best_effort)
+            and DM_RECOVERY_ENABLE_RESTART_BROWSER
+            and context_failure_count >= DM_CONTEXT_RESTART_THRESHOLD
+        ):
+            try:
+                log_to_ui("warn", f"⚠️ 触发上下文阈值恢复：重启浏览器并重建标签页（count={context_failure_count}）")
+                restart_global_browser()
                 work_tab = ensure_reply_work_tab(force_recreate=True)
                 ok, err, dm_closed = _run_dm_send_sequence_once(
                     work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
                 )
                 if ok:
-                    log_to_ui("success", "✅ 有头兜底私信发送成功")
                     return True, "", False, work_tab
                 if dm_closed:
                     return False, err, True, work_tab
                 last_err = str(err or last_err)
                 _capture_runtime_diagnostic(
                     work_tab,
-                    "dm_recovery_headful_fallback_failed",
+                    "dm_recovery_restart_failed",
                     err=last_err,
                     selectors=[
                         'css:[data-testid="sendDMFromProfile"]',
                         'css:textarea[data-testid="dm-composer-textarea"]',
                         'css:[data-testid="dm-composer-send-button"]',
                     ],
-                    extra={"headless_mode": bool(headless_mode), "handle": handle_norm}
+                    extra={
+                        "headless_mode": bool(headless_mode),
+                        "handle": handle_norm,
+                        "dm_error_class": _classify_dm_error_text(last_err),
+                        "dm_context_failure_count": context_failure_count,
+                    }
                 )
             except Exception as e:
-                last_err = f"有头兜底异常: {e}"
-                log_to_ui("warn", f"⚠️ {last_err}")
-            finally:
-                if switched:
-                    headless_mode = prev_headless
-                    try:
-                        restart_global_browser()
-                        log_to_ui("info", "🔄 私信兜底结束，已恢复无头浏览器运行")
-                    except Exception as restore_err:
-                        log_to_ui("warn", f"⚠️ 恢复无头浏览器失败，请手动重启: {restore_err}")
+                last_err = f"重启浏览器恢复异常: {e}"
 
-    return False, last_err, False, work_tab
+        if (not best_effort) and headless_mode and DM_RECOVERY_ENABLE_HEADFUL_FALLBACK:
+            display_ok = bool(os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY"))
+            if DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY and not display_ok:
+                log_to_ui("warn", "⚠️ 有头兜底已启用但未检测到 DISPLAY，跳过本次有头兜底")
+            else:
+                prev_headless = bool(headless_mode)
+                switched = False
+                try:
+                    if prev_headless:
+                        headless_mode = False
+                        switched = True
+                        log_to_ui("warn", "⚠️ 无头私信多次失败，临时切换有头模式执行本条私信兜底")
+                        restart_global_browser()
+                    work_tab = ensure_reply_work_tab(force_recreate=True)
+                    ok, err, dm_closed = _run_dm_send_sequence_once(
+                        work_tab, handle_norm, share_link, dm_text, mark_func=mark_func, progress=progress
+                    )
+                    if ok:
+                        log_to_ui("success", "✅ 有头兜底私信发送成功")
+                        return True, "", False, work_tab
+                    if dm_closed:
+                        return False, err, True, work_tab
+                    last_err = str(err or last_err)
+                    _capture_runtime_diagnostic(
+                        work_tab,
+                        "dm_recovery_headful_fallback_failed",
+                        err=last_err,
+                        selectors=[
+                            'css:[data-testid="sendDMFromProfile"]',
+                            'css:textarea[data-testid="dm-composer-textarea"]',
+                            'css:[data-testid="dm-composer-send-button"]',
+                        ],
+                        extra={"headless_mode": bool(headless_mode), "handle": handle_norm}
+                    )
+                except Exception as e:
+                    last_err = f"有头兜底异常: {e}"
+                    log_to_ui("warn", f"⚠️ {last_err}")
+                finally:
+                    if switched:
+                        headless_mode = prev_headless
+                        try:
+                            restart_global_browser()
+                            log_to_ui("info", "🔄 私信兜底结束，已恢复无头浏览器运行")
+                        except Exception as restore_err:
+                            log_to_ui("warn", f"⚠️ 恢复无头浏览器失败，请手动重启: {restore_err}")
+        return False, last_err, False, work_tab
+    finally:
+        if entered_critical:
+            _leave_dm_critical()
 
 
 def send_notification_reply(item, message, dm_message=""):
@@ -9570,6 +9871,8 @@ def state():
             "tasks": list(monitor_tasks),
             "is_running": monitor_active,
             "pending": list(pending_results),
+            "updates_last_seq": int(updates_event_seq),
+            "updates_buffer_size": len(updates_event_buffer),
             "notification_monitoring": notification_monitoring,
             "delegated_account": delegated_account,
             "delegated_enabled": delegated_enabled,
@@ -9581,6 +9884,7 @@ def state():
             "llm_filter_api_key": str(LLM_FILTER_API_KEY or ""),
             "llm_filter_model": str(LLM_FILTER_MODEL or ""),
             "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
+            "llm_filter_timeout_max_sec": float(LLM_FILTER_TIMEOUT_MAX_SEC),
             "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
             "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
             "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
@@ -10058,11 +10362,7 @@ def _extract_llm_runtime_from_payload(payload):
     base_url = str(payload.get("base_url", LLM_FILTER_BASE_URL) or "").strip()
     api_key = str(payload.get("api_key", LLM_FILTER_API_KEY) or "").strip() or "EMPTY"
     model = str(payload.get("model", LLM_FILTER_MODEL) or "").strip()
-    try:
-        timeout_sec = float(payload.get("timeout_sec", LLM_FILTER_TIMEOUT_SEC))
-    except Exception:
-        timeout_sec = float(LLM_FILTER_TIMEOUT_SEC)
-    timeout_sec = max(2.0, min(30.0, timeout_sec))
+    timeout_sec = clamp_llm_timeout(payload.get("timeout_sec", LLM_FILTER_TIMEOUT_SEC))
     return {
         "base_url": base_url,
         "api_key": api_key,
@@ -10180,11 +10480,7 @@ def set_llm_filter_config():
     notify_voice_block_keywords_text = str(
         payload.get('notify_voice_block_keywords_text', NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or ''
     ).strip()
-    try:
-        timeout_sec = float(payload.get('timeout_sec', LLM_FILTER_TIMEOUT_SEC))
-    except Exception:
-        timeout_sec = LLM_FILTER_TIMEOUT_SEC
-    timeout_sec = max(2.0, min(30.0, timeout_sec))
+    timeout_sec = clamp_llm_timeout(payload.get('timeout_sec', LLM_FILTER_TIMEOUT_SEC))
     if len(filter_prompt_template) > 12000:
         return jsonify({"status": "err", "msg": "过滤 Prompt 过长（最大12000字符）"}), 400
     if len(intent_prompt_template) > 12000:
@@ -10230,6 +10526,7 @@ def set_llm_filter_config():
         "llm_filter_api_key": str(LLM_FILTER_API_KEY or ""),
         "llm_filter_model": str(LLM_FILTER_MODEL or ""),
         "llm_filter_timeout_sec": float(LLM_FILTER_TIMEOUT_SEC),
+        "llm_filter_timeout_max_sec": float(LLM_FILTER_TIMEOUT_MAX_SEC),
         "llm_filter_prompt_template": str(LLM_FILTER_PROMPT_TEMPLATE or ""),
         "llm_intent_prompt_template": str(LLM_INTENT_PROMPT_TEMPLATE or ""),
         "notify_voice_block_keywords_text": str(NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ""),
@@ -10402,18 +10699,60 @@ def stop_rt():
 
 @app.route('/api/updates')
 def up():
-    n = []
+    raw_since = str(request.args.get('since_seq', '') or '').strip()
+    has_since = raw_since != ''
+
+    # 兼容老版本前端：未传 since_seq 时继续使用单次消费语义。
+    if not has_since:
+        new_items = drain_msg_queue(collect_new_data=True)
+        with data_lock:
+            tasks_copy = list(monitor_tasks)
+            last_seq = int(updates_event_seq)
+            if (not new_items) and updates_event_buffer:
+                # 回退到最近窗口，避免旧前端因队列语义变化出现“完全看不到新增”。
+                new_items = [
+                    evt.get("data")
+                    for evt in list(updates_event_buffer)[-120:]
+                    if isinstance(evt.get("data"), dict)
+                ]
+        return jsonify({
+            "new_items": new_items,
+            "tasks": tasks_copy,
+            "last_seq": last_seq,
+            "dropped": False,
+        })
+
     try:
-        while True:
-            m = msg_queue.get_nowait()
-            if m['type'] == 'new_data':
-                n.append(m['data'])
-            # 前端已移除运行日志面板，这里继续消费日志消息但不返回
-    except queue.Empty:
-        pass
+        since_seq = max(0, int(raw_since))
+    except Exception:
+        since_seq = 0
+
+    # 新版前端：增量广播流；同时清理旧日志队列防堆积。
+    drain_msg_queue(collect_new_data=False)
+
     with data_lock:
         tasks_copy = list(monitor_tasks)
-    return jsonify({"new_items": n, "tasks": tasks_copy})
+        last_seq = int(updates_event_seq)
+        buffer_snapshot = list(updates_event_buffer)
+
+    dropped = False
+    if buffer_snapshot:
+        oldest_seq = int(buffer_snapshot[0].get("seq", 0) or 0)
+        if since_seq > 0 and oldest_seq > (since_seq + 1):
+            dropped = True
+
+    new_items = [
+        evt.get("data")
+        for evt in buffer_snapshot
+        if int(evt.get("seq", 0) or 0) > since_seq and isinstance(evt.get("data"), dict)
+    ]
+
+    return jsonify({
+        "new_items": new_items,
+        "tasks": tasks_copy,
+        "last_seq": last_seq,
+        "dropped": dropped,
+    })
 
 if __name__ == '__main__':
     # 清理残留浏览器进程

@@ -770,6 +770,31 @@
             font-weight: 600;
         }
 
+        .flow-meta {
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.03);
+            font-size: 11px;
+            line-height: 1.2;
+        }
+
+        .flow-stage {
+            color: var(--text-secondary);
+        }
+
+        .flow-error {
+            color: #ff9a9a;
+            word-break: break-word;
+        }
+
+        .flow-retry {
+            color: #ffd58c;
+        }
+
         .content-cell {
             max-width: 400px;
             line-height: 1.5;
@@ -956,6 +981,13 @@
                                 <button class="btn-primary btn-sm" onclick="saveDelegatedAccount()" style="width:100%;">
                                     💾 保存账户配置
                                 </button>
+                                <input
+                                    type="text"
+                                    id="jumpToRepliesHandle"
+                                    placeholder="输入 @ID，回车打开该用户回复页"
+                                    style="margin-top:10px; margin-bottom:6px;"
+                                    onkeydown="handleJumpToRepliesEnter(event)">
+                                <div id="jumpToRepliesResult" style="font-size:12px; min-height:18px; color:var(--text-secondary);"></div>
                             </div>
 
                             <div class="llm-filter-section">
@@ -1002,7 +1034,7 @@
                                 <input type="text" id="llmBaseUrl" placeholder="https://ollama-ai.shou.heiyu.space/v1">
                                 <input type="text" id="llmModel" placeholder="模型名，例如 qwen2.5:7b">
                                 <input type="password" id="llmApiKey" placeholder="API Key（无则填 EMPTY）">
-                                <input type="text" id="llmTimeoutSec" placeholder="超时秒数（2-30）" value="8">
+                                <input type="text" id="llmTimeoutSec" placeholder="超时秒数（2-120）" value="8">
                                 <textarea id="llmIntentPromptTemplate" class="template-textarea" placeholder="意向分析 Prompt（可选，支持 {content} 占位）"></textarea>
                                 <textarea id="llmFilterPromptTemplate" class="template-textarea" placeholder="内容过滤 Prompt（可选，支持 {content} 占位）"></textarea>
                                 <textarea id="notifyVoiceBlockKeywords" class="template-textarea" placeholder="通知不播报关键词（逗号或换行分隔；仅影响语音，不影响通知显示）"></textarea>
@@ -1133,7 +1165,7 @@
         let notifyReplyTemplates = [];
         let dmMessageTemplates = [];
         const templateEditState = { reply: -1, dm: -1 };
-        const notifyVoiceText = '来客了，快点来接客了';
+        const notifyVoiceText = '';
         let lastNotifyVoiceAt = 0;
         let cachedNotifyVoice = null;
         let notifyVoicePlaying = false;
@@ -1159,6 +1191,10 @@
         let notifyAudioGainValue = NOTIFY_AUDIO_GAIN_DEFAULT;
         const NOTIFY_AUDIO_DIAG_ENDPOINT = '/api/debug/notify_audio';
         const NOTIFY_TABLE_HEIGHT_KEY = 'xmonitor_notify_table_height_v1';
+        let llmTimeoutMaxSec = 120;
+        let updatesLastSeq = 0;
+        let updatesPollFailStreak = 0;
+        let updatesRecoverCoolUntil = 0;
 
         function clampNotifyAudioGain(raw) {
             const v = Number(raw);
@@ -1315,10 +1351,11 @@
 
         function buildNotifyVoiceText(contentText='') {
             const raw = String(contentText || '').replace(/\s+/g, ' ').trim();
-            if(!raw) return notifyVoiceText;
+            const prefix = `${notifyVoiceText ? `${notifyVoiceText},` : ''}评论内容：`;
+            if(!raw) return prefix;
             const maxLen = 80;
             const clipped = raw.length > maxLen ? `${raw.slice(0, maxLen)}...` : raw;
-            return `${notifyVoiceText}，评论内容：${clipped}`;
+            return `${prefix}${clipped}`;
         }
 
         function _getOrCreateNotifyAudioContext() {
@@ -1425,6 +1462,53 @@
                     reject(e);
                 }
             });
+        }
+
+        function _playNotifyPromptChime(done = null) {
+            const finish = _onceNotifyDone(done);
+            const ctx = _getOrCreateNotifyAudioContext();
+            if (!ctx) {
+                finish(true);
+                return;
+            }
+
+            const playNow = () => {
+                try {
+                    const now = ctx.currentTime + 0.01;
+                    const notes = [
+                        { f: 880, d: 0.10, delay: 0.00 },  // ding
+                        { f: 660, d: 0.14, delay: 0.14 },  // dong
+                    ];
+                    notes.forEach((n) => {
+                        const osc = ctx.createOscillator();
+                        const gain = ctx.createGain();
+                        osc.type = 'sine';
+                        osc.frequency.setValueAtTime(n.f, now + n.delay);
+                        const attack = now + n.delay;
+                        const release = attack + n.d;
+                        gain.gain.setValueAtTime(0.0001, attack);
+                        gain.gain.exponentialRampToValueAtTime(0.06, attack + 0.01);
+                        gain.gain.exponentialRampToValueAtTime(0.0001, release);
+                        osc.connect(gain);
+                        gain.connect(notifyAudioGainNode || ctx.destination);
+                        osc.start(attack);
+                        osc.stop(release + 0.01);
+                    });
+                    setTimeout(() => finish(true), 340);
+                } catch (e) {
+                    _notifyAudioDiag('prompt_chime_fail', {
+                        err: String((e && (e.message || e.name)) || e || 'unknown'),
+                        ctx_state: _getNotifyAudioCtxState(),
+                    });
+                    finish(false, '提示音播放失败');
+                }
+            };
+
+            if (ctx.state === 'suspended') {
+                ctx.resume().then(() => playNow()).catch(() => finish(false, '音频上下文未解锁'));
+                return;
+            }
+            playNow();
         }
 
         function _playNotifyVoiceByWebAudioData(audioBase64, done = null) {
@@ -1552,47 +1636,58 @@
             try {
                 _stopNotifyBrowserSpeech();
                 _stopNotifyBackendAudio();
-                const ctx = _getOrCreateNotifyAudioContext();
-                if (ctx) {
-                    _notifyAudioDiag('play_webaudio_primary', { ctx_state: _getNotifyAudioCtxState() });
-                    _playNotifyVoiceByWebAudioData(b64, (ok, msg) => {
-                        if (ok) {
-                            finish(true);
-                            return;
-                        }
-                        _notifyAudioDiag('play_webaudio_primary_fail', {
-                            ctx_state: _getNotifyAudioCtxState(),
-                            err: String(msg || 'unknown'),
+                const playSpeech = () => {
+                    const ctx = _getOrCreateNotifyAudioContext();
+                    if (ctx) {
+                        _notifyAudioDiag('play_webaudio_primary', { ctx_state: _getNotifyAudioCtxState() });
+                        _playNotifyVoiceByWebAudioData(b64, (ok, msg) => {
+                            if (ok) {
+                                finish(true);
+                                return;
+                            }
+                            _notifyAudioDiag('play_webaudio_primary_fail', {
+                                ctx_state: _getNotifyAudioCtxState(),
+                                err: String(msg || 'unknown'),
+                            });
+                            finish(false, msg || 'WebAudio播放失败');
                         });
-                        finish(false, msg || 'WebAudio播放失败');
-                    });
-                    return;
-                }
-                const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
-                const src = `data:${safeMime};base64,${b64}`;
-                const audio = new Audio(src);
-                notifyBackendAudio = audio;
-                audio.volume = 1.0;
-                audio.onended = () => {
-                    if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                    finish(true);
-                };
-                audio.onerror = () => {
-                    if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                    finish(false, '浏览器音频播放错误');
-                };
-                const p = audio.play();
-                if (p && typeof p.then === 'function') {
-                    p.catch((e) => {
-                        const blocked = e && (e.name === 'NotAllowedError' || /notallowed/i.test(String(e.message || '')));
-                        _notifyAudioDiag('play_htmlaudio_reject', {
-                            err: String((e && (e.message || e.name)) || e || 'unknown'),
-                            blocked: !!blocked,
-                        });
+                        return;
+                    }
+                    const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
+                    const src = `data:${safeMime};base64,${b64}`;
+                    const audio = new Audio(src);
+                    notifyBackendAudio = audio;
+                    audio.volume = 1.0;
+                    audio.onended = () => {
                         if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                        finish(false, blocked ? '浏览器阻止音频播放，请检查页面是否静音或自动播放策略' : '浏览器音频播放失败');
-                    });
-                }
+                        finish(true);
+                    };
+                    audio.onerror = () => {
+                        if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                        finish(false, '浏览器音频播放错误');
+                    };
+                    const p = audio.play();
+                    if (p && typeof p.then === 'function') {
+                        p.catch((e) => {
+                            const blocked = e && (e.name === 'NotAllowedError' || /notallowed/i.test(String(e.message || '')));
+                            _notifyAudioDiag('play_htmlaudio_reject', {
+                                err: String((e && (e.message || e.name)) || e || 'unknown'),
+                                blocked: !!blocked,
+                            });
+                            if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                            finish(false, blocked ? '浏览器阻止音频播放，请检查页面是否静音或自动播放策略' : '浏览器音频播放失败');
+                        });
+                    }
+                };
+
+                _playNotifyPromptChime((chimeOk, chimeMsg) => {
+                    if (!chimeOk) {
+                        _notifyAudioDiag('prompt_chime_skip', { msg: String(chimeMsg || 'unknown') });
+                    } else {
+                        _notifyAudioDiag('prompt_chime_ok');
+                    }
+                    setTimeout(playSpeech, 30);
+                });
             } catch (_) {
                 _stopNotifyBackendAudio();
                 _notifyAudioDiag('play_init_fail');
@@ -1756,6 +1851,7 @@
             document.getElementById('llmBaseUrl').value = d.llm_filter_base_url || '';
             document.getElementById('llmModel').value = d.llm_filter_model || '';
             document.getElementById('llmApiKey').value = d.llm_filter_api_key || '';
+            llmTimeoutMaxSec = Math.max(10, Number(d.llm_filter_timeout_max_sec || 120) || 120);
             document.getElementById('llmTimeoutSec').value = d.llm_filter_timeout_sec || 8;
             document.getElementById('llmIntentPromptTemplate').value = d.llm_intent_prompt_template || '';
             document.getElementById('llmFilterPromptTemplate').value = d.llm_filter_prompt_template || '';
@@ -1768,11 +1864,13 @@
             if(d.pending && d.pending.length > 0) {
                 d.pending.forEach(item => addRow(item, false));
             }
+            updatesLastSeq = Math.max(0, Number(d.updates_last_seq || 0) || 0);
 
             refreshFilterOptions('notify');
             refreshFilterOptions('tweet');
             applyResultFilter('notify');
             applyResultFilter('tweet');
+            syncNotifyFlowStatus();
             });
         };
 
@@ -1876,6 +1974,52 @@
                 });
         }
 
+        function setJumpToRepliesResult(text, isError=false) {
+            const box = document.getElementById('jumpToRepliesResult');
+            if(!box) return;
+            box.style.color = isError ? 'var(--danger)' : 'var(--text-secondary)';
+            box.textContent = String(text || '');
+        }
+
+        function normalizeTwitterHandle(raw) {
+            const v = String(raw || '').trim().replace(/^@+/, '').toLowerCase();
+            return v.replace(/[^a-z0-9_]/g, '');
+        }
+
+        function handleJumpToRepliesEnter(evt) {
+            if(!evt || evt.isComposing) return;
+            if(evt.key !== 'Enter') return;
+            evt.preventDefault();
+
+            const input = document.getElementById('jumpToRepliesHandle');
+            if(!input) return;
+            const handle = normalizeTwitterHandle(input.value);
+            if(!handle) {
+                setJumpToRepliesResult('请输入有效的推特 @ID', true);
+                return;
+            }
+            input.value = `@${handle}`;
+            setJumpToRepliesResult(`正在打开 @${handle} 的回复页...`, false);
+
+            fetch('/api/open_user_replies_page', {
+                method:'POST',
+                headers:{'Content-Type':'application/json'},
+                body: JSON.stringify({handle})
+            }).then(async r => {
+                let data = {};
+                try { data = await r.json(); } catch(_) {}
+                if(!r.ok || data.status !== 'ok') {
+                    const msg = String((data && data.msg) || '跳转失败');
+                    setJumpToRepliesResult(msg, true);
+                    return;
+                }
+                const opened = String(data.handle || `@${handle}`);
+                setJumpToRepliesResult(`已在程序浏览器打开 ${opened} 的回复页`, false);
+            }).catch(() => {
+                setJumpToRepliesResult('网络异常，跳转失败', true);
+            });
+        }
+
         function setNotifyTtsResult(text, isError=false) {
             const box = document.getElementById('notifyTtsResult');
             if(!box) return;
@@ -1975,7 +2119,7 @@
             const notifyVoiceBlockKeywordsText = (document.getElementById('notifyVoiceBlockKeywords').value || '').trim();
             let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
             if(Number.isNaN(timeoutSec)) timeoutSec = 8;
-            timeoutSec = Math.max(2, Math.min(30, timeoutSec));
+            timeoutSec = Math.max(2, Math.min(llmTimeoutMaxSec, timeoutSec));
             document.getElementById('llmTimeoutSec').value = timeoutSec;
             refreshNotifyVoiceBlockKeywordsFromInput();
 
@@ -2015,7 +2159,7 @@
         function collectLlmRuntimePayload() {
             let timeoutSec = parseFloat(document.getElementById('llmTimeoutSec').value || '8');
             if(Number.isNaN(timeoutSec)) timeoutSec = 8;
-            timeoutSec = Math.max(2, Math.min(30, timeoutSec));
+            timeoutSec = Math.max(2, Math.min(llmTimeoutMaxSec, timeoutSec));
             document.getElementById('llmTimeoutSec').value = timeoutSec;
             return {
                 base_url: document.getElementById('llmBaseUrl').value.trim(),
@@ -2433,6 +2577,71 @@
             return !!(item && (item.notify_replied || item.reply_checked));
         }
 
+        const notifyFlowStageLabels = {
+            reply_pending: '等待回复',
+            match_card: '定位评论',
+            share_link_ready: '链接就绪',
+            reply_sent: '首评已发',
+            dm_opening: '打开私信',
+            dm_link_sent: '私信链接已发',
+            dm_text_sent: '私信文案已发',
+            dm_closed_confirmed: '私信关闭已确认',
+            retry_waiting: '等待重试',
+            done: '流程完成'
+        };
+
+        function resolveNotifyFlowLabel(stage) {
+            const key = String(stage || '').trim().toLowerCase();
+            return notifyFlowStageLabels[key] || (key || '未开始');
+        }
+
+        function applyNotifyFlowState(row, data) {
+            if(!row || !data) return;
+            const stage = String(data.flow_stage || data.notify_flow_stage || row.getAttribute('data-flow-stage') || '').trim();
+            const errorCode = String(data.flow_error_code || data.notify_flow_error_code || '').trim();
+            const errorDetail = String(data.flow_error_detail || data.notify_flow_error_detail || data.notify_flow_error || '').trim();
+            const retryTime = String(data.retry_time || data.notify_retry_time || '').trim();
+            const attemptRaw = data.attempt ?? data.notify_flow_attempt ?? '';
+            const attemptText = String(attemptRaw || '').trim();
+
+            row.setAttribute('data-flow-stage', stage);
+            row.setAttribute('data-flow-error-code', errorCode);
+            row.setAttribute('data-flow-error-detail', errorDetail);
+            row.setAttribute('data-flow-retry-time', retryTime);
+            row.setAttribute('data-flow-attempt', attemptText);
+
+            const stageEl = row.querySelector('.flow-stage');
+            const errorEl = row.querySelector('.flow-error');
+            const retryEl = row.querySelector('.flow-retry');
+            const retryBtn = row.querySelector('.btn-retry');
+
+            if(stageEl) {
+                const attemptSuffix = attemptText ? ` | 尝试${attemptText}` : '';
+                stageEl.textContent = `阶段: ${resolveNotifyFlowLabel(stage)}${attemptSuffix}`;
+            }
+            if(errorEl) {
+                if(errorCode || errorDetail) {
+                    errorEl.textContent = `错误: ${errorCode || '-'} ${errorDetail || ''}`.trim();
+                    errorEl.style.display = '';
+                } else {
+                    errorEl.textContent = '';
+                    errorEl.style.display = 'none';
+                }
+            }
+            if(retryEl) {
+                if(retryTime) {
+                    retryEl.textContent = `下次重试: ${retryTime}`;
+                    retryEl.style.display = '';
+                } else {
+                    retryEl.textContent = '';
+                    retryEl.style.display = 'none';
+                }
+            }
+            if(retryBtn) {
+                retryBtn.style.display = (stage === 'retry_waiting') ? '' : 'none';
+            }
+        }
+
         function applyNotifyReplyState(row, replied, replyTime='') {
             if(!row) return;
             row.setAttribute('data-notify-replied', replied ? '1' : '0');
@@ -2492,8 +2701,32 @@
                 if(d.status === 'ok') {
                     const replyTime = (d.reply_time || '').trim();
                     applyNotifyReplyState(row, true, replyTime);
+                    applyNotifyFlowState(row, {
+                        flow_stage: d.flow_stage || 'done',
+                        attempt: d.attempt || '',
+                        retry_time: d.retry_time || '',
+                        flow_error_code: '',
+                        flow_error_detail: ''
+                    });
                     alert(`✅ 已回复 ${handle || ''}`);
+                } else if(d.status === 'retry_waiting') {
+                    applyNotifyReplyState(row, false, '');
+                    applyNotifyFlowState(row, {
+                        flow_stage: d.flow_stage || 'retry_waiting',
+                        attempt: d.attempt || '',
+                        retry_time: d.retry_time || '',
+                        flow_error_code: d.flow_error_code || '',
+                        flow_error_detail: d.flow_error_detail || d.msg || ''
+                    });
+                    alert(`⚠ 已加入重试队列: ${d.msg || '稍后自动重试'}`);
                 } else {
+                    applyNotifyFlowState(row, {
+                        flow_stage: d.flow_stage || row.getAttribute('data-flow-stage') || '',
+                        attempt: d.attempt || '',
+                        retry_time: d.retry_time || '',
+                        flow_error_code: d.flow_error_code || '',
+                        flow_error_detail: d.msg || ''
+                    });
                     alert(`回复失败: ${d.msg || '未知错误'}`);
                 }
             }).catch(() => {
@@ -2502,6 +2735,60 @@
                 btn.disabled = false;
                 const repliedNow = row ? (row.getAttribute('data-notify-replied') === '1') : false;
                 btn.textContent = repliedNow ? '↩ 再次回复' : oldText;
+            });
+        }
+
+        function retryNotifyReply(evt, btn) {
+            markActionClick(evt);
+            const row = btn.closest('tr');
+            const key = row ? (row.getAttribute('data-key') || '') : '';
+            if(!key) return;
+
+            const oldText = btn.textContent;
+            btn.disabled = true;
+            btn.textContent = '重试中...';
+
+            fetch('/api/notify_retry', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({key})
+            }).then(r => r.json()).then(d => {
+                if(d.status === 'ok') {
+                    applyNotifyReplyState(row, true, d.reply_time || '');
+                    applyNotifyFlowState(row, {
+                        flow_stage: d.flow_stage || 'done',
+                        attempt: d.attempt || '',
+                        retry_time: '',
+                        flow_error_code: '',
+                        flow_error_detail: ''
+                    });
+                    alert('✅ 重试成功');
+                    return;
+                }
+                if(d.status === 'retry_waiting') {
+                    applyNotifyFlowState(row, {
+                        flow_stage: d.flow_stage || 'retry_waiting',
+                        attempt: d.attempt || '',
+                        retry_time: d.retry_time || '',
+                        flow_error_code: d.flow_error_code || '',
+                        flow_error_detail: d.flow_error_detail || d.msg || ''
+                    });
+                    alert(`⚠ 仍在重试队列: ${d.msg || '稍后自动重试'}`);
+                    return;
+                }
+                applyNotifyFlowState(row, {
+                    flow_stage: d.flow_stage || row.getAttribute('data-flow-stage') || '',
+                    attempt: d.attempt || '',
+                    retry_time: d.retry_time || '',
+                    flow_error_code: d.flow_error_code || '',
+                    flow_error_detail: d.msg || ''
+                });
+                alert(`重试失败: ${d.msg || '未知错误'}`);
+            }).catch(() => {
+                alert('网络异常，重试失败');
+            }).finally(() => {
+                btn.disabled = false;
+                btn.textContent = oldText;
             });
         }
 
@@ -2631,9 +2918,19 @@
             const replyTime = escapeHtml(i.notify_reply_time || i.reply_time || '');
             const replyStateText = isReplied ? `已回复${replyTime ? ` (${replyTime})` : ''}` : '未回复';
             const replyStateClass = isReplied ? 'reply-state done' : 'reply-state';
+            const flowStage = escapeHtml(i.notify_flow_stage || '');
+            const flowErrorCode = escapeHtml(i.notify_flow_error_code || '');
+            const flowErrorDetail = escapeHtml(i.notify_flow_error_detail || i.notify_flow_error || '');
+            const flowRetryTime = escapeHtml(i.notify_retry_time || '');
+            const flowAttempt = escapeHtml(i.notify_flow_attempt || '');
             const actionHtml = isNotify
                 ? `<div class="action-stack">
                         <div class="${replyStateClass}">${replyStateText}</div>
+                        <div class="flow-meta">
+                            <div class="flow-stage"></div>
+                            <div class="flow-error"></div>
+                            <div class="flow-retry"></div>
+                        </div>
                         <select class="reply-template-select">
                             <option value="">选择回复内容...</option>
                             ${replyOptions}
@@ -2644,6 +2941,7 @@
                         </select>
                         <div class="action-btn-row">
                             <button type="button" class="btn-reply btn-sm" onclick="sendNotifyReply(event, this)">${isReplied ? '↩ 再次回复' : '↩ 回复'}</button>
+                            <button type="button" class="btn-ghost btn-sm btn-retry" onclick="retryNotifyReply(event, this)" style="display:none;">🔁 重试</button>
                             <button type="button" class="btn-primary btn-sm" onclick="markDoneFromButton(event, this)">✅ 已处理</button>
                         </div>
                    </div>`
@@ -2666,6 +2964,13 @@
                 if(replySelect && savedReplyText) replySelect.value = savedReplyText;
                 if(dmSelect && savedDmText) dmSelect.value = savedDmText;
                 applyNotifyReplyState(tr, isReplied, i.notify_reply_time || i.reply_time || '');
+                applyNotifyFlowState(tr, {
+                    flow_stage: flowStage,
+                    flow_error_code: flowErrorCode,
+                    flow_error_detail: flowErrorDetail,
+                    retry_time: flowRetryTime,
+                    attempt: flowAttempt
+                });
                 sortNotifyRowsByLatest();
             } else {
                 document.getElementById('tweetTableBody').prepend(tr);
@@ -2676,17 +2981,59 @@
             return true;
         }
 
-        setInterval(() => {
-            fetch('/api/updates').then(r=>r.json()).then(d => {
-                d.new_items.forEach(i => {
-                    addRow(i, true);
-                    if(i && i.source === '通知页面') {
-                        enqueueNotifyIntentCheck(i);
+        function syncNotifyFlowStatus() {
+            fetch('/api/notify_replies?limit=2000').then(r => r.json()).then(d => {
+                if(!d || d.status !== 'ok' || !Array.isArray(d.items)) return;
+                d.items.forEach(item => {
+                    if(!item || !item.key) return;
+                    let row = document.querySelector(`tr[data-key="${item.key}"]`);
+                    if(!row) {
+                        addRow(item, false);
+                        row = document.querySelector(`tr[data-key="${item.key}"]`);
+                    }
+                    if(!row) return;
+                    applyNotifyReplyState(row, isNotifyItemReplied(item), item.notify_reply_time || item.reply_time || '');
+                    applyNotifyFlowState(row, item);
+                });
+            }).catch(() => {});
+        }
+
+        function pollUpdatesIncremental() {
+            fetch(`/api/updates?since_seq=${encodeURIComponent(String(updatesLastSeq || 0))}`)
+                .then(r => r.json())
+                .then(d => {
+                    if(!d || !Array.isArray(d.new_items)) return;
+                    d.new_items.forEach(i => {
+                        addRow(i, true);
+                        if(i && i.source === '通知页面') {
+                            enqueueNotifyIntentCheck(i);
+                        }
+                    });
+                    if(d.tasks) renderTasks(d.tasks);
+                    const lastSeq = Number(d.last_seq || 0);
+                    if(Number.isFinite(lastSeq) && lastSeq > 0) {
+                        updatesLastSeq = Math.max(updatesLastSeq, lastSeq);
+                    }
+                    if(d.dropped === true) {
+                        syncNotifyFlowStatus();
+                    }
+                    updatesPollFailStreak = 0;
+                })
+                .catch(() => {
+                    updatesPollFailStreak += 1;
+                    if(updatesPollFailStreak >= 3) {
+                        const now = Date.now();
+                        if(now >= updatesRecoverCoolUntil) {
+                            updatesRecoverCoolUntil = now + 15000;
+                            syncNotifyFlowStatus();
+                        }
                     }
                 });
-                if(d.tasks) renderTasks(d.tasks);
-            });
-        }, 1000);
+        }
+
+        pollUpdatesIncremental();
+        setInterval(pollUpdatesIncremental, 1000);
+        setInterval(syncNotifyFlowStatus, 6000);
     </script>
 </body>
 </html>
