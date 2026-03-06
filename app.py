@@ -418,7 +418,7 @@ DM_RECOVERY_ENABLE_HEADFUL_FALLBACK = str(
     os.environ.get("XMONITOR_DM_RECOVERY_HEADFUL_FALLBACK", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
 DM_ASSUME_SUCCESS_AFTER_CLICK = str(
-    os.environ.get("XMONITOR_DM_ASSUME_SUCCESS_AFTER_CLICK", "1")
+    os.environ.get("XMONITOR_DM_ASSUME_SUCCESS_AFTER_CLICK", "0")
 ).strip().lower() not in {"0", "false", "no", "off"}
 DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY = str(
     os.environ.get("XMONITOR_DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY", "1")
@@ -523,6 +523,31 @@ except Exception:
     DM_LLM_REWRITE_MAX_SHARED_RUN = 14
 DM_LLM_REWRITE_MAX_SHARED_RUN = max(6, min(28, DM_LLM_REWRITE_MAX_SHARED_RUN))
 DM_CLOSED_FALLBACK_REPLY_TEXT = "大佬 您的私信是关闭的，如果有需要可以给我私信呀"
+DM_REJECT_NEW_MESSAGE_OVERLAY = str(
+    os.environ.get("XMONITOR_DM_REJECT_NEW_MESSAGE_OVERLAY", "1")
+).strip().lower() in {"1", "true", "yes", "on"}
+DM_FORCE_COMPOSER_BINDING = str(
+    os.environ.get("XMONITOR_DM_FORCE_COMPOSER_BINDING", "1")
+).strip().lower() in {"1", "true", "yes", "on"}
+DM_LLM_DOWN_FALLBACK_TEMPLATE = str(
+    os.environ.get("XMONITOR_DM_LLM_DOWN_FALLBACK_TEMPLATE", "1")
+).strip().lower() in {"1", "true", "yes", "on"}
+try:
+    DM_PROFILE_NO_BUTTON_AS_CLOSED = str(
+        os.environ.get("XMONITOR_DM_PROFILE_NO_BUTTON_AS_CLOSED", "1")
+    ).strip().lower() in {"1", "true", "yes", "on"}
+except Exception:
+    DM_PROFILE_NO_BUTTON_AS_CLOSED = True
+try:
+    DM_CRITICAL_MAX_HOLD_SEC = float(os.environ.get("XMONITOR_DM_CRITICAL_MAX_HOLD_SEC", "120"))
+except Exception:
+    DM_CRITICAL_MAX_HOLD_SEC = 120.0
+DM_CRITICAL_MAX_HOLD_SEC = max(30.0, min(900.0, float(DM_CRITICAL_MAX_HOLD_SEC)))
+try:
+    DM_SEND_CONFIRM_WAIT_SEC = float(os.environ.get("XMONITOR_DM_SEND_CONFIRM_WAIT_SEC", "3.0"))
+except Exception:
+    DM_SEND_CONFIRM_WAIT_SEC = 3.0
+DM_SEND_CONFIRM_WAIT_SEC = max(0.8, min(8.0, float(DM_SEND_CONFIRM_WAIT_SEC)))
 # 私信口令（Enter Passcode）自动处理默认启用，可用环境变量覆盖
 DM_PASSCODE = str(os.environ.get("XMONITOR_DM_PASSCODE", "1234") or "").strip()
 PROXY_ENV_KEYS = (
@@ -836,6 +861,7 @@ dm_critical_state_lock = threading.Lock()
 dm_critical_depth = 0
 dm_critical_started_at = 0.0
 dm_critical_last_skip_log_ts = 0.0
+dm_critical_last_timeout_warn_ts = 0.0
 reply_metrics_lock = threading.Lock()
 notify_reply_templates = list(DEFAULT_NOTIFY_REPLY_TEMPLATES)
 dm_message_templates = list(DEFAULT_DM_TEMPLATES)
@@ -898,8 +924,23 @@ def _leave_dm_critical():
 
 
 def _is_dm_critical_active():
+    global dm_critical_last_timeout_warn_ts
     with dm_critical_state_lock:
-        return int(dm_critical_depth) > 0
+        active = int(dm_critical_depth) > 0
+        started = float(dm_critical_started_at or 0.0)
+    if not active:
+        return False
+    # 防止异常路径导致关键区长期占用，超时后放行通知扫描
+    if started > 0 and (time.time() - started) > float(DM_CRITICAL_MAX_HOLD_SEC):
+        now = time.time()
+        if (now - float(dm_critical_last_timeout_warn_ts or 0.0)) >= 15.0:
+            dm_critical_last_timeout_warn_ts = now
+            log_to_ui(
+                "warn",
+                f"⚠️ 私信关键区占用超过{int(DM_CRITICAL_MAX_HOLD_SEC)}s，临时放行通知扫描（不影响当前私信任务继续）"
+            )
+        return False
+    return True
 
 
 def _maybe_log_dm_critical_skip():
@@ -6854,14 +6895,36 @@ def _humanized_type_dm_text(tab, editor, dm_text):
     if not text:
         return False
 
+    target = editor
     try:
-        editor.click()
+        inner = editor.ele('css:div[role="textbox"][contenteditable="true"]', timeout=0)
+        if inner and inner.states.is_displayed:
+            target = inner
+    except Exception:
+        pass
+    if target is editor:
+        try:
+            inner = editor.ele('css:[contenteditable="true"]', timeout=0)
+            if inner and inner.states.is_displayed:
+                target = inner
+        except Exception:
+            pass
+    if target is editor:
+        try:
+            inner = editor.ele('css:textarea', timeout=0)
+            if inner and inner.states.is_displayed:
+                target = inner
+        except Exception:
+            pass
+
+    try:
+        target.click()
     except Exception:
         pass
 
     _dm_humanized_idle(tab, 0.06, 0.22, "私信输入前")
     try:
-        editor.input(text, clear=True)
+        target.input(text, clear=True)
         log_headless_debug(f"私信输入完成(整段模式, len={len(text)})")
         return True
     except Exception:
@@ -6881,8 +6944,21 @@ def _paste_dm_text_exact(tab, editor, dm_text):
     try:
         ok = tab.run_js(
             """
-            const el = arguments[0];
+            const root = arguments[0];
             const text = String(arguments[1] || '');
+            if (!root) return false;
+            const resolveTarget = (el) => {
+              if (!el) return null;
+              if (el.value !== undefined || el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                return el;
+              }
+              const inner = el.querySelector(
+                'div[role="textbox"][contenteditable="true"],[data-testid="dmComposerTextInput"] [contenteditable="true"],textarea[data-testid="dm-composer-textarea"],textarea'
+              );
+              if (inner) return inner;
+              return null;
+            };
+            let el = resolveTarget(root);
             if (!el) return false;
             const dispatchInput = () => {
               try {
@@ -6948,8 +7024,17 @@ def _refresh_dm_editor_state(tab, editor, dm_text):
     try:
         return bool(tab.run_js(
             """
-            const el = arguments[0];
+            const root = arguments[0];
             const text = String(arguments[1] || '');
+            if (!root) return false;
+            const resolveTarget = (el) => {
+                if (!el) return null;
+                if (el.value !== undefined || el.isContentEditable || el.getAttribute('contenteditable') === 'true') return el;
+                return el.querySelector(
+                    'div[role="textbox"][contenteditable="true"],[data-testid="dmComposerTextInput"] [contenteditable="true"],textarea[data-testid="dm-composer-textarea"],textarea'
+                );
+            };
+            let el = resolveTarget(root);
             if (!el) return false;
             const dispatchInput = () => {
                 try {
@@ -7047,21 +7132,60 @@ def _build_dm_message_probes(text):
 
 
 def _count_dm_probe_occurrence(tab, probe_text):
-    """统计探针文本在当前页面正文中的出现次数。"""
+    """统计探针文本在右侧当前会话消息区中的出现次数，排除左侧列表、草稿框和提示条。"""
     if not tab or not probe_text:
         return 0
-    try:
-        body_text = str(tab.run_js("return (document.body && document.body.innerText) ? document.body.innerText : ''") or "")
-    except Exception:
-        try:
-            body_text = str(tab.ele('tag:body', timeout=0.3).text or "")
-        except Exception:
-            body_text = ""
-    if not body_text:
-        return 0
-    haystack = body_text.lower()
     needle = str(probe_text).lower()
-    return haystack.count(needle)
+    try:
+        convo_text = str(tab.run_js(
+            """
+            const isVisible = (el) => {
+              if (!el) return false;
+              const st = window.getComputedStyle(el);
+              if (!st) return false;
+              if (st.display === 'none' || st.visibility === 'hidden') return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            };
+            const root =
+              document.querySelector('[data-testid="DmActivityViewport"]') ||
+              document.querySelector('[data-testid="DmActivityContainer"]') ||
+              document.querySelector('section[role="region"]');
+            if (!root) return '';
+            const clone = root.cloneNode(true);
+            clone.querySelectorAll(
+              'aside, header, [role="status"], [data-testid="dmComposerTextInput"], [data-testid="dmComposerTextInputRichTextInputContainer"], [data-testid="dmComposerTextInput_label"], [data-xm-dm-root], [data-xm-dm-target], [data-xm-dm-send-target], textarea, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"], input, button, [role="button"]'
+            ).forEach((node) => {
+              try { node.remove(); } catch (e) {}
+            });
+            const parts = [];
+            const selectors = [
+              '[data-testid="cellInnerDiv"]',
+              '[data-testid="messageEntry"]',
+              '[data-testid="DmScrollerContainer"] [dir="auto"]',
+              '[data-testid="DmScrollerContainer"] article',
+            ];
+            for (const sel of selectors) {
+              let nodes = [];
+              try { nodes = Array.from(clone.querySelectorAll(sel)); } catch (e) { nodes = []; }
+              for (const node of nodes) {
+                if (!isVisible(node)) continue;
+                const txt = String(node.innerText || node.textContent || '').trim();
+                if (!txt) continue;
+                parts.push(txt);
+              }
+            }
+            if (!parts.length) {
+              return String(clone.innerText || clone.textContent || '');
+            }
+            return parts.join('\n');
+            """
+        ) or "")
+    except Exception:
+        convo_text = ""
+    if not convo_text:
+        return 0
+    return convo_text.lower().count(needle)
 
 
 def _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
@@ -7232,7 +7356,63 @@ def _prepare_reply_prompt_guard(tab, stage=""):
     return handled
 
 
-def _click_with_prompt_guard(tab, element, action_name):
+def _is_cross_world_click_error(err):
+    msg = str(err or "").lower()
+    return (
+        "same javascript world" in msg
+        or "argument should belong to the same javascript world" in msg
+        or "object reference chain is too long" in msg
+    )
+
+
+def _click_first_actionable_by_selectors(tab, selectors):
+    """通过 CSS 选择器在当前文档重新定位并点击元素，避免跨 JS world 的句柄失效。"""
+    if not tab or not selectors:
+        return False
+    css_list = []
+    for sel in (selectors or []):
+        s = str(sel or "").strip()
+        if not s:
+            continue
+        if s.startswith("css:"):
+            s = s[4:]
+        if not s:
+            continue
+        css_list.append(s)
+    if not css_list:
+        return False
+    try:
+        clicked = tab.run_js(
+            """
+            const selectors = arguments[0] || [];
+            const isVisible = (el) => {
+              if (!el) return false;
+              const st = window.getComputedStyle(el);
+              if (!st) return false;
+              if (st.display === 'none' || st.visibility === 'hidden') return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            };
+            for (const s of selectors) {
+              let nodes = [];
+              try { nodes = Array.from(document.querySelectorAll(s)); } catch (e) { nodes = []; }
+              for (const el of nodes) {
+                if (!isVisible(el)) continue;
+                if (el.disabled || el.getAttribute('aria-disabled') === 'true') continue;
+                try { el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+                try { el.click(); return true; } catch (e) {}
+              }
+            }
+            return false;
+            """,
+            css_list,
+        )
+        return bool(clicked)
+    except Exception:
+        return False
+
+
+def _click_with_prompt_guard(tab, element, action_name, refetch_selectors=None):
     """点击元素时自动处理未处理提示框并重试。"""
     last_err = None
     max_retry = REPLY_PROMPT_GUARD_MAX_RETRY + (1 if headless_mode else 0)
@@ -7247,15 +7427,32 @@ def _click_with_prompt_guard(tab, element, action_name):
                 _prepare_reply_prompt_guard(tab, f"{action_name}重试")
                 time.sleep(random.uniform(0.15, 0.35))
                 continue
+            if refetch_selectors and _is_cross_world_click_error(e_click):
+                if _click_first_actionable_by_selectors(tab, refetch_selectors):
+                    return True, ""
             try:
-                tab.run_js('arguments[0].click()', element)
-                return True, ""
+                if refetch_selectors and _click_first_actionable_by_selectors(tab, refetch_selectors):
+                    return True, ""
+                # 兜底：仅点击当前文档焦点元素，避免跨世界 objectId
+                focused_clicked = bool(tab.run_js(
+                    """
+                    const el = document.activeElement;
+                    if (!el) return false;
+                    if (el.disabled || el.getAttribute('aria-disabled') === 'true') return false;
+                    try { el.click(); return true; } catch (e) { return false; }
+                    """
+                ))
+                if focused_clicked:
+                    return True, ""
             except Exception as e_js:
                 last_err = e_js
                 if _is_unhandled_prompt_error(e_js):
                     _prepare_reply_prompt_guard(tab, f"{action_name}JS重试")
                     time.sleep(random.uniform(0.15, 0.35))
                     continue
+                if refetch_selectors and _is_cross_world_click_error(e_js):
+                    if _click_first_actionable_by_selectors(tab, refetch_selectors):
+                        return True, ""
                 break
     return False, f"{action_name}失败: {last_err}"
 
@@ -7912,11 +8109,15 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
         'css:button[aria-label*="Message"]',
     ]
     editor = None
+    dm_btn_seen = False
+    profile_opened_rounds = 0
     editor_selectors = [
         'css:textarea[data-testid="dm-composer-textarea"]',
         'css:textarea[placeholder="Message"]',
         'css:textarea[placeholder*="消息"]',
+        'css:[data-testid="dmComposerTextInput"] [contenteditable]:not([contenteditable="false"])',
         'css:[data-testid="dmComposerTextInput"] [contenteditable="true"]',
+        'css:div[role="textbox"][contenteditable]:not([contenteditable="false"])',
         'css:div[role="textbox"][contenteditable="true"]',
         'css:[data-testid="dmComposerTextInput"]',
     ]
@@ -7949,6 +8150,7 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
             ok = tab.run_js(
                 """
                 const el = arguments[0];
+                const rejectOverlay = !!arguments[1];
                 if (!el) return false;
                 const low = (s) => String(s || '').toLowerCase();
                 const attrText = [
@@ -7962,21 +8164,37 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
                   'recipient', '收件人', 'to', 'new message', '新消息'
                 ];
                 if (rejectKeys.some((k) => attrText.includes(k))) return false;
-                if (el.closest('[data-testid="dmComposerTextInput"]')) return true;
+                const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0, width: 0, height: 0 };
                 const url = low(window.location.href || '');
                 if (url.includes('/i/chat/')) return true;
                 const root = el.closest('[role="dialog"]') || document;
+                const rootText = low((root.innerText || root.textContent || '').slice(0, 800));
+                const hasSearchScene = (
+                  rootText.includes('搜索私信') ||
+                  rootText.includes('创建一条私信') ||
+                  rootText.includes('创建私信') ||
+                  rootText.includes('new message') ||
+                  rootText.includes('search direct messages') ||
+                  rootText.includes('recipient')
+                );
                 const hasComposer = !!root.querySelector(
                   '[data-testid="dmComposerTextInput"],textarea[data-testid="dm-composer-textarea"]'
                 );
-                if (hasComposer) return true;
                 const hasSend = !!root.querySelector(
                   '[data-testid="dm-composer-send-button"],[data-testid="dmComposerSendButton"],button[data-testid*="dm-composer-send"]'
                 );
+                if (rejectOverlay) {
+                  // 新私信搜索浮层：只允许进入带发送区的真实会话编辑器
+                  if (hasSearchScene && !hasSend) return false;
+                  // 顶部搜索输入框通常位于页面上半区且没有发送区，过滤掉
+                  if (!hasSend && rect && Number(rect.top || 0) < (window.innerHeight * 0.45)) return false;
+                }
+                if (hasComposer) return true;
                 if (hasSend) return true;
                 return false;
                 """,
                 cand,
+                DM_REJECT_NEW_MESSAGE_OVERLAY,
             )
             return bool(ok)
         except Exception:
@@ -8337,6 +8555,7 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
     open_attempts = DM_EDITOR_OPEN_RETRY_HEADLESS if headless_mode else DM_EDITOR_OPEN_RETRY_NORMAL
     for attempt in range(open_attempts):
         if attempt == 0:
+            profile_opened_rounds += 1
             tab.get(f"https://x.com/{handle_norm}")
             _wait_document_ready(tab, timeout=5.5)
             try:
@@ -8349,6 +8568,7 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
             handled = _handle_dm_passcode_prompt(tab)
             if handled:
                 time.sleep(random.uniform(0.35, 0.7))
+            profile_opened_rounds += 1
             tab.get(f"https://x.com/{handle_norm}")
             _wait_document_ready(tab, timeout=5.2)
             try:
@@ -8371,8 +8591,14 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
         dm_btn = _find_dm_btn()
         if not dm_btn:
             continue
+        dm_btn_seen = True
 
-        clicked_dm_btn, click_dm_err = _click_with_prompt_guard(tab, dm_btn, "点击私信入口按钮")
+        clicked_dm_btn, click_dm_err = _click_with_prompt_guard(
+            tab,
+            dm_btn,
+            "点击私信入口按钮",
+            refetch_selectors=dm_btn_selectors,
+        )
         if not clicked_dm_btn:
             log_to_ui("debug", f"📨 私信入口点击失败(尝试{attempt + 1}/{open_attempts}): {click_dm_err}")
             continue
@@ -8404,7 +8630,12 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
                 pass
             dm_btn_retry = _find_dm_btn()
             if dm_btn_retry:
-                _click_with_prompt_guard(tab, dm_btn_retry, "重试点击私信入口按钮")
+                _click_with_prompt_guard(
+                    tab,
+                    dm_btn_retry,
+                    "重试点击私信入口按钮",
+                    refetch_selectors=dm_btn_selectors,
+                )
                 time.sleep(random.uniform(0.4, 0.8))
 
         editor, editor_state = _wait_editor_or_closed(timeout_sec=3.6)
@@ -8420,6 +8651,14 @@ def _open_dm_editor_for_handle(tab, handle, ignore_cached_unavailable=False):
     if _has_cannot_dm_hint():
         _mark_dm_unavailable(handle_norm)
         return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+
+    if (
+        DM_PROFILE_NO_BUTTON_AS_CLOSED
+        and profile_opened_rounds > 0
+        and (not dm_btn_seen)
+    ):
+        _mark_dm_unavailable(handle_norm)
+        return None, "该用户当前不可私信（资料页无私信入口）"
 
     # profile_first 模式下，只有在资料页入口失败时才回退到直达私信搜索路径。
     if DM_ENTRY_MODE == "profile_first":
@@ -8457,7 +8696,9 @@ def _send_dm_message(tab, text):
         'css:textarea[data-testid="dm-composer-textarea"]',
         'css:textarea[placeholder="Message"]',
         'css:textarea[placeholder*="消息"]',
+        'css:[data-testid="dmComposerTextInput"] [contenteditable]:not([contenteditable="false"])',
         'css:[data-testid="dmComposerTextInput"] [contenteditable="true"]',
+        'css:div[role="textbox"][contenteditable]:not([contenteditable="false"])',
         'css:div[role="textbox"][contenteditable="true"]',
         'css:[data-testid="dmComposerTextInput"]',
     ]
@@ -8471,12 +8712,246 @@ def _send_dm_message(tab, text):
         'css:button[aria-label*="发送"]',
         'css:button[aria-label*="Send"]',
     ]
+    editor_css_selectors = [
+        s[4:] if str(s).startswith('css:') else str(s)
+        for s in editor_selectors
+    ]
+    send_btn_css_selectors = [
+        s[4:] if str(s).startswith('css:') else str(s)
+        for s in send_btn_selectors
+    ]
+
+    def _clear_dm_binding_marks():
+        try:
+            tab.run_js(
+                """
+                document.querySelectorAll('[data-xm-dm-target],[data-xm-dm-send-target],[data-xm-dm-root]').forEach((el) => {
+                  try { el.removeAttribute('data-xm-dm-target'); } catch (e) {}
+                  try { el.removeAttribute('data-xm-dm-send-target'); } catch (e) {}
+                  try { el.removeAttribute('data-xm-dm-root'); } catch (e) {}
+                });
+                return true;
+                """
+            )
+        except Exception:
+            pass
+
+    def _bind_dm_composer_target():
+        """通过发送按钮反向绑定当前会话编辑器，避免误写到上层“新消息/搜索”输入框。"""
+        try:
+            ok = tab.run_js(
+                """
+                const editorSels = arguments[0] || [];
+                const sendSels = arguments[1] || [];
+                const rejectOverlay = !!arguments[2];
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const st = window.getComputedStyle(el);
+                  if (!st) return false;
+                  if (st.display === 'none' || st.visibility === 'hidden') return false;
+                  const r = el.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                };
+                const isBadScene = (text) => {
+                  const t = String(text || '').toLowerCase();
+                  return (
+                    t.includes('搜索私信') ||
+                    t.includes('创建一条私信') ||
+                    t.includes('创建私信') ||
+                    t.includes('new message') ||
+                    t.includes('search direct messages') ||
+                    t.includes('recipient')
+                  );
+                };
+
+                document.querySelectorAll('[data-xm-dm-target],[data-xm-dm-send-target]').forEach((el) => {
+                  try { el.removeAttribute('data-xm-dm-target'); } catch (e) {}
+                  try { el.removeAttribute('data-xm-dm-send-target'); } catch (e) {}
+                });
+
+                const sendButtons = [];
+                for (const s of sendSels) {
+                  let nodes = [];
+                  try { nodes = Array.from(document.querySelectorAll(s)); } catch (e) { nodes = []; }
+                  for (const n of nodes) {
+                    if (!isVisible(n)) continue;
+                    if (!sendButtons.includes(n)) sendButtons.push(n);
+                  }
+                }
+                if (!sendButtons.length) return false;
+
+                const editorScore = (editor, btn, root) => {
+                  if (!editor || !btn) return -1e9;
+                  const er = editor.getBoundingClientRect();
+                  const br = btn.getBoundingClientRect();
+                  const rr = root && root.getBoundingClientRect ? root.getBoundingClientRect() : { width: 0, height: 0 };
+                  const editableSelf = !!(
+                    editor.value !== undefined ||
+                    editor.isContentEditable ||
+                    editor.getAttribute('contenteditable') === 'true' ||
+                    editor.getAttribute('contenteditable') === 'plaintext-only'
+                  );
+                  const width = Number(er.width || 0);
+                  const height = Number(er.height || 0);
+                  const top = Number(er.top || 0);
+                  const bottom = Number(er.bottom || 0);
+                  const nearFooterBand = top >= (window.innerHeight * 0.55);
+                  const verticalGap = Math.abs(bottom - br.top);
+                  const aboveBtn = bottom <= (br.bottom + 24);
+                  const closeToBtn = verticalGap <= 220;
+                  const leftOfBtn = (Number(er.left || 0) <= Number(br.left || 0) + 48);
+                  const rootArea = Math.max(1, Number(rr.width || 0) * Number(rr.height || 0));
+                  let score = 0;
+                  if (editableSelf) score += 500;
+                  if (nearFooterBand) score += 420;
+                  if (aboveBtn) score += 220;
+                  if (closeToBtn) score += Math.max(0, 260 - verticalGap);
+                  if (leftOfBtn) score += 120;
+                  if (width >= 180) score += 160;
+                  if (height >= 24) score += 80;
+                  score += Math.min(240, Math.max(0, bottom));
+                  score -= Math.min(180, Math.max(0, top < (window.innerHeight * 0.45) ? 160 : 0));
+                  score -= Math.min(120, Math.log10(rootArea + 1) * 16);
+                  return score;
+                };
+
+                const pickEditorByBtn = (btn) => {
+                  const chain = [];
+                  let node = btn;
+                  for (let i = 0; i < 12 && node; i++) {
+                    chain.push(node);
+                    node = node.parentElement;
+                  }
+                  let best = null;
+                  for (const root of chain) {
+                    if (!root || root.nodeType !== 1) continue;
+                    const rootText = String(root.innerText || root.textContent || '').slice(0, 800);
+                    if (rejectOverlay && isBadScene(rootText)) continue;
+                    let editors = [];
+                    for (const s of editorSels) {
+                      let found = [];
+                      try { found = Array.from(root.querySelectorAll(s)); } catch (e) { found = []; }
+                      for (const e of found) {
+                        if (!isVisible(e)) continue;
+                        if (!editors.includes(e)) editors.push(e);
+                      }
+                    }
+                    if (!editors.length) continue;
+                    for (const editor of editors) {
+                      const score = editorScore(editor, btn, root);
+                      if (!best || score > best.score) {
+                        best = { editor, root, score };
+                      }
+                    }
+                  }
+                  return best;
+                };
+
+                const candidates = [];
+                for (const btn of sendButtons) {
+                  const picked = pickEditorByBtn(btn);
+                  if (!picked || !picked.editor || !picked.root) continue;
+                  const r = btn.getBoundingClientRect();
+                  const enabled = !(btn.disabled || btn.getAttribute('aria-disabled') === 'true');
+                  candidates.push({ btn, editor: picked.editor, root: picked.root, enabled, top: Number(r.top || 0), score: Number(picked.score || 0) });
+                }
+                if (!candidates.length) return false;
+                candidates.sort((a, b) => {
+                  if (a.enabled !== b.enabled) return Number(b.enabled) - Number(a.enabled);
+                  if (a.score !== b.score) return Number(b.score || 0) - Number(a.score || 0);
+                  return Number(b.top || 0) - Number(a.top || 0);
+                });
+                const target = candidates[0];
+                try { target.root.setAttribute('data-xm-dm-root', '1'); } catch (e) {}
+                try { target.editor.setAttribute('data-xm-dm-target', '1'); } catch (e) {}
+                try { target.btn.setAttribute('data-xm-dm-send-target', '1'); } catch (e) {}
+                try { target.editor.focus(); } catch (e) {}
+                return true;
+                """,
+                editor_css_selectors,
+                send_btn_css_selectors,
+                DM_REJECT_NEW_MESSAGE_OVERLAY,
+            )
+            return bool(ok)
+        except Exception:
+            return False
+
+    def _get_bound_editor():
+        try:
+            cand = tab.ele('css:[data-xm-dm-target="1"]', timeout=0.25)
+            if cand and cand.states.is_displayed:
+                return cand
+        except Exception:
+            pass
+        return None
+
+    def _get_bound_send_btn(require_enabled=True):
+        try:
+            cand = tab.ele('css:[data-xm-dm-send-target="1"]', timeout=0.25)
+            if not cand:
+                return None
+            if not cand.states.is_displayed:
+                return None
+            if require_enabled and (not _is_element_actionable(cand)):
+                return None
+            return cand
+        except Exception:
+            return None
+
+    def _editor_matches_bound_send(editor_el):
+        if not editor_el:
+            return False
+        try:
+            ok = tab.run_js(
+                """
+                const ed = arguments[0];
+                const btn = document.querySelector('[data-xm-dm-send-target="1"]');
+                const root = document.querySelector('[data-xm-dm-root="1"]');
+                if (!ed) return false;
+                if (!btn) return true;
+                if (!root) return false;
+                return root.contains(ed);
+                """,
+                editor_el,
+            )
+            return bool(ok)
+        except Exception:
+            return False
+
+    def _has_any_visible_send_btn():
+        try:
+            has_btn = tab.run_js(
+                """
+                const selectors = arguments[0] || [];
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const st = window.getComputedStyle(el);
+                  if (!st) return false;
+                  if (st.display === 'none' || st.visibility === 'hidden') return false;
+                  const r = el.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                };
+                for (const s of selectors) {
+                  let nodes = [];
+                  try { nodes = Array.from(document.querySelectorAll(s)); } catch (e) { nodes = []; }
+                  for (const n of nodes) {
+                    if (isVisible(n)) return true;
+                  }
+                }
+                return false;
+                """,
+                send_btn_css_selectors,
+            )
+            return bool(has_btn)
+        except Exception:
+            return False
 
     def _is_valid_dm_editor(editor_el):
         try:
             ok = tab.run_js(
                 """
                 const el = arguments[0];
+                const rejectOverlay = !!arguments[1];
                 if (!el) return false;
                 const low = (s) => String(s || '').toLowerCase();
                 const attrs = [
@@ -8489,6 +8964,7 @@ def _send_dm_message(tab, text):
                   'search', '搜索', 'recipient', '收件人', 'people', 'group', 'new message', '新消息'
                 ];
                 if (rejectKeys.some((k) => attrs.includes(k))) return false;
+                const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : { top: 0, width: 0, height: 0 };
                 const editable = !!(
                   el.value !== undefined ||
                   el.isContentEditable ||
@@ -8496,18 +8972,32 @@ def _send_dm_message(tab, text):
                   el.querySelector('textarea,[contenteditable="true"]')
                 );
                 if (!editable) return false;
-                if (el.closest('[data-testid="dmComposerTextInput"]')) return true;
                 const url = low(window.location.href || '');
                 if (url.includes('/i/chat/')) return true;
                 const root = el.closest('[role="dialog"]') || document;
+                const rootText = low((root.innerText || root.textContent || '').slice(0, 800));
+                const hasSearchScene = (
+                  rootText.includes('搜索私信') ||
+                  rootText.includes('创建一条私信') ||
+                  rootText.includes('创建私信') ||
+                  rootText.includes('new message') ||
+                  rootText.includes('search direct messages') ||
+                  rootText.includes('recipient')
+                );
+                const hasSend = !!root.querySelector(
+                  '[data-testid="dm-composer-send-button"],[data-testid="dmComposerSendButton"],button[data-testid*="dm-composer-send"]'
+                );
+                if (rejectOverlay) {
+                  if (hasSearchScene && !hasSend) return false;
+                  if (!hasSend && rect && Number(rect.top || 0) < (window.innerHeight * 0.45)) return false;
+                }
                 if (root.querySelector('[data-testid="dmComposerTextInput"],textarea[data-testid="dm-composer-textarea"]')) {
                   return true;
                 }
-                return !!root.querySelector(
-                  '[data-testid="dm-composer-send-button"],[data-testid="dmComposerSendButton"],button[data-testid*="dm-composer-send"]'
-                );
+                return hasSend;
                 """,
                 editor_el,
+                DM_REJECT_NEW_MESSAGE_OVERLAY,
             )
             return bool(ok)
         except Exception:
@@ -8518,6 +9008,18 @@ def _send_dm_message(tab, text):
         if not cand:
             return cand
         try:
+            inner = cand.ele('css:div[role="textbox"][contenteditable]:not([contenteditable="false"])', timeout=0)
+            if inner and inner.states.is_displayed:
+                return inner
+        except Exception:
+            pass
+        try:
+            inner = cand.ele('css:[contenteditable]:not([contenteditable="false"])', timeout=0)
+            if inner and inner.states.is_displayed:
+                return inner
+        except Exception:
+            pass
+        try:
             inner = cand.ele('css:[contenteditable="true"]', timeout=0)
             if inner and inner.states.is_displayed:
                 return inner
@@ -8527,6 +9029,14 @@ def _send_dm_message(tab, text):
 
     def _find_editor(rounds=2, timeout_each=1.5):
         for _ in range(max(1, rounds)):
+            if DM_FORCE_COMPOSER_BINDING:
+                bound_ok = _bind_dm_composer_target()
+                bound = _get_bound_editor()
+                if bound and _is_valid_dm_editor(bound):
+                    return bound
+                # 强绑定模式下，如果页面已有发送按钮但无法绑定到编辑器，直接判失败以触发会话重开
+                if (not bound_ok) and _has_any_visible_send_btn():
+                    return None
             for selector in editor_selectors:
                 try:
                     cand = tab.ele(selector, timeout=timeout_each)
@@ -8538,9 +9048,17 @@ def _send_dm_message(tab, text):
             time.sleep(random.uniform(0.08, 0.22))
         return None
 
-    def _find_send_btn(rounds=2, timeout_each=1.2):
+    def _find_send_btn(rounds=2, timeout_each=1.2, require_enabled=True):
         for _ in range(max(1, rounds)):
-            cand = _wait_first_actionable(tab, send_btn_selectors, timeout=timeout_each, poll=0.08)
+            if DM_FORCE_COMPOSER_BINDING:
+                _bind_dm_composer_target()
+                bound_btn = _get_bound_send_btn(require_enabled=require_enabled)
+                if bound_btn:
+                    return bound_btn
+            if require_enabled:
+                cand = _wait_first_actionable(tab, send_btn_selectors, timeout=timeout_each, poll=0.08)
+            else:
+                cand = _wait_first_visible(tab, send_btn_selectors, timeout=timeout_each, poll=0.08)
             if cand:
                 return cand
             time.sleep(random.uniform(0.05, 0.18))
@@ -8612,8 +9130,19 @@ def _send_dm_message(tab, text):
         try:
             ok = tab.run_js(
                 """
-                const el = arguments[0];
+                const root = arguments[0];
                 const text = String(arguments[1] || '');
+                if (!root) return false;
+                const resolveTarget = (el) => {
+                  if (!el) return null;
+                  if (el.value !== undefined || el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                    return el;
+                  }
+                  return el.querySelector(
+                    'div[role="textbox"][contenteditable="true"],[data-testid="dmComposerTextInput"] [contenteditable="true"],textarea[data-testid="dm-composer-textarea"],textarea'
+                  );
+                };
+                let el = resolveTarget(root);
                 if (!el) return false;
                 const dispatchAll = () => {
                   try {
@@ -8682,6 +9211,106 @@ def _send_dm_message(tab, text):
 
     def _wait_send_button_after_input(editor_el, expected_text, link_mode=False):
         """输入后等待发送按钮可点击；链接模式下进行额外状态唤醒。"""
+        def _has_disabled_send_button():
+            bound_disabled = _get_bound_send_btn(require_enabled=False)
+            if bound_disabled:
+                try:
+                    if not _is_element_actionable(bound_disabled):
+                        return True
+                except Exception:
+                    pass
+            try:
+                state = tab.run_js(
+                    """
+                    const sels = [
+                      'button[data-testid="dm-composer-send-button"]',
+                      '[data-testid="dm-composer-send-button"]',
+                      'button[data-testid*="dm-composer-send"]',
+                      '[data-testid*="dm-composer-send"]',
+                      '[data-testid="dmComposerSendButton"]',
+                      'button[data-testid="dmComposerSendButton"]',
+                      'button[aria-label*="Send"]',
+                      'button[aria-label*="发送"]'
+                    ];
+                    const isVisible = (el) => {
+                      if (!el) return false;
+                      const st = window.getComputedStyle(el);
+                      if (!st) return false;
+                      if (st.display === 'none' || st.visibility === 'hidden') return false;
+                      const r = el.getBoundingClientRect();
+                      return r.width > 0 && r.height > 0;
+                    };
+                    for (const s of sels) {
+                      for (const el of Array.from(document.querySelectorAll(s))) {
+                        if (!isVisible(el)) continue;
+                        if (el.disabled || el.getAttribute('aria-disabled') === 'true') return true;
+                      }
+                    }
+                    return false;
+                    """
+                )
+                return bool(state)
+            except Exception:
+                return False
+
+        def _nudge_editor_for_send_enable():
+            try:
+                _refresh_dm_editor_state(tab, editor_el, expected_text)
+                _poke_dm_editor_events(tab, editor_el)
+            except Exception:
+                pass
+            try:
+                tab.run_js(
+                    """
+                    const el = arguments[0];
+                    const text = String(arguments[1] || '');
+                    if (!el) return false;
+                    try { el.focus(); } catch (e) {}
+                    const dispatchAll = () => {
+                      try { el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'insertText', data: ' ' })); } catch (e) {}
+                      try { el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'insertText', data: ' ' })); } catch (e) {
+                        try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+                      }
+                      try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                    };
+                    if (el.value !== undefined) {
+                      const v = String(el.value || '');
+                      el.value = v + ' ';
+                      dispatchAll();
+                      el.value = v;
+                      dispatchAll();
+                      return true;
+                    }
+                    if (el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                      try {
+                        const sel = window.getSelection && window.getSelection();
+                        if (sel) {
+                          sel.removeAllRanges();
+                          const range = document.createRange();
+                          range.selectNodeContents(el);
+                          range.collapse(false);
+                          sel.addRange(range);
+                        }
+                      } catch (e) {}
+                      let changed = false;
+                      try { changed = !!document.execCommand('insertText', false, ' '); } catch (e) {}
+                      dispatchAll();
+                      try { document.execCommand('delete'); } catch (e) {}
+                      dispatchAll();
+                      if (!changed) {
+                        el.textContent = text;
+                        dispatchAll();
+                      }
+                      return true;
+                    }
+                    return false;
+                    """,
+                    editor_el,
+                    expected_text,
+                )
+            except Exception:
+                pass
+
         def _wait_link_preview_ready(timeout_sec=2.8):
             """链接消息发送前，等待上方预览/卡片渲染就绪。"""
             deadline = time.time() + max(1.0, float(timeout_sec))
@@ -8747,7 +9376,7 @@ def _send_dm_message(tab, text):
 
         if link_mode:
             _wait_link_preview_ready(timeout_sec=3.0)
-        btn = _find_send_btn(rounds=2, timeout_each=1.0)
+        btn = _find_send_btn(rounds=2, timeout_each=1.0, require_enabled=True)
         if btn:
             return btn
         if not link_mode:
@@ -8755,10 +9384,17 @@ def _send_dm_message(tab, text):
             while time.time() < deadline:
                 if _editor_has_text(editor_el, expected_text):
                     _poke_dm_editor_events(tab, editor_el)
-                btn = _find_send_btn(rounds=1, timeout_each=0.6)
+                btn = _find_send_btn(rounds=1, timeout_each=0.6, require_enabled=True)
                 if btn:
                     return btn
                 _dm_humanized_idle(tab, 0.03, 0.1, "文本消息等待发送按钮")
+            # DraftJS 常见“可见文本已写入但发送按钮仍禁用”，追加一次状态唤醒后再尝试
+            if _editor_has_text(editor_el, expected_text) and _has_disabled_send_button():
+                _nudge_editor_for_send_enable()
+                _dm_humanized_idle(tab, 0.04, 0.12, "文本消息发送按钮唤醒后等待")
+                btn = _find_send_btn(rounds=2, timeout_each=0.8, require_enabled=True)
+                if btn:
+                    return btn
             return None
 
         for _ in range(2):
@@ -8780,7 +9416,7 @@ def _send_dm_message(tab, text):
                 # 链接在 X 里偶发被异步清空，按钮不会出现；仅在空输入框时回填一次。
                 _paste_dm_text_exact(tab, editor_el, expected_text)
                 _dm_humanized_idle(tab, 0.05, 0.12, "链接回填后等待按钮")
-            btn = _find_send_btn(rounds=2, timeout_each=1.0)
+            btn = _find_send_btn(rounds=2, timeout_each=1.0, require_enabled=True)
             if btn:
                 return btn
         return None
@@ -8806,18 +9442,28 @@ def _send_dm_message(tab, text):
             last_err = "未找到私信输入框"
             time.sleep(random.uniform(0.05, 0.12))
             continue
+        if DM_FORCE_COMPOSER_BINDING and not _editor_matches_bound_send(editor):
+            last_err = "E_DM_WRONG_COMPOSER_TARGET: 编辑器与当前会话发送按钮不在同一容器"
+            _dm_humanized_idle(tab, 0.06, 0.16, "检测到输入框映射异常后等待")
+            continue
 
         try:
             editor.click()
         except Exception:
             pass
 
-        typed_ok = _paste_dm_text_exact(tab, editor, dm_text)
+        # X 的 DraftJS 在私信场景下对 editor.input() 兼容性更好；
+        # JS 粘贴路径容易出现“文本可见但发送按钮不激活”的假输入。
+        typed_ok = _humanized_type_dm_text(tab, editor, dm_text)
         if not typed_ok:
-            typed_ok = _humanized_type_dm_text(tab, editor, dm_text)
+            typed_ok = _paste_dm_text_exact(tab, editor, dm_text)
         if not typed_ok:
             last_err = "输入私信内容失败"
             time.sleep(random.uniform(0.05, 0.12))
+            continue
+        if DM_FORCE_COMPOSER_BINDING and not _editor_matches_bound_send(editor):
+            last_err = "E_DM_WRONG_COMPOSER_TARGET: 文本写入疑似落在上层浮层输入框"
+            _dm_humanized_idle(tab, 0.06, 0.16, "检测到文本映射异常后等待")
             continue
         if not _editor_has_text(editor, dm_text):
             if link_only_mode:
@@ -8845,17 +9491,16 @@ def _send_dm_message(tab, text):
                 _dm_humanized_idle(tab, 0.06, 0.16, "私信发送后确认")
                 if _composer_cleared(editor):
                     return True, ""
-                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.55):
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=DM_SEND_CONFIRM_WAIT_SEC):
                     log_headless_debug("私信发送后输入框未清空，但已确认消息落库，按成功处理")
                     return True, ""
                 if DM_ASSUME_SUCCESS_AFTER_CLICK:
-                    log_to_ui("warn", "⚠️ 私信点击发送后状态不确定，按成功处理以避免重复发送")
-                    return True, ""
+                    log_to_ui("warn", "⚠️ 私信点击发送后状态不确定，但当前配置禁止按成功处理")
                 last_err = "点击私信发送后输入框未清空"
                 continue
             last_err = click_err
-        elif link_only_mode and _editor_has_text(editor, dm_text):
-            # 发送按钮偶发未渲染时，尝试 Enter 直发（仅在编辑器确有内容时触发）。
+        elif _editor_has_text(editor, dm_text):
+            # 发送按钮偶发未渲染/未激活时，尝试 Enter 直发（仅在编辑器确有内容时触发）。
             _dm_humanized_idle(tab, 0.02, 0.08, "私信发送Enter兜底前")
             try:
                 enter_sent = bool(tab.run_js(
@@ -8877,9 +9522,9 @@ def _send_dm_message(tab, text):
                 _dm_humanized_idle(tab, 0.06, 0.16, "私信发送Enter兜底后")
                 if _composer_cleared(editor):
                     return True, ""
-                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.75):
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=DM_SEND_CONFIRM_WAIT_SEC):
                     return True, ""
-            last_err = "发送按钮未出现且Enter兜底未确认发送"
+            last_err = "发送按钮未出现或未激活，且Enter兜底未确认发送"
 
         # 兜底：直接用 DOM 点击私信发送按钮
         _dm_humanized_idle(tab, 0.06, 0.18, "私信发送DOM兜底前")
@@ -8917,12 +9562,11 @@ def _send_dm_message(tab, text):
                 _dm_humanized_idle(tab, 0.06, 0.16, "私信发送DOM兜底后")
                 if _composer_cleared(editor):
                     return True, ""
-                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=0.5):
+                if _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=DM_SEND_CONFIRM_WAIT_SEC):
                     log_headless_debug("DOM发送后已确认消息落库，按成功处理")
                     return True, ""
                 if DM_ASSUME_SUCCESS_AFTER_CLICK:
-                    log_to_ui("warn", "⚠️ 私信DOM发送后状态不确定，按成功处理以避免重复发送")
-                    return True, ""
+                    log_to_ui("warn", "⚠️ 私信DOM发送后状态不确定，但当前配置禁止按成功处理")
                 last_err = "DOM点击发送后输入框未清空"
                 continue
         except Exception:
@@ -9027,6 +9671,7 @@ def _is_dm_closed_error_text(dm_err_text):
         "无法向该用户发送私信",
         "不能给该用户发私信",
         "当前不可私信",
+        "资料页无私信入口",
         "cannot send direct messages",
         "can't be messaged",
         "unable to message",
@@ -9064,6 +9709,8 @@ def _is_dm_context_or_editor_error_text(err_text):
         "打开私信失败",
         "未打开私信输入框",
         "E_DM_EDITOR_NOT_FOUND",
+        "E_DM_WRONG_COMPOSER_TARGET",
+        "映射异常",
     ]
     return any(k in text for k in keywords)
 
@@ -9084,6 +9731,38 @@ def _classify_dm_error_text(err_text):
     if _is_dm_context_or_editor_error_text(text):
         return "context"
     return "unknown"
+
+
+def _is_dm_llm_fallback_allowed(err_code, err_detail):
+    code = str(err_code or "").strip().upper()
+    detail = str(err_detail or "").strip().lower()
+    if not code.startswith("E_DM_LLM_"):
+        return False
+    if code in {"E_DM_LLM_TEMPLATE_EMPTY", "E_DM_TEXT_EMPTY"}:
+        return False
+    # 网络/可用性波动、模型服务异常时允许降级到模板直发
+    network_hints = [
+        "no route to host",
+        "dial tcp",
+        "timed out",
+        "timeout",
+        "connection refused",
+        "temporarily unavailable",
+        "http 400",
+        "http 401",
+        "http 403",
+        "http 404",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+    ]
+    return any(k in detail for k in network_hints) or code in {
+        "E_DM_LLM_GENERATE_FAILED",
+        "E_DM_LLM_TIMEOUT",
+        "E_DM_LLM_NOT_READY",
+    }
 
 
 def _read_dm_session_state(tab, handle=""):
@@ -9111,7 +9790,7 @@ def _read_dm_session_state(tab, handle=""):
             const text = lower((document.body && document.body.innerText) ? document.body.innerText : '');
             const conversationOk = !target || text.includes('@' + target) || text.includes(target);
             const editor = document.querySelector(
-              'textarea[data-testid="dm-composer-textarea"],textarea[placeholder="Message"],textarea[placeholder*="消息"],[data-testid="dmComposerTextInput"] [contenteditable="true"],div[role="textbox"][contenteditable="true"]'
+              'textarea[data-testid="dm-composer-textarea"],textarea[placeholder="Message"],textarea[placeholder*="消息"],[data-testid="dmComposerTextInput"] [contenteditable]:not([contenteditable="false"]),div[role="textbox"][contenteditable]:not([contenteditable="false"]),[data-testid="dmComposerTextInput"] [contenteditable="true"],div[role="textbox"][contenteditable="true"]'
             );
             const sendBtn = document.querySelector(
               'button[data-testid="dm-composer-send-button"],[data-testid="dm-composer-send-button"],button[data-testid*="dm-composer-send"],[data-testid*="dm-composer-send"],[data-testid="dmComposerSendButton"],button[data-testid="dmComposerSendButton"],button[aria-label*="发送"],button[aria-label*="Send"]'
@@ -9249,13 +9928,22 @@ def _run_dm_send_sequence_once(
 
     if not progress.get("text_sent"):
         dm_text_final = _sanitize_dm_message_text(dm_text)
+        llm_fallback_used = False
         if callable(dm_text_supplier):
             ok_gen, dm_text_generated, gen_meta = dm_text_supplier()
             if not ok_gen:
                 err_code = str((gen_meta or {}).get("error_code", "E_DM_LLM_GENERATE_FAILED") or "E_DM_LLM_GENERATE_FAILED")
                 err_detail = str((gen_meta or {}).get("error_detail", "") or "第二条私信文案生成失败")
-                return False, f"{err_code}: {err_detail}", False
-            dm_text_final = _sanitize_dm_message_text(dm_text_generated)
+                if DM_LLM_DOWN_FALLBACK_TEMPLATE and dm_text_final and _is_dm_llm_fallback_allowed(err_code, err_detail):
+                    llm_fallback_used = True
+                    log_to_ui(
+                        "warn",
+                        f"⚠️ 二条私信LLM不可用，已降级发送模板文案: {err_code}"
+                    )
+                else:
+                    return False, f"{err_code}: {err_detail}", False
+            else:
+                dm_text_final = _sanitize_dm_message_text(dm_text_generated)
         if not dm_text_final:
             return False, "E_DM_TEXT_EMPTY: 第二条私信文案为空", False
         _prepare_reply_prompt_guard(tab, "第二条私信前")
@@ -9266,7 +9954,10 @@ def _run_dm_send_sequence_once(
         progress["text_sent"] = True
         if callable(mark_func):
             mark_func("send_dm_text")
-        log_to_ui("debug", "📨 已发送私信文案")
+        if llm_fallback_used:
+            log_to_ui("debug", "📨 已发送私信文案（模板降级）")
+        else:
+            log_to_ui("debug", "📨 已发送私信文案")
     else:
         log_to_ui("debug", "📨 跳过重复发送私信文案（本流程已成功发送）")
     return True, "", False
