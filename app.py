@@ -7131,22 +7131,13 @@ def _build_dm_message_probes(text):
     return uniq
 
 
-def _count_dm_probe_occurrence(tab, probe_text):
-    """统计探针文本在右侧当前会话消息区中的出现次数，排除左侧列表、草稿框和提示条。"""
-    if not tab or not probe_text:
-        return 0
-    needle = str(probe_text).lower()
+def _get_dm_conversation_text(tab):
+    """读取右侧当前会话区文本，排除左侧列表、输入框与提示条。"""
+    if not tab:
+        return ""
     try:
-        convo_text = str(tab.run_js(
+        return str(tab.run_js(
             """
-            const isVisible = (el) => {
-              if (!el) return false;
-              const st = window.getComputedStyle(el);
-              if (!st) return false;
-              if (st.display === 'none' || st.visibility === 'hidden') return false;
-              const r = el.getBoundingClientRect();
-              return r.width > 0 && r.height > 0;
-            };
             const root =
               document.querySelector('[data-testid="DmActivityViewport"]') ||
               document.querySelector('[data-testid="DmActivityContainer"]') ||
@@ -7158,53 +7149,55 @@ def _count_dm_probe_occurrence(tab, probe_text):
             ).forEach((node) => {
               try { node.remove(); } catch (e) {}
             });
-            const parts = [];
-            const selectors = [
-              '[data-testid="cellInnerDiv"]',
-              '[data-testid="messageEntry"]',
-              '[data-testid="DmScrollerContainer"] [dir="auto"]',
-              '[data-testid="DmScrollerContainer"] article',
-            ];
-            for (const sel of selectors) {
-              let nodes = [];
-              try { nodes = Array.from(clone.querySelectorAll(sel)); } catch (e) { nodes = []; }
-              for (const node of nodes) {
-                if (!isVisible(node)) continue;
-                const txt = String(node.innerText || node.textContent || '').trim();
-                if (!txt) continue;
-                parts.push(txt);
-              }
-            }
-            if (!parts.length) {
-              return String(clone.innerText || clone.textContent || '');
-            }
-            return parts.join('\n');
+            return String(clone.innerText || clone.textContent || '');
             """
         ) or "")
     except Exception:
-        convo_text = ""
-    if not convo_text:
+        return ""
+
+
+def _count_dm_probe_occurrence(tab, probe_text):
+    """统计探针文本在右侧当前会话消息区中的出现次数。"""
+    if not tab or not probe_text:
         return 0
-    return convo_text.lower().count(needle)
+    haystack = _normalize_text_for_compare(_get_dm_conversation_text(tab))
+    needle = _normalize_text_for_compare(probe_text)
+    if not haystack or not needle:
+        return 0
+    return haystack.count(needle)
+
+
+def _count_dm_sent_markers(tab):
+    """统计当前会话中“已发送/Sent”状态标记数量。"""
+    haystack = _normalize_text_for_compare(_get_dm_conversation_text(tab))
+    if not haystack:
+        return 0
+    total = 0
+    for marker in ('已发送', 'sent'):
+        total += haystack.count(_normalize_text_for_compare(marker))
+    return total
 
 
 def _confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
-    """
-    发送后确认消息是否落库：
-    - 任一探针出现次数增加，视为已发送成功
-    """
+    """发送后确认消息是否落库。"""
     if not probes:
         return False
+    before_snapshot = _normalize_text_for_compare(str((before_counts or {}).get('__snapshot', '') or ''))
+    before_markers = int((before_counts or {}).get('__sent_markers', 0) or 0)
     deadline = time.time() + max(0.2, float(wait_sec))
     while time.time() < deadline:
-        for p in probes:
-            prev = int(before_counts.get(p, 0))
-            now = _count_dm_probe_occurrence(tab, p)
-            if now > prev:
+        current_snapshot = _normalize_text_for_compare(_get_dm_conversation_text(tab))
+        if current_snapshot:
+            for p in probes:
+                prev = int(before_counts.get(p, 0))
+                now = _count_dm_probe_occurrence(tab, p)
+                if now > prev:
+                    return True
+            now_markers = _count_dm_sent_markers(tab)
+            if now_markers > before_markers and current_snapshot != before_snapshot:
                 return True
-        time.sleep(0.1)
+        time.sleep(0.12)
     return False
-
 
 def _is_unhandled_prompt_error(err):
     """判断是否属于浏览器未处理提示框导致的异常。"""
@@ -9432,7 +9425,7 @@ def _send_dm_message(tab, text):
         _throttle_dm_action_if_needed(f"私信发送尝试{attempt}")
         _prepare_reply_prompt_guard(tab, f"私信发送尝试{attempt}")
         _dm_humanized_idle(tab, 0.04, 0.16, f"私信发送尝试{attempt}")
-        before_counts = {p: _count_dm_probe_occurrence(tab, p) for p in probes}
+        before_counts = {p: _count_dm_probe_occurrence(tab, p) for p in probes}; before_counts['__snapshot'] = _get_dm_conversation_text(tab); before_counts['__sent_markers'] = _count_dm_sent_markers(tab)
 
         editor = _find_editor(rounds=2, timeout_each=1.4)
         if not editor:
