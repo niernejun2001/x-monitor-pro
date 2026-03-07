@@ -208,11 +208,36 @@ def send_reply_from_button(tab, target_reply_btn, target_score, reply_text, stat
     deps._reply_humanized_idle(tab, 0.22, 0.56, '等待回复输入框弹出')
     editor_selectors = [
         'css:[data-testid="tweetTextarea_0"] [role="textbox"]',
+        'css:[data-testid="tweetTextarea_0"] [contenteditable="true"]',
+        'css:[data-testid="tweetTextarea_0"] div[contenteditable="true"]',
         'css:[data-testid="tweetTextarea_0"]',
+        'css:div[role="dialog"] div[role="textbox"][contenteditable="true"]',
         'css:div[role="textbox"][contenteditable="true"]',
     ]
-    editor = deps._wait_first_visible(tab, editor_selectors, timeout=4.2, poll=0.1)
+    editor = deps._wait_first_visible(tab, editor_selectors, timeout=3.0, poll=0.1)
     if not editor:
+        deps._reply_humanized_idle(tab, 0.12, 0.28, '回复输入框二次唤醒')
+        try:
+            deps._click_with_prompt_guard(tab, target_reply_btn, '点击左下角回复按钮(二次唤醒)')
+        except Exception:
+            pass
+        editor = deps._wait_first_visible(tab, editor_selectors, timeout=3.8, poll=0.1)
+    if not editor:
+        deps._capture_runtime_diagnostic(
+            tab,
+            'reply_editor_not_found',
+            err='未弹出回复输入框',
+            selectors=editor_selectors + [
+                'css:[data-testid="reply"]',
+                'css:[role="dialog"]',
+                'css:[data-testid="sheetDialog"]',
+            ],
+            extra={
+                'status_id': status_id,
+                'handle_hint': handle_hint,
+                'target_score': target_score,
+            }
+        )
         return False, '未弹出回复输入框'
 
     def _read_reply_editor_text():

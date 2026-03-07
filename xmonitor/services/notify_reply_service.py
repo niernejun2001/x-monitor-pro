@@ -1,4 +1,5 @@
 import datetime
+import re
 import time
 
 
@@ -25,6 +26,7 @@ def send_notification_reply(item, message, deps, dm_message=""):
     DM_FOLLOWUP_TEXT = deps.DM_FOLLOWUP_TEXT
     DM_LLM_REWRITE_ENABLED = deps.DM_LLM_REWRITE_ENABLED
     _generate_dm_text_with_llm = deps._generate_dm_text_with_llm
+    _should_use_share_link_quick_path = deps._should_use_share_link_quick_path
     _reserve_notify_dm_user_slot = deps._reserve_notify_dm_user_slot
     normalize_handle = deps.normalize_handle
     _run_dm_send_with_recovery = deps._run_dm_send_with_recovery
@@ -131,13 +133,108 @@ def send_notification_reply(item, message, deps, dm_message=""):
                 pass
 
             def _prepare_notifications_view(force_refresh=False):
-                return _prepare_notifications_view_impl(tab, sys.modules[__name__], force_refresh=force_refresh)
+                return _prepare_notifications_view_impl(tab, deps, force_refresh=force_refresh)
 
             def _match_target_card():
-                return _match_target_card_impl(tab, item, status_id, sys.modules[__name__])
+                return _match_target_card_impl(tab, item, status_id, deps)
 
             def _send_reply_from_button(target_reply_btn, target_score, reply_text):
-                return _send_reply_from_button_impl(tab, target_reply_btn, target_score, reply_text, status_id, handle_hint, sys.modules[__name__])
+                return _send_reply_from_button_impl(tab, target_reply_btn, target_score, reply_text, status_id, handle_hint, deps)
+
+            target_article = None
+            target_reply_btn = None
+            target_score = 0
+            matched_handle = normalize_handle(item.get("status_handle", "") or item.get("handle", ""))
+            matched_status_id = str(status_id or "")
+
+            if need_reply or need_share:
+                _prepare_notifications_view(force_refresh=False)
+                log_to_ui("debug", "💬 已准备通知视图，开始定位目标通知卡片")
+                _reply_humanized_idle(tab, 0.1, 0.26, "定位通知卡片前")
+
+                target_article, target_reply_btn, target_score, matched_handle, matched_status_id, match_err = _match_target_card()
+                if match_err:
+                    _capture_runtime_diagnostic(
+                        tab,
+                        "match_target_card_failed",
+                        err=match_err,
+                        selectors=['tag:article', 'css:[data-testid="reply"]'],
+                        extra={"status_id": status_id, "handle_hint": handle_hint}
+                    )
+                    return False, match_err
+                _mark("match_card")
+                _mark_stage("match_card")
+                log_to_ui(
+                    "debug",
+                    f"💬 已定位通知卡片 score={target_score}, status_id={matched_status_id}, handle={matched_handle or ''}"
+                )
+                _reply_humanized_idle(tab, 0.08, 0.22, "定位卡片后稳定等待")
+            else:
+                log_to_ui("info", f"🔁 断点续跑：跳过通知卡片匹配（stage={resume_stage}）")
+
+            share_link = str(saved_share_link or "").strip()
+            if need_share:
+                share_link_fallback = _get_status_link_from_item(item, matched_handle, matched_status_id)
+                use_quick_share_link = bool(
+                    share_link_fallback and "/status/" in share_link_fallback and _should_use_share_link_quick_path()
+                )
+                if use_quick_share_link:
+                    share_link, share_err = share_link_fallback, ""
+                    log_to_ui("debug", "🔗 已启用快速链接路径（长队列稳定模式）")
+                else:
+                    _prepare_reply_prompt_guard(tab, "复制分享链接前")
+                    _reply_humanized_idle(tab, 0.06, 0.18, "复制分享链接前")
+                    share_link, share_err = _click_share_copy_link(tab, target_article, share_link_fallback)
+                if share_err:
+                    log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
+                if not share_link:
+                    _capture_runtime_diagnostic(
+                        tab,
+                        "share_link_missing",
+                        err="无法确定要发送的链接",
+                        selectors=[
+                            'css:button[aria-label*="分享"]',
+                            'css:button[aria-label*="Share"]',
+                            'css:[data-testid="share"]',
+                        ],
+                        extra={"status_id": matched_status_id, "handle": matched_handle}
+                    )
+                    return False, "无法确定要发送的链接"
+                share_link_raw = str(share_link or "").strip()
+                m_url = re.search(r"https?://[^\s<>\"']+", share_link_raw, flags=re.IGNORECASE)
+                if m_url:
+                    share_link = m_url.group(0).strip()
+                elif share_link_raw.startswith("x.com/"):
+                    share_link = f"https://{share_link_raw}"
+                elif share_link_raw.startswith("/"):
+                    share_link = f"https://x.com{share_link_raw}"
+                else:
+                    share_link = (share_link_raw.split() or [""])[0].strip()
+                if not re.match(r'^https?://', share_link, flags=re.IGNORECASE):
+                    return False, f"复制链接格式异常: {share_link[:80]}"
+                _mark("prepare_share_link")
+                _mark_stage("share_link_ready", extra={"notify_share_link": share_link}, save=True)
+                log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
+                _reply_humanized_idle(tab, 0.08, 0.2, "发送回复前")
+            else:
+                share_link = _normalize_dm_share_link(
+                    share_link,
+                    status_id=matched_status_id or status_id,
+                    status_handle=matched_handle or item.get("handle", ""),
+                    fallback_url=_get_status_link_from_item(item, matched_handle, matched_status_id),
+                )
+                if not share_link:
+                    return False, "断点续跑缺少可用分享链接，请重新执行本条通知"
+                log_to_ui("info", f"🔁 断点续跑：复用已生成链接（stage={resume_stage}）")
+
+            if need_reply:
+                ok_reply, err_reply = _send_reply_from_button(target_reply_btn, target_score, message)
+                if not ok_reply:
+                    return False, err_reply
+                _mark("send_reply")
+                _mark_stage("reply_sent", extra={"notify_share_link": share_link}, save=True)
+            else:
+                log_to_ui("info", f"🔁 断点续跑：跳过公开回复发送（stage={resume_stage}）")
 
             dm_handle = item.get("handle", "")
             dm_template_text = _sanitize_dm_message_text(dm_message)
