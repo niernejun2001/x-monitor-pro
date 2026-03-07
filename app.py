@@ -170,6 +170,7 @@ from xmonitor.services.notification_match import (
 )
 from xmonitor.services.notify_reply_service import send_notification_reply as _send_notification_reply_impl
 from xmonitor.services.tweet_scan import scan_page_content as _scan_page_content_impl
+from xmonitor.services.notification_tab_runtime import scan_persistent_notification_tab as _scan_persistent_notification_tab_impl
 from xmonitor.services.page_scan import (
     scan_page_content_with_tab as _scan_page_content_with_tab_impl,
     scan_task_with_tab as _scan_task_with_tab_impl,
@@ -180,6 +181,7 @@ from xmonitor.services.notification_scan_helpers import (
     parse_notification_age_minutes as _parse_notification_age_minutes_impl,
 )
 from xmonitor.services.notification_text import (
+    NOTIFICATION_REPLY_TO_YOU_KEYWORDS,
     classify_notification_type as _classify_notification_type,
     is_display_name_like as _is_display_name_like,
     is_noise_notification_text as _is_noise_notification_text,
@@ -1634,6 +1636,9 @@ def _collect_notification_tweet_texts(article, max_items=2):
 
 def scan_notifications_page(page, blocked_list, max_recent_minutes=None):
     return _scan_notifications_page_impl(page, blocked_list, max_recent_minutes, sys.modules[__name__])
+
+def scan_persistent_notification_tab(blocked_users, max_recent_minutes=None):
+    return _scan_persistent_notification_tab_impl(blocked_users, sys.modules[__name__], max_recent_minutes=max_recent_minutes)
 
 def scan_task_worker(task, page, blocked_users):
     return _scan_task_worker_impl(task, page, blocked_users, sys.modules[__name__])
