@@ -157,14 +157,11 @@ def get_dm_conversation_text(tab):
     try:
         return str(tab.run_js(
             """
-            const root =
-              document.querySelector('[data-testid="DmActivityViewport"]') ||
-              document.querySelector('[data-testid="DmActivityContainer"]') ||
-              document.querySelector('section[role="region"]');
+            const root = document.body;
             if (!root) return '';
             const clone = root.cloneNode(true);
             clone.querySelectorAll(
-              'aside, header, [role="status"], [data-testid="dmComposerTextInput"], [data-testid="dmComposerTextInputRichTextInputContainer"], [data-testid="dmComposerTextInput_label"], [data-xm-dm-root], [data-xm-dm-target], [data-xm-dm-send-target], textarea, [role="textbox"], [contenteditable="true"], [contenteditable="plaintext-only"], input, button, [role="button"]'
+              '[data-testid="dmComposerTextInput"], [data-testid="dmComposerTextInputRichTextInputContainer"], [data-testid="dmComposerTextInput_label"], [data-xm-dm-root], [data-xm-dm-target], [data-xm-dm-send-target], textarea, input, [role="textbox"][contenteditable], [contenteditable="true"], [contenteditable="plaintext-only"], button[data-testid*="dm-composer-send"], [data-testid*="dm-composer-send"], button[aria-label*="发送"], button[aria-label*="Send"]'
             ).forEach((node) => {
               try { node.remove(); } catch (e) {}
             });
