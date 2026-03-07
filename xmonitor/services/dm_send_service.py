@@ -733,9 +733,21 @@ def send_dm_message(tab, text, deps):
             clicked_send, click_err = deps._click_with_prompt_guard(tab, send_btn, '点击私信发送按钮')
             if clicked_send:
                 deps._dm_humanized_idle(tab, 0.06, 0.16, '私信发送后确认')
+                confirmed = deps._confirm_dm_message_sent(
+                    tab,
+                    before_counts,
+                    probes,
+                    wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                )
                 if _composer_cleared(editor):
-                    return True, ''
-                if deps._confirm_dm_message_sent(tab, before_counts, probes, wait_sec=deps.DM_SEND_CONFIRM_WAIT_SEC):
+                    if link_only_mode:
+                        return True, ''
+                    if confirmed:
+                        deps.log_headless_debug('私信文本发送后输入框已清空，且已确认消息落库')
+                        return True, ''
+                    last_err = '文本私信输入框已清空，但未确认消息落库'
+                    continue
+                if confirmed:
                     deps.log_headless_debug('私信发送后输入框未清空，但已确认消息落库，按成功处理')
                     return True, ''
                 if deps.DM_ASSUME_SUCCESS_AFTER_CLICK:
@@ -763,9 +775,20 @@ def send_dm_message(tab, text, deps):
                 enter_sent = False
             if enter_sent:
                 deps._dm_humanized_idle(tab, 0.06, 0.16, '私信发送Enter兜底后')
+                confirmed = deps._confirm_dm_message_sent(
+                    tab,
+                    before_counts,
+                    probes,
+                    wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                )
                 if _composer_cleared(editor):
-                    return True, ''
-                if deps._confirm_dm_message_sent(tab, before_counts, probes, wait_sec=deps.DM_SEND_CONFIRM_WAIT_SEC):
+                    if link_only_mode:
+                        return True, ''
+                    if confirmed:
+                        return True, ''
+                    last_err = '文本私信Enter后输入框已清空，但未确认消息落库'
+                    continue
+                if confirmed:
                     return True, ''
             last_err = '发送按钮未出现或未激活，且Enter兜底未确认发送'
 
@@ -802,9 +825,21 @@ def send_dm_message(tab, text, deps):
             )
             if clicked:
                 deps._dm_humanized_idle(tab, 0.06, 0.16, '私信发送DOM兜底后')
+                confirmed = deps._confirm_dm_message_sent(
+                    tab,
+                    before_counts,
+                    probes,
+                    wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                )
                 if _composer_cleared(editor):
-                    return True, ''
-                if deps._confirm_dm_message_sent(tab, before_counts, probes, wait_sec=deps.DM_SEND_CONFIRM_WAIT_SEC):
+                    if link_only_mode:
+                        return True, ''
+                    if confirmed:
+                        deps.log_headless_debug('DOM文本发送后输入框已清空，且已确认消息落库')
+                        return True, ''
+                    last_err = 'DOM文本发送后输入框已清空，但未确认消息落库'
+                    continue
+                if confirmed:
                     deps.log_headless_debug('DOM发送后已确认消息落库，按成功处理')
                     return True, ''
                 if deps.DM_ASSUME_SUCCESS_AFTER_CLICK:
