@@ -46,8 +46,8 @@ def is_dm_critical_active(deps):
 
 
 def maybe_log_dm_critical_skip(deps):
-    """限频输出因私信关键区跳过通知刷新的日志。"""
+    """限频输出因私信关键区限制高风险通知动作的日志。"""
     now = time.time()
     if (now - deps.dm_critical_last_skip_log_ts) >= 3.0:
         deps.dm_critical_last_skip_log_ts = now
-        deps.log_to_ui('debug', '📨 私信关键区进行中，已延后通知扫描/刷新')
+        deps.log_to_ui('debug', '📨 私信关键区进行中，已限制通知刷新/维护')

@@ -3,7 +3,7 @@ import random
 import time
 
 
-def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=None):
+def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=None, allow_refresh=True):
     """扫描持久通知标签页。"""
     if deps.notification_tab is None:
         return 0
@@ -19,7 +19,7 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
             now_ts = time.time()
             did_refresh = False
             refresh_strategy = 'scan_only'
-            need_refresh = (
+            need_refresh = allow_refresh and (
                 float(deps.notification_last_refresh_at or 0.0) <= 0
                 or (now_ts - float(deps.notification_last_refresh_at or 0.0)) >= float(deps.notification_refresh_interval or 0.0)
             )
@@ -27,7 +27,7 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                 cur_url = str(tab.url or '')
             except Exception:
                 cur_url = ''
-            if 'notifications' not in cur_url:
+            if 'notifications' not in cur_url and allow_refresh:
                 tab.get('https://x.com/notifications')
                 deps._wait_document_ready(tab, timeout=5.0)
                 time.sleep(random.uniform(0.5, 1.2))
@@ -63,7 +63,12 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                 deps._set_runtime_attr('notification_refresh_interval', next_refresh_interval)
                 deps.log_to_ui('debug', f'📬 通知刷新策略={refresh_strategy}，下次刷新间隔: {next_refresh_interval:.1f}s')
 
-        notif_items, notif_err = deps.scan_notifications_page(tab, blocked_users, max_recent_minutes)
+        notif_items, notif_err = deps.scan_notifications_page(
+            tab,
+            blocked_users,
+            max_recent_minutes,
+            allow_navigation=allow_refresh,
+        )
         if notif_err:
             err_text = str(notif_err).lower()
             disconnected = ('cannot connect' in err_text) or ('disconnected' in err_text)

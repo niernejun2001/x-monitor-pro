@@ -3,6 +3,131 @@ import re
 import time
 
 
+def inspect_direct_compose_picker_state(tab, handle_norm):
+    try:
+        state = tab.run_js(
+            """
+            const handle = String(arguments[0] || '').replace(/^@+/, '').trim().toLowerCase();
+            const low = (v) => String(v || '').toLowerCase();
+            const isVisible = (el) => {
+              if (!el) return false;
+              const st = window.getComputedStyle(el);
+              if (!st) return false;
+              if (st.display === 'none' || st.visibility === 'hidden') return false;
+              const r = el.getBoundingClientRect();
+              return r.width > 0 && r.height > 0;
+            };
+            const roots = Array.from(document.querySelectorAll('[role="dialog"],[data-testid*="typeahead"],[data-testid*="Typeahead"],main'))
+              .filter(isVisible);
+            const noResultHints = [
+              'no results',
+              'no people found',
+              'no user found',
+              'try searching for people',
+              '未找到',
+              '没有结果',
+              '无结果',
+              '找不到',
+              '搜索无结果',
+            ];
+            const nextHints = ['next', '下一步', '继续', '开始'];
+            let searchScene = false;
+            let noResults = false;
+            let candidateCount = 0;
+            let exactMatch = false;
+            let nextVisible = false;
+            let nextDisabled = false;
+            let typedValue = '';
+
+            for (const root of roots) {
+              const rootText = low(root.innerText || root.textContent || '');
+              if (
+                rootText.includes('new message') ||
+                rootText.includes('创建一条私信') ||
+                rootText.includes('创建私信') ||
+                rootText.includes('搜索私信') ||
+                rootText.includes('search direct messages') ||
+                rootText.includes('recipient')
+              ) {
+                searchScene = true;
+              }
+              if (noResultHints.some((k) => rootText.includes(k))) {
+                noResults = true;
+              }
+
+              const inputs = Array.from(root.querySelectorAll('input,textarea')).filter(isVisible);
+              for (const input of inputs) {
+                const val = low(input.value || input.getAttribute('value') || '');
+                if (val && !typedValue) {
+                  typedValue = val;
+                }
+              }
+
+              const nodes = Array.from(root.querySelectorAll('[role="option"],[data-testid*="TypeaheadUser"],[data-testid*="conversation"],a,button,[role="button"]'))
+                .filter(isVisible);
+              for (const n of nodes) {
+                const txt = low((n.innerText || n.textContent || '').trim());
+                if (!txt) continue;
+                if (noResultHints.some((k) => txt.includes(k))) {
+                  noResults = true;
+                  continue;
+                }
+                if (nextHints.some((k) => txt.includes(k))) {
+                  nextVisible = true;
+                  if (n.disabled || n.getAttribute('aria-disabled') === 'true') {
+                    nextDisabled = true;
+                  }
+                  continue;
+                }
+                candidateCount += 1;
+                if (handle && (txt.includes('@' + handle) || txt.includes(handle))) {
+                  exactMatch = true;
+                }
+              }
+            }
+
+            return {
+              searchScene: !!searchScene,
+              noResults: !!noResults,
+              candidateCount: Number(candidateCount || 0),
+              exactMatch: !!exactMatch,
+              nextVisible: !!nextVisible,
+              nextDisabled: !!nextDisabled,
+              typedValue: String(typedValue || ''),
+            };
+            """,
+            handle_norm,
+        ) or {}
+    except Exception:
+        state = {}
+    return {
+        'search_scene': bool(state.get('searchScene')),
+        'no_results': bool(state.get('noResults')),
+        'candidate_count': int(state.get('candidateCount', 0) or 0),
+        'exact_match': bool(state.get('exactMatch')),
+        'next_visible': bool(state.get('nextVisible')),
+        'next_disabled': bool(state.get('nextDisabled')),
+        'typed_value': str(state.get('typedValue', '') or '').strip().lower(),
+    }
+
+
+def direct_compose_state_indicates_closed(state, handle_norm):
+    handle_norm = str(handle_norm or '').strip().lstrip('@').lower()
+    typed_value = str((state or {}).get('typed_value', '') or '').strip().lower()
+    no_results = bool((state or {}).get('no_results'))
+    exact_match = bool((state or {}).get('exact_match'))
+    candidate_count = int((state or {}).get('candidate_count', 0) or 0)
+    next_visible = bool((state or {}).get('next_visible'))
+    next_disabled = bool((state or {}).get('next_disabled'))
+    search_scene = bool((state or {}).get('search_scene'))
+    typed_handle = bool(handle_norm) and (handle_norm in typed_value)
+    if no_results and typed_handle:
+        return True
+    if search_scene and typed_handle and (not exact_match) and candidate_count <= 0 and next_visible and next_disabled:
+        return True
+    return False
+
+
 def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False):
     normalize_handle = deps.normalize_handle
     _is_dm_unavailable_cached = deps._is_dm_unavailable_cached
@@ -197,6 +322,10 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
             except Exception:
                 return False
 
+        def _compose_search_indicates_closed():
+            state = inspect_direct_compose_picker_state(tab, handle_norm)
+            return direct_compose_state_indicates_closed(state, handle_norm), state
+
         for idx, url in enumerate(compose_urls, start=1):
             entry_path = "direct_compose"
             entry_stage = f"open_{idx}"
@@ -265,6 +394,11 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                 continue
 
             _dm_humanized_idle(tab, 0.2, 0.42, "输入收件人后等待候选")
+            search_closed, search_state = _compose_search_indicates_closed()
+            if search_closed:
+                entry_stage = f"recipient_search_closed_{idx}"
+                log_to_ui("debug", f"📨 新建私信搜索无结果，判定不可私信: @{handle_norm} state={search_state}")
+                return None, "该用户当前不可私信（新建私信搜索无结果）"
 
             selected = False
             try:
@@ -312,12 +446,23 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                     recipient_input.input('\n', clear=False)
                 except Exception:
                     pass
+                _dm_humanized_idle(tab, 0.12, 0.28, "提交收件人后等待")
+                search_closed, search_state = _compose_search_indicates_closed()
+                if search_closed:
+                    entry_stage = f"recipient_submit_closed_{idx}"
+                    log_to_ui("debug", f"📨 提交收件人后仍无结果，判定不可私信: @{handle_norm} state={search_state}")
+                    return None, "该用户当前不可私信（新建私信搜索无结果）"
 
             next_btn = _wait_first_actionable(tab, next_btn_selectors, timeout=1.3, poll=0.1)
             if next_btn:
                 _click_with_prompt_guard(tab, next_btn, "直达入口点击下一步")
                 _dm_humanized_idle(tab, 0.12, 0.3, "点击下一步后等待")
             else:
+                search_closed, search_state = _compose_search_indicates_closed()
+                if search_closed:
+                    entry_stage = f"recipient_next_closed_{idx}"
+                    log_to_ui("debug", f"📨 未出现可用下一步且搜索无结果，判定不可私信: @{handle_norm} state={search_state}")
+                    return None, "该用户当前不可私信（新建私信搜索无结果）"
                 try:
                     tab.run_js(
                         """
@@ -351,6 +496,11 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                 return editor_now, ""
             if editor_state == "closed":
                 return None, "closed"
+            search_closed, search_state = _compose_search_indicates_closed()
+            if search_closed:
+                entry_stage = f"recipient_wait_closed_{idx}"
+                log_to_ui("debug", f"📨 等待编辑框期间搜索无结果，判定不可私信: @{handle_norm} state={search_state}")
+                return None, "该用户当前不可私信（新建私信搜索无结果）"
 
         return None, ""
 

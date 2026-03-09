@@ -22,6 +22,35 @@ def monitoring_loop(deps):
     last_maintenance_time = time.time()
     maintenance_interval = deps.get_random_maintenance_interval()
 
+    def maybe_run_notification_cycle(now_ts):
+        nonlocal last_notification_scan, notification_interval
+        if not notify_enabled or (not is_active()) or ((now_ts - last_notification_scan) < notification_interval):
+            return
+
+        if deps._is_dm_critical_active():
+            if getattr(deps, 'notification_tab', None) is None:
+                deps._maybe_log_dm_critical_skip()
+                return
+            deps.scan_persistent_notification_tab(
+                blocked_users,
+                max_recent_minutes=recent_window_minutes,
+                allow_refresh=False,
+            )
+            last_notification_scan = now_ts
+            notification_interval = deps.get_random_notification_interval()
+            log_to_ui('debug', f'📬 私信关键区内执行后台通知扫描（仅扫描不刷新），下次扫描间隔: {notification_interval:.1f}s')
+            return
+
+        deps.ensure_notification_tab(blocked_users)
+        deps.scan_persistent_notification_tab(
+            blocked_users,
+            max_recent_minutes=recent_window_minutes,
+            allow_refresh=True,
+        )
+        last_notification_scan = now_ts
+        notification_interval = deps.get_random_notification_interval()
+        log_to_ui('debug', f'📬 下次通知扫描间隔: {notification_interval:.1f}s')
+
     log_to_ui('info', f">>> 🚀 引擎启动 ({deps.ENGINE_VERSION} 全并行标签页版)...")
     log_to_ui('info', '🧩 build: 2026-02-27-headless-stability-suite')
     if deps.is_headless_verbose_logging_enabled():
@@ -94,15 +123,7 @@ def monitoring_loop(deps):
                 if retry_done > 0:
                     log_to_ui('debug', f'🔁 已自动处理到期重试任务: {retry_done} 条')
 
-            if notify_enabled and is_active() and (current_time - last_notification_scan >= notification_interval):
-                if deps._is_dm_critical_active():
-                    deps._maybe_log_dm_critical_skip()
-                else:
-                    deps.ensure_notification_tab(blocked_users)
-                    deps.scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
-                    last_notification_scan = current_time
-                    notification_interval = deps.get_random_notification_interval()
-                    log_to_ui('debug', f'📬 下次通知扫描间隔: {notification_interval:.1f}s')
+            maybe_run_notification_cycle(current_time)
 
             if current_tasks:
                 log_to_ui('info', '=' * 60)
@@ -144,15 +165,7 @@ def monitoring_loop(deps):
                     with deps.data_lock:
                         notify_enabled = bool(deps.notification_monitoring)
                     now_ts = time.time()
-                    if notify_enabled and (now_ts - last_notification_scan >= notification_interval):
-                        if deps._is_dm_critical_active():
-                            deps._maybe_log_dm_critical_skip()
-                        else:
-                            deps.ensure_notification_tab(blocked_users)
-                            deps.scan_persistent_notification_tab(blocked_users, max_recent_minutes=recent_window_minutes)
-                            last_notification_scan = now_ts
-                            notification_interval = deps.get_random_notification_interval()
-                            log_to_ui('debug', f'📬 下次通知扫描间隔: {notification_interval:.1f}s')
+                    maybe_run_notification_cycle(now_ts)
 
                     if not deps._is_dm_critical_active():
                         retry_done = deps.notify_state_facade.process_retry_queue(max_items=1)

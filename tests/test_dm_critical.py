@@ -41,7 +41,7 @@ class DMCriticalTests(unittest.TestCase):
             self.assertFalse(is_dm_critical_active(deps))
             maybe_log_dm_critical_skip(deps)
         self.assertTrue(any('私信关键区占用超过' in msg for _, msg in deps.logs))
-        self.assertTrue(any('已延后通知扫描' in msg for _, msg in deps.logs))
+        self.assertTrue(any('已限制通知刷新/维护' in msg for _, msg in deps.logs))
 
 
 if __name__ == '__main__':

@@ -5,7 +5,7 @@ import time
 import traceback
 
 
-def scan_notifications_page(page, blocked_list, max_recent_minutes, deps):
+def scan_notifications_page(page, blocked_list, max_recent_minutes, deps, allow_navigation=True):
     results = []
     seen_in_page = set()
     try:
@@ -14,6 +14,8 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes, deps):
         max_scan_articles = deps.NOTIFICATION_MAX_SCAN_ARTICLES
 
         if 'notifications' not in page.url:
+            if not allow_navigation:
+                return results, None
             deps.log_to_ui('info', '📬 正在访问通知页面...')
             page.get('https://x.com/notifications')
             try:
