@@ -17,6 +17,8 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                 return 0
             tab = deps.notification_tab
             now_ts = time.time()
+            did_refresh = False
+            refresh_strategy = 'scan_only'
             need_refresh = (
                 float(deps.notification_last_refresh_at or 0.0) <= 0
                 or (now_ts - float(deps.notification_last_refresh_at or 0.0)) >= float(deps.notification_refresh_interval or 0.0)
@@ -29,11 +31,15 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                 tab.get('https://x.com/notifications')
                 deps._wait_document_ready(tab, timeout=5.0)
                 time.sleep(random.uniform(0.5, 1.2))
+                did_refresh = True
+                refresh_strategy = 'navigate_to_notifications'
             elif need_refresh:
                 try:
                     tab.refresh()
                     deps._wait_document_ready(tab, timeout=5.0)
                     time.sleep(random.uniform(0.5, 1.2))
+                    did_refresh = True
+                    refresh_strategy = 'hard_refresh'
                 except Exception:
                     pass
             try:
@@ -51,11 +57,11 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                 tab.run_js('window.scrollTo(0, 0);')
             except Exception:
                 pass
-            deps._set_runtime_attr('notification_last_refresh_at', now_ts)
-            deps._set_runtime_attr(
-                'notification_refresh_interval',
-                deps._schedule_next_notification_refresh_interval(deps.notification_refresh_interval),
-            )
+            if did_refresh:
+                next_refresh_interval = deps._schedule_next_notification_refresh_interval(deps.notification_refresh_interval)
+                deps._set_runtime_attr('notification_last_refresh_at', now_ts)
+                deps._set_runtime_attr('notification_refresh_interval', next_refresh_interval)
+                deps.log_to_ui('debug', f'📬 通知刷新策略={refresh_strategy}，下次刷新间隔: {next_refresh_interval:.1f}s')
 
         notif_items, notif_err = deps.scan_notifications_page(tab, blocked_users, max_recent_minutes)
         if notif_err:
