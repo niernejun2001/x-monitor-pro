@@ -41,7 +41,7 @@ def read_dm_session_state(tab, handle='', deps=None):
             );
             const sendDisabled = !!(sendBtn && (sendBtn.disabled || sendBtn.getAttribute('aria-disabled') === 'true'));
             return {
-              conversationOk: !!(conversationOk || editor),
+              conversationOk: !!conversationOk,
               editorOk: !!editor,
               sendPresent: !!sendBtn,
               sendEnabled: !!(sendBtn && !sendDisabled),
@@ -92,6 +92,12 @@ def run_dm_send_sequence_once(
     if not progress.get('link_sent'):
         ok_dm_1, err_dm_1 = deps._send_dm_message_with_retry(tab, share_link, handle=dm_handle)
         if not ok_dm_1:
+            err_text_1 = str(err_dm_1 or '')
+            if deps._is_dm_closed_error_text(err_text_1):
+                confirmed_closed, close_reason = deps._confirm_dm_closed_dual_stage(tab, dm_handle)
+                if confirmed_closed:
+                    deps.log_to_ui('info', f"📨 私信关闭已确认: @{deps.normalize_handle(dm_handle)} ({close_reason})")
+                    return False, err_text_1, True
             return False, f"发送私信链接失败: {err_dm_1}", False
         progress['link_sent'] = True
         if callable(mark_func):
@@ -121,6 +127,12 @@ def run_dm_send_sequence_once(
         deps._humanized_gap_between_dm_messages(tab)
         ok_dm_2, err_dm_2 = deps._send_dm_message_with_retry(tab, dm_text_final, handle=dm_handle)
         if not ok_dm_2:
+            err_text_2 = str(err_dm_2 or '')
+            if deps._is_dm_closed_error_text(err_text_2):
+                confirmed_closed, close_reason = deps._confirm_dm_closed_dual_stage(tab, dm_handle)
+                if confirmed_closed:
+                    deps.log_to_ui('info', f"📨 私信关闭已确认: @{deps.normalize_handle(dm_handle)} ({close_reason})")
+                    return False, err_text_2, True
             return False, f'发送私信文案失败: {err_dm_2}', False
         progress['text_sent'] = True
         if callable(mark_func):

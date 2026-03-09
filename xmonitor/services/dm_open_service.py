@@ -187,6 +187,35 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
     def _find_dm_btn():
         return _wait_first_actionable(tab, dm_btn_selectors, timeout=1.8, poll=0.1)
 
+    def _page_mentions_handle():
+        try:
+            hit = tab.run_js(
+                """
+                const handle = String(arguments[0] || '').replace(/^@+/, '').toLowerCase();
+                if (!handle) return false;
+                const isVisible = (el) => {
+                  if (!el) return false;
+                  const st = window.getComputedStyle(el);
+                  if (!st) return false;
+                  if (st.display === 'none' || st.visibility === 'hidden') return false;
+                  const r = el.getBoundingClientRect();
+                  return r.width > 0 && r.height > 0;
+                };
+                const roots = Array.from(document.querySelectorAll('[role="dialog"],main,[data-testid*="DM"],[data-testid*="dm"],header'));
+                for (const root of roots) {
+                  if (!isVisible(root)) continue;
+                  const txt = String(root.innerText || root.textContent || '').toLowerCase();
+                  if (!txt) continue;
+                  if (txt.includes('@' + handle) || txt.includes(handle)) return true;
+                }
+                return false;
+                """,
+                handle_norm,
+            )
+            return bool(hit)
+        except Exception:
+            return False
+
     def _is_valid_dm_editor(cand):
         try:
             ok = tab.run_js(
@@ -292,35 +321,6 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
             'css:button[aria-label*="新消息"]',
             'css:button[aria-label*="New message"]',
         ]
-
-        def _page_mentions_handle():
-            try:
-                hit = tab.run_js(
-                    """
-                    const handle = String(arguments[0] || '').replace(/^@+/, '').toLowerCase();
-                    if (!handle) return false;
-                    const isVisible = (el) => {
-                      if (!el) return false;
-                      const st = window.getComputedStyle(el);
-                      if (!st) return false;
-                      if (st.display === 'none' || st.visibility === 'hidden') return false;
-                      const r = el.getBoundingClientRect();
-                      return r.width > 0 && r.height > 0;
-                    };
-                    const roots = Array.from(document.querySelectorAll('[role="dialog"],main,[data-testid*="DM"],[data-testid*="dm"]'));
-                    for (const root of roots) {
-                      if (!isVisible(root)) continue;
-                      const txt = String(root.innerText || root.textContent || '').toLowerCase();
-                      if (!txt) continue;
-                      if (txt.includes('@' + handle) || txt.includes(handle)) return true;
-                    }
-                    return false;
-                    """,
-                    handle_norm,
-                )
-                return bool(hit)
-            except Exception:
-                return False
 
         def _compose_search_indicates_closed():
             state = inspect_direct_compose_picker_state(tab, handle_norm)
@@ -491,7 +491,7 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                     pass
 
             editor_now, editor_state = _wait_editor_or_closed(timeout_sec=3.8)
-            if editor_now:
+            if editor_now and _page_mentions_handle():
                 entry_stage = f"compose_editor_ready_{idx}"
                 return editor_now, ""
             if editor_state == "closed":
@@ -501,6 +501,9 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                 entry_stage = f"recipient_wait_closed_{idx}"
                 log_to_ui("debug", f"📨 等待编辑框期间搜索无结果，判定不可私信: @{handle_norm} state={search_state}")
                 return None, "该用户当前不可私信（新建私信搜索无结果）"
+            if editor_now:
+                entry_stage = f"recipient_target_mismatch_{idx}"
+                log_to_ui("debug", f"📨 新建私信命中了非目标会话，放弃当前编辑器: @{handle_norm}")
 
         return None, ""
 
@@ -610,6 +613,27 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
             return True
         return False
 
+    if DM_PROFILE_NO_BUTTON_AS_CLOSED and DM_ENTRY_MODE in {"direct_compose_first", "dual_probe"}:
+        entry_path = "profile_precheck"
+        entry_stage = "profile_precheck_open"
+        profile_opened_rounds += 1
+        tab.get(f"https://x.com/{handle_norm}")
+        _wait_document_ready(tab, timeout=5.5)
+        try:
+            tab.wait.ele_displayed('tag:main', timeout=8)
+        except Exception:
+            pass
+        time.sleep(random.uniform(0.35, 0.7))
+        if _has_cannot_dm_hint():
+            _mark_dm_unavailable(handle_norm)
+            return None, "该用户当前不可私信（平台限制或对方未开放私信）"
+        precheck_dm_btn = _find_dm_btn()
+        if precheck_dm_btn:
+            dm_btn_seen = True
+        else:
+            _mark_dm_unavailable(handle_norm)
+            return None, "该用户当前不可私信（资料页无私信入口）"
+
     if DM_ENTRY_MODE in {"direct_compose_first", "dual_probe"}:
         editor_direct, direct_state = _try_open_dm_via_direct_compose()
         if editor_direct:
@@ -673,14 +697,14 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
 
         # 第一轮快速检查：若未进入编辑框，尝试识别并点击消息小窗会话入口。
         editor, editor_state = _wait_editor_or_closed(timeout_sec=1.4)
-        if editor:
+        if editor and _page_mentions_handle():
             return editor, ""
         if editor_state == "closed":
             _mark_dm_unavailable(handle_norm)
             return None, "该用户当前不可私信（平台限制或对方未开放私信）"
         if _try_rescue_dm_popup():
             editor, editor_state = _wait_editor_or_closed(timeout_sec=2.2)
-            if editor:
+            if editor and _page_mentions_handle():
                 return editor, ""
             if editor_state == "closed":
                 _mark_dm_unavailable(handle_norm)
@@ -706,7 +730,7 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
                 time.sleep(random.uniform(0.4, 0.8))
 
         editor, editor_state = _wait_editor_or_closed(timeout_sec=3.6)
-        if editor:
+        if editor and _page_mentions_handle():
             return editor, ""
         if editor_state == "closed":
             _mark_dm_unavailable(handle_norm)
