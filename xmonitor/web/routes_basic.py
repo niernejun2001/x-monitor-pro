@@ -10,11 +10,16 @@ def register_basic_routes(app, deps):
     @app.route('/api/state')
     def state():
         with deps.data_lock:
+            pending_rows = []
+            for row in deps.pending_results:
+                if isinstance(row, dict) and row.get('source') == '通知页面':
+                    deps._ensure_notify_flow_fields(row)
+                pending_rows.append(dict(row) if isinstance(row, dict) else row)
             return jsonify({
                 'token': deps.global_token,
                 'tasks': list(deps.monitor_tasks),
                 'is_running': deps.monitor_active,
-                'pending': list(deps.pending_results),
+                'pending': pending_rows,
                 'updates_last_seq': int(deps.updates_event_seq),
                 'updates_buffer_size': len(deps.updates_event_buffer),
                 'notification_monitoring': deps.notification_monitoring,
@@ -95,6 +100,8 @@ def register_basic_routes(app, deps):
         except Exception:
             limit = 200
         reply_items = deps.pending_results_repo.list_reply_items(deps.is_reply_to_me_notification_item, limit=limit)
+        for row in reply_items:
+            deps._ensure_notify_flow_fields(row)
         return jsonify({
             'status': 'ok',
             'count': len(reply_items),

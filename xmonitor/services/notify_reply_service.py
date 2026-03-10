@@ -1,6 +1,12 @@
-import datetime
-import re
 import time
+
+from xmonitor.services.notify_reply_context import (
+    NotifyReplyProgressTracker,
+)
+from xmonitor.services.notify_reply_dm_service import (
+    prepare_notify_share_link,
+    run_notify_dm_followup,
+)
 
 
 def send_notification_reply(item, message, deps, dm_message=""):
@@ -22,19 +28,11 @@ def send_notification_reply(item, message, deps, dm_message=""):
     _match_target_card_impl = deps._match_target_card_impl
     _send_reply_from_button_impl = deps._send_reply_from_button_impl
     _sanitize_dm_message_text = deps._sanitize_dm_message_text
-    dm_message_templates = deps.dm_message_templates
-    DM_FOLLOWUP_TEXT = deps.DM_FOLLOWUP_TEXT
-    DM_LLM_REWRITE_ENABLED = deps.DM_LLM_REWRITE_ENABLED
-    _generate_dm_text_with_llm = deps._generate_dm_text_with_llm
-    _should_use_share_link_quick_path = deps._should_use_share_link_quick_path
-    _reserve_notify_dm_user_slot = deps._reserve_notify_dm_user_slot
     normalize_handle = deps.normalize_handle
-    _run_dm_send_with_recovery = deps._run_dm_send_with_recovery
     DM_CLOSED_FALLBACK_REPLY_TEXT = deps.DM_CLOSED_FALLBACK_REPLY_TEXT
     _wait_document_ready = deps._wait_document_ready
     _is_unhandled_prompt_error = deps._is_unhandled_prompt_error
     _capture_runtime_diagnostic = deps._capture_runtime_diagnostic
-    sys = __import__('sys')
     time = __import__('time')
     random = __import__('random')
     """针对通知记录发送回复。"""
@@ -53,34 +51,10 @@ def send_notification_reply(item, message, deps, dm_message=""):
         _throttle_reply_action_if_needed()
         _set_reply_flow_active(True)
         flow_started_at = time.perf_counter()
-        stage_marks = {}
-
-        def _mark(stage_name):
-            stage_marks[stage_name] = time.perf_counter() - flow_started_at
-            stage_map = {
-                "match_card": "match_card",
-                "prepare_share_link": "share_link_ready",
-                "send_reply": "reply_sent",
-                "open_dm": "dm_opening",
-                "send_dm_link": "dm_link_sent",
-                "send_dm_text": "dm_text_sent",
-                "fallback_reply": "dm_closed_confirmed",
-            }
-            mapped = stage_map.get(str(stage_name or "").strip())
-            if mapped:
-                _mark_stage(mapped)
-
-        def _mark_stage(stage_name, error="", retry_at=0.0, extra=None, save=False):
-            if not task_key:
-                return
-            notify_state_facade.update_flow_state(
-                task_key,
-                stage=stage_name,
-                error=error,
-                retry_at=retry_at,
-                extra=extra,
-                save=save,
-            )
+        progress = NotifyReplyProgressTracker(task_key, flow_started_at, notify_state_facade)
+        _mark = progress.mark
+        _mark_stage = progress.mark_stage
+        stage_marks = progress.stage_marks
 
         try:
             tab = ensure_reply_work_tab()
@@ -176,59 +150,22 @@ def send_notification_reply(item, message, deps, dm_message=""):
                 log_to_ui("info", f"🔁 断点续跑：跳过通知卡片匹配（stage={resume_stage}）")
 
             share_link = str(saved_share_link or "").strip()
-            if need_share:
-                share_link_fallback = _get_status_link_from_item(item, matched_handle, matched_status_id)
-                use_quick_share_link = bool(
-                    share_link_fallback and "/status/" in share_link_fallback and _should_use_share_link_quick_path()
-                )
-                if use_quick_share_link:
-                    share_link, share_err = share_link_fallback, ""
-                    log_to_ui("debug", "🔗 已启用快速链接路径（长队列稳定模式）")
-                else:
-                    _prepare_reply_prompt_guard(tab, "复制分享链接前")
-                    _reply_humanized_idle(tab, 0.06, 0.18, "复制分享链接前")
-                    share_link, share_err = _click_share_copy_link(tab, target_article, share_link_fallback)
-                if share_err:
-                    log_to_ui("warn", f"⚠️ 分享复制链接失败，使用回退链接: {share_err}")
-                if not share_link:
-                    _capture_runtime_diagnostic(
-                        tab,
-                        "share_link_missing",
-                        err="无法确定要发送的链接",
-                        selectors=[
-                            'css:button[aria-label*="分享"]',
-                            'css:button[aria-label*="Share"]',
-                            'css:[data-testid="share"]',
-                        ],
-                        extra={"status_id": matched_status_id, "handle": matched_handle}
-                    )
-                    return False, "无法确定要发送的链接"
-                share_link_raw = str(share_link or "").strip()
-                m_url = re.search(r"https?://[^\s<>\"']+", share_link_raw, flags=re.IGNORECASE)
-                if m_url:
-                    share_link = m_url.group(0).strip()
-                elif share_link_raw.startswith("x.com/"):
-                    share_link = f"https://{share_link_raw}"
-                elif share_link_raw.startswith("/"):
-                    share_link = f"https://x.com{share_link_raw}"
-                else:
-                    share_link = (share_link_raw.split() or [""])[0].strip()
-                if not re.match(r'^https?://', share_link, flags=re.IGNORECASE):
-                    return False, f"复制链接格式异常: {share_link[:80]}"
-                _mark("prepare_share_link")
-                _mark_stage("share_link_ready", extra={"notify_share_link": share_link}, save=True)
-                log_to_ui("debug", f"🔗 已准备分享链接: {share_link}")
-                _reply_humanized_idle(tab, 0.08, 0.2, "发送回复前")
-            else:
-                share_link = _normalize_dm_share_link(
-                    share_link,
-                    status_id=matched_status_id or status_id,
-                    status_handle=matched_handle or item.get("handle", ""),
-                    fallback_url=_get_status_link_from_item(item, matched_handle, matched_status_id),
-                )
-                if not share_link:
-                    return False, "断点续跑缺少可用分享链接，请重新执行本条通知"
-                log_to_ui("info", f"🔁 断点续跑：复用已生成链接（stage={resume_stage}）")
+            item["_target_article"] = target_article
+            ok_share, share_link, share_err = prepare_notify_share_link(
+                tab=tab,
+                item=item,
+                share_link=share_link,
+                need_share=need_share,
+                matched_handle=matched_handle,
+                matched_status_id=matched_status_id,
+                status_id=status_id,
+                deps=deps,
+                mark_func=_mark,
+                mark_stage_func=_mark_stage,
+            )
+            item.pop("_target_article", None)
+            if not ok_share:
+                return False, share_err
 
             if need_reply:
                 ok_reply, err_reply = _send_reply_from_button(target_reply_btn, target_score, message)
@@ -239,107 +176,17 @@ def send_notification_reply(item, message, deps, dm_message=""):
             else:
                 log_to_ui("info", f"🔁 断点续跑：跳过公开回复发送（stage={resume_stage}）")
 
-            dm_handle = item.get("handle", "")
-            dm_template_text = _sanitize_dm_message_text(dm_message)
-            if not dm_template_text:
-                dm_template_text = (dm_message_templates[0] if dm_message_templates else DM_FOLLOWUP_TEXT)
-            dm_template_text = _sanitize_dm_message_text(dm_template_text)
-            generated_dm_text_cache = str(saved_generated_dm_text or "").strip()
-            generated_dm_meta_cache = {
-                "llm_used": bool(row_snapshot.get("notify_dm_llm_used", False)),
-                "latency_ms": int(row_snapshot.get("notify_dm_llm_latency_ms", 0) or 0),
-                "regen_attempt": int(row_snapshot.get("notify_dm_llm_regen_attempt", 0) or 0),
-            }
-
-            def _build_dm_text_supplier():
-                def _supplier():
-                    nonlocal generated_dm_text_cache, generated_dm_meta_cache
-                    if generated_dm_text_cache:
-                        return True, generated_dm_text_cache, {
-                            "error_code": "",
-                            "error_detail": "",
-                            "llm_used": bool(generated_dm_meta_cache.get("llm_used", True)),
-                            "latency_ms": int(generated_dm_meta_cache.get("latency_ms", 0) or 0),
-                            "regen_attempt": int(generated_dm_meta_cache.get("regen_attempt", 0) or 0),
-                            "cached": True,
-                        }
-                    if not DM_LLM_REWRITE_ENABLED:
-                        return True, dm_template_text, {
-                            "error_code": "",
-                            "error_detail": "",
-                            "llm_used": False,
-                            "latency_ms": 0,
-                        }
-                    _mark_stage(
-                        "dm_text_generating",
-                        error="",
-                        extra={
-                            "notify_share_link": share_link,
-                            "notify_dm_template_text": dm_template_text,
-                            "notify_dm_llm_used": True,
-                        },
-                        save=True,
-                    )
-                    ok_gen, dm_text_generated, meta = _generate_dm_text_with_llm(dm_template_text)
-                    meta = meta or {}
-                    if ok_gen:
-                        generated_dm_text_cache = _sanitize_dm_message_text(dm_text_generated)
-                        generated_dm_meta_cache = {
-                            "llm_used": bool(meta.get("llm_used", True)),
-                            "latency_ms": int(meta.get("latency_ms", 0) or 0),
-                            "regen_attempt": int(meta.get("regen_attempt", 1) or 1),
-                        }
-                        notify_state_facade.update_flow_state(
-                            task_key,
-                            stage="dm_text_generating",
-                            error="",
-                            retry_at=0.0,
-                            extra={
-                                "notify_share_link": share_link,
-                                "notify_dm_template_text": dm_template_text,
-                                "notify_dm_text_generated": generated_dm_text_cache,
-                                "notify_dm_llm_used": bool(generated_dm_meta_cache.get("llm_used", True)),
-                                "notify_dm_llm_latency_ms": int(generated_dm_meta_cache.get("latency_ms", 0) or 0),
-                                "notify_dm_llm_regen_attempt": int(generated_dm_meta_cache.get("regen_attempt", 1) or 1),
-                                "notify_dm_llm_error_code": "",
-                                "notify_dm_llm_error_detail": "",
-                            },
-                            save=True,
-                        )
-                    else:
-                        err_code = str(meta.get("error_code", "E_DM_LLM_GENERATE_FAILED") or "E_DM_LLM_GENERATE_FAILED")
-                        err_detail = str(meta.get("error_detail", "") or "第二条私信文案生成失败")
-                        notify_state_facade.update_flow_state(
-                            task_key,
-                            stage="dm_text_generating",
-                            error=f"{err_code}: {err_detail}",
-                            retry_at=0.0,
-                            extra={
-                                "notify_share_link": share_link,
-                                "notify_dm_template_text": dm_template_text,
-                                "notify_dm_llm_used": bool(meta.get("llm_used", True)),
-                                "notify_dm_llm_latency_ms": int(meta.get("latency_ms", 0) or 0),
-                                "notify_dm_llm_error_code": err_code,
-                                "notify_dm_llm_error_detail": err_detail,
-                            },
-                            save=True,
-                        )
-                    return ok_gen, (generated_dm_text_cache if ok_gen else dm_text_generated), meta
-
-                return _supplier
-
-            slot_ok, slot_wait = _reserve_notify_dm_user_slot(dm_handle, task_key=task_key)
-            if not slot_ok:
-                return False, f"E_DM_USER_COOLDOWN: @{normalize_handle(dm_handle)} 私信冷却中，请 {slot_wait:.1f}s 后重试"
-            _mark_stage("dm_opening", extra={"notify_share_link": share_link}, save=True)
-            ok_dm, dm_err, dm_closed, dm_tab = _run_dm_send_with_recovery(
-                tab,
-                dm_handle,
-                share_link,
-                dm_template_text,
+            ok_dm, dm_err, dm_closed, dm_tab = run_notify_dm_followup(
+                tab=tab,
+                item=item,
+                share_link=share_link,
+                dm_message=dm_message,
+                dm_progress=dm_progress,
+                task_key=task_key,
+                row_snapshot=row_snapshot,
+                deps=deps,
                 mark_func=_mark,
-                progress=dm_progress,
-                dm_text_supplier=_build_dm_text_supplier(),
+                mark_stage_func=_mark_stage,
             )
             if not ok_dm:
                 if dm_closed:

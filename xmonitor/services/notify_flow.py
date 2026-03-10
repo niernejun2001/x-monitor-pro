@@ -15,6 +15,26 @@ NOTIFY_FLOW_STAGE_ORDER = {
     "retry_waiting": 95,
 }
 
+NOTIFY_FLOW_DEFAULTS = {
+    "notify_flow_stage": "",
+    "notify_resume_stage": "",
+    "notify_flow_error": "",
+    "notify_flow_error_code": "",
+    "notify_flow_error_detail": "",
+    "notify_flow_attempt": 0,
+    "notify_retry_at": 0.0,
+    "notify_retry_time": "",
+    "notify_flow_updated_at": 0.0,
+    "notify_flow_updated_time": "",
+    "notify_share_link": "",
+    "notify_dm_text_generated": "",
+    "notify_dm_llm_used": False,
+    "notify_dm_llm_latency_ms": 0,
+    "notify_dm_llm_regen_attempt": 0,
+    "notify_dm_llm_error_code": "",
+    "notify_dm_llm_error_detail": "",
+}
+
 
 def normalize_notify_flow_stage(stage):
     text = str(stage or "").strip().lower()
@@ -51,3 +71,9 @@ def split_flow_error(error_text, default_code="E_REPLY_FAILED"):
         return code, (detail or msg)
     return str(default_code or "E_REPLY_FAILED"), msg
 
+
+def ensure_notify_flow_fields(row_like):
+    row = row_like if isinstance(row_like, dict) else {}
+    for key, value in NOTIFY_FLOW_DEFAULTS.items():
+        row.setdefault(key, value)
+    return row

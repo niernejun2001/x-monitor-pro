@@ -15,6 +15,20 @@ def as_json_safe(obj):
         return str(obj)
 
 
+def build_diag_context(stage, extra):
+    raw = extra if isinstance(extra, dict) else {}
+    context = {
+        'stage': str(stage or ''),
+        'task_key': str(raw.get('task_key', raw.get('key', '')) or ''),
+        'status_id': str(raw.get('status_id', raw.get('matched_status_id', '')) or ''),
+        'handle': str(raw.get('handle', raw.get('handle_hint', raw.get('target_handle', ''))) or ''),
+        'attempt': raw.get('attempt', raw.get('notify_flow_attempt', '')),
+        'error_code': str(raw.get('error_code', raw.get('notify_flow_error_code', '')) or ''),
+        'url': str(raw.get('url', '') or ''),
+    }
+    return context
+
+
 def probe_selectors_snapshot(tab, selectors):
     """抓取一组选择器命中状态，便于定位无头偶发问题。"""
     snapshot = []
@@ -66,6 +80,7 @@ def capture_runtime_diagnostic(tab, stage, deps, err=None, selectors=None, extra
         'headless_mode': bool(deps.headless_mode),
         'selectors': probe_selectors_snapshot(tab, selectors),
         'extra': as_json_safe(extra or {}),
+        'context': as_json_safe(build_diag_context(stage, extra or {})),
         'screenshot_saved': False,
         'screenshot_path': png_path,
         'screenshot_error': '',

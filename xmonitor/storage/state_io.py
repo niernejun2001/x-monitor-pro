@@ -188,6 +188,8 @@ def _apply_state_payload(deps, data):
     pending_changed = False
     for item in deps.pending_results:
         if item.get('source') == '通知页面':
+            deps._ensure_notify_flow_fields(item)
+        if item.get('source') == '通知页面':
             migrated = False
             if 'reply_checked' in item and 'notify_replied' not in item:
                 item['notify_replied'] = bool(item.get('reply_checked'))
@@ -227,6 +229,9 @@ def _apply_structured_state_payload(deps, collections):
     if pending_results is None and history_ids is None and content_dedupe is None:
         return False
     if isinstance(pending_results, list):
+        for item in pending_results:
+            if isinstance(item, dict) and item.get('source') == '通知页面':
+                deps._ensure_notify_flow_fields(item)
         _set_dep_attr(deps, 'pending_results', pending_results)
     if isinstance(history_ids, list):
         _set_dep_attr(deps, 'history_ids', set(str(x) for x in history_ids if str(x)))

@@ -17,6 +17,11 @@ class NotifyStateFacadeTests(unittest.TestCase):
         deps.DM_TASK_MAX_RETRY = 4
         deps.DM_UNKNOWN_FAILURE_POLICY = 'retry_queue'
         deps.pending_results_repo = types.SimpleNamespace(count_by_source=lambda source: 1 if source == '通知页面' else 0)
+        deps._ensure_notify_flow_fields = lambda row: row.update({
+            'notify_flow_error_code': row.get('notify_flow_error_code', ''),
+            'notify_retry_time': row.get('notify_retry_time', ''),
+            'notify_dm_text_generated': row.get('notify_dm_text_generated', ''),
+        }) or row
         deps._normalize_notify_flow_stage = lambda x: str(x or '').strip().lower()
         deps._split_flow_error = lambda err: ('E_ERR', str(err or ''))
         deps._resolve_notify_resume_stage = lambda row: 'reply_pending'
@@ -33,6 +38,7 @@ class NotifyStateFacadeTests(unittest.TestCase):
         idx, row = facade.find_pending_item_by_key('k1')
         self.assertEqual(idx, 0)
         self.assertEqual(row['handle'], '@a')
+        self.assertIn('notify_flow_error_code', row)
         self.assertEqual(facade.get_pending_notify_count(), 1)
         updated = facade.update_flow_state('k1', stage='done', error='', save=False)
         self.assertTrue(updated)

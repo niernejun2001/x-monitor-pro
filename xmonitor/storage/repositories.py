@@ -62,6 +62,7 @@ class PendingResultsRepository:
         with self.deps.data_lock:
             for idx, row in enumerate(self.deps.pending_results):
                 if row.get('key') == key_text and row.get('source') == '通知页面':
+                    self.deps._ensure_notify_flow_fields(row)
                     return idx, (dict(row) if copy_row else row)
         return -1, None
 
@@ -107,6 +108,7 @@ class PendingResultsRepository:
         with self.deps.data_lock:
             for row in self.deps.pending_results:
                 if row.get('key') == key_text and row.get('source') == '通知页面':
+                    self.deps._ensure_notify_flow_fields(row)
                     row['notify_reply_text'] = message
                     row['notify_dm_text'] = dm_message
                     row['notify_dm_text_generated'] = ''

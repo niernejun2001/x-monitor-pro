@@ -69,6 +69,7 @@ class StateIOTests(unittest.TestCase):
         deps._normalize_keyword_lines = lambda text: [x.strip() for x in str(text or '').splitlines() if x.strip()]
         deps.clamp_llm_timeout = lambda x: float(x)
         deps._doubao_tts_is_ready = lambda: False
+        deps._ensure_notify_flow_fields = lambda row: row
         deps.prune_content_dedupe = lambda: None
         deps.make_content_signature = lambda handle, content: f"{handle}|{content}" if (handle or content) else ''
         deps.start_monitor_thread = lambda: setattr(deps, 'monitor_started', True) or True

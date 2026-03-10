@@ -116,6 +116,7 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                     deps.log_to_ui('warn', f'🤖 AI意向分析[notify_auto] 失败: {analyze_err}')
 
                 with deps.data_lock:
+                    deps._ensure_notify_flow_fields(item)
                     deps.pending_results.append(item)
                 deps.enqueue_new_data(item)
                 new_count += 1

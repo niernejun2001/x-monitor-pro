@@ -14,7 +14,12 @@ class NotifyStateFacade:
         self.deps = deps
 
     def find_pending_item_by_key(self, item_key):
-        return find_pending_notify_item_by_key(item_key, self.deps.pending_results, self.deps.data_lock)
+        return find_pending_notify_item_by_key(
+            item_key,
+            self.deps.pending_results,
+            self.deps.data_lock,
+            ensure_row_fn=self.deps._ensure_notify_flow_fields,
+        )
 
     def update_flow_state(
         self,
@@ -43,6 +48,7 @@ class NotifyStateFacade:
             save=save,
             error_code=error_code,
             error_detail=error_detail,
+            ensure_row_fn=self.deps._ensure_notify_flow_fields,
         )
 
     def clear_flow_error(self, item_key, save=False):
@@ -82,6 +88,7 @@ class NotifyStateFacade:
             data_lock=self.deps.data_lock,
             save_state_cb=self.deps.save_state,
             reply_time_text=reply_time_text,
+            ensure_row_fn=self.deps._ensure_notify_flow_fields,
         )
 
     def schedule_retry(self, item_key, err_text, attempt, reason='retry_queue', save=True):
@@ -104,7 +111,12 @@ class NotifyStateFacade:
         )
 
     def collect_due_retry_items(self, limit=2):
-        return collect_due_notify_retry_items(limit, self.deps.pending_results, self.deps.data_lock)
+        return collect_due_notify_retry_items(
+            limit,
+            self.deps.pending_results,
+            self.deps.data_lock,
+            ensure_row_fn=self.deps._ensure_notify_flow_fields,
+        )
 
     def process_retry_queue(self, max_items=1):
         return process_notify_retry_queue(

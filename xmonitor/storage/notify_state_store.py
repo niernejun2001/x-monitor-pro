@@ -2,13 +2,15 @@ import time
 import datetime
 
 
-def find_pending_notify_item_by_key(item_key, pending_results, data_lock):
+def find_pending_notify_item_by_key(item_key, pending_results, data_lock, ensure_row_fn=None):
     key = str(item_key or '').strip()
     if not key:
         return -1, None
     with data_lock:
         for idx, row in enumerate(pending_results):
             if row.get('key') == key and row.get('source') == '通知页面':
+                if callable(ensure_row_fn):
+                    ensure_row_fn(row)
                 return idx, row
     return -1, None
 
@@ -29,6 +31,7 @@ def update_notify_flow_state(
     save=False,
     error_code=None,
     error_detail=None,
+    ensure_row_fn=None,
 ):
     key = str(item_key or '').strip()
     if not key:
@@ -49,6 +52,8 @@ def update_notify_flow_state(
         for row in pending_results:
             if row.get('key') != key or row.get('source') != '通知页面':
                 continue
+            if callable(ensure_row_fn):
+                ensure_row_fn(row)
             if stage_text:
                 row['notify_flow_stage'] = stage_text
             row['notify_flow_error'] = detail_text or err_text
@@ -86,7 +91,7 @@ def update_notify_flow_state(
     return updated
 
 
-def collect_due_notify_retry_items(limit, pending_results, data_lock):
+def collect_due_notify_retry_items(limit, pending_results, data_lock, ensure_row_fn=None):
     now = time.time()
     max_items = max(1, int(limit))
     items = []
@@ -94,6 +99,8 @@ def collect_due_notify_retry_items(limit, pending_results, data_lock):
         for row in pending_results:
             if row.get('source') != '通知页面':
                 continue
+            if callable(ensure_row_fn):
+                ensure_row_fn(row)
             if bool(row.get('notify_replied', False)):
                 continue
             if str(row.get('notify_flow_stage', '') or '').strip().lower() != 'retry_waiting':
@@ -212,7 +219,7 @@ def schedule_notify_retry(
     return True, retry_at, f'已加入重试队列，{int(backoff_sec)}s 后重试'
 
 
-def mark_notify_reply_success(key, message, dm_message, *, pending_results, data_lock, save_state_cb, reply_time_text=''):
+def mark_notify_reply_success(key, message, dm_message, *, pending_results, data_lock, save_state_cb, reply_time_text='', ensure_row_fn=None):
     key = str(key or '').strip()
     if not key:
         return False
@@ -222,6 +229,8 @@ def mark_notify_reply_success(key, message, dm_message, *, pending_results, data
         for row in pending_results:
             if row.get('key') != key or row.get('source') != '通知页面':
                 continue
+            if callable(ensure_row_fn):
+                ensure_row_fn(row)
             row['notify_replied'] = True
             row['notify_reply_text'] = str(message or '')
             row['notify_dm_text'] = str(dm_message or '')

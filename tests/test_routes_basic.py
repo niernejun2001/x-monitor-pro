@@ -111,6 +111,11 @@ class RoutesBasicTests(unittest.TestCase):
         deps.msg_queue = queue.Queue()
         deps.drain_msg_queue = lambda collect_new_data=False: [{'id': 1}] if collect_new_data else []
         deps.is_reply_to_me_notification_item = lambda item: item.get('source') == '通知页面'
+        deps._ensure_notify_flow_fields = lambda row: row.update({
+            'notify_flow_stage': row.get('notify_flow_stage', ''),
+            'notify_retry_at': row.get('notify_retry_at', 0.0),
+            'notify_dm_text_generated': row.get('notify_dm_text_generated', ''),
+        }) or row
         return deps
 
     def _client(self):

@@ -175,6 +175,12 @@ def get_dm_conversation_text(tab):
 def conversation_contains_dm_text(tab, text):
     message = sanitize_dm_message_text(text)
     haystack = normalize_text_for_compare(get_dm_conversation_text(tab))
+    return conversation_snapshot_contains_dm_text(haystack, message)
+
+
+def conversation_snapshot_contains_dm_text(snapshot_text, text):
+    message = sanitize_dm_message_text(text)
+    haystack = normalize_text_for_compare(snapshot_text)
     needle = normalize_text_for_compare(message)
     if not haystack or not needle:
         return False
@@ -208,8 +214,26 @@ def count_dm_probe_occurrence(tab, probe_text):
     return haystack.count(needle)
 
 
+def count_dm_probe_occurrence_in_snapshot(snapshot_text, probe_text):
+    haystack = normalize_text_for_compare(snapshot_text)
+    needle = normalize_text_for_compare(probe_text)
+    if not haystack or not needle:
+        return 0
+    return haystack.count(needle)
+
+
 def count_dm_sent_markers(tab):
     haystack = normalize_text_for_compare(get_dm_conversation_text(tab))
+    if not haystack:
+        return 0
+    total = 0
+    for marker in ('已发送', 'sent'):
+        total += haystack.count(normalize_text_for_compare(marker))
+    return total
+
+
+def count_dm_sent_markers_in_snapshot(snapshot_text):
+    haystack = normalize_text_for_compare(snapshot_text)
     if not haystack:
         return 0
     total = 0
@@ -229,13 +253,13 @@ def confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15, message_t
         if current_snapshot:
             for probe in probes:
                 prev = int(before_counts.get(probe, 0))
-                now = count_dm_probe_occurrence(tab, probe)
+                now = count_dm_probe_occurrence_in_snapshot(current_snapshot, probe)
                 if now > prev:
                     return True
-            now_markers = count_dm_sent_markers(tab)
+            now_markers = count_dm_sent_markers_in_snapshot(current_snapshot)
             if now_markers > before_markers and current_snapshot != before_snapshot:
                 return True
-            if message_text and current_snapshot != before_snapshot and conversation_contains_dm_text(tab, message_text):
+            if message_text and current_snapshot != before_snapshot and conversation_snapshot_contains_dm_text(current_snapshot, message_text):
                 return True
         time.sleep(0.12)
     return False

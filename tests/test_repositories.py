@@ -15,6 +15,11 @@ class RepositoryTests(unittest.TestCase):
         deps.processed_users = {'@u1', '@u2'}
         deps.data_lock = threading.Lock()
         deps._set_runtime_attr = lambda name, value: setattr(deps, name, value)
+        deps._ensure_notify_flow_fields = lambda row: row.update({
+            'notify_flow_stage': row.get('notify_flow_stage', ''),
+            'notify_dm_text_generated': row.get('notify_dm_text_generated', ''),
+            'notify_retry_at': row.get('notify_retry_at', 0.0),
+        }) or row
         return deps
 
     def test_pending_results_repository_remove_and_clear(self):
@@ -33,6 +38,7 @@ class RepositoryTests(unittest.TestCase):
         idx, row = repo.find_notify_by_key('n1', copy_row=True)
         self.assertEqual(idx, 0)
         self.assertEqual(row['handle'], '@a')
+        self.assertIn('notify_dm_text_generated', row)
         updated = repo.update_notify_manual_reply('n1', 'reply', 'dm', dm_llm_enabled=True)
         self.assertTrue(updated)
         self.assertEqual(deps.pending_results[0]['notify_reply_text'], 'reply')

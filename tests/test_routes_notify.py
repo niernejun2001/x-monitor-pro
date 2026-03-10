@@ -69,6 +69,7 @@ class RoutesNotifyTests(unittest.TestCase):
         deps._record_reply_outcome = lambda handle, ok, err='': None
         deps._split_flow_error = lambda err: ('E_ERR', str(err))
         deps._resolve_notify_resume_stage = lambda item: 'reply_pending'
+        deps._ensure_notify_flow_fields = lambda row: row
         deps.send_notification_reply = (lambda item, message, dm_message='': (True, '')) if send_ok else (lambda item, message, dm_message='': (False, 'fail'))
         app = Flask(__name__)
         register_notify_routes(app, deps)

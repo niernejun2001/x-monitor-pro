@@ -42,6 +42,7 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.history_ids = set()
         deps.should_skip_duplicate_content = lambda handle, content: False
         deps.pending_results = []
+        deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
         deps.save_state = lambda: None
         deps.log_to_ui = lambda level, msg: None
@@ -82,6 +83,7 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.history_ids = set()
         deps.should_skip_duplicate_content = lambda handle, content: False
         deps.pending_results = []
+        deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
         deps.save_state = lambda: None
         logs = []
@@ -127,6 +129,7 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.history_ids = set()
         deps.should_skip_duplicate_content = lambda handle, content: False
         deps.pending_results = []
+        deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
         deps.save_state = lambda: None
         logs = []

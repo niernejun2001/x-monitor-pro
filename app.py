@@ -192,6 +192,7 @@ from xmonitor.services.notification_text import (
 )
 from xmonitor.services.notify_flow import (
     NOTIFY_FLOW_STAGE_ORDER,
+    ensure_notify_flow_fields as _ensure_notify_flow_fields,
     notify_stage_at_least as _notify_stage_at_least,
     notify_stage_rank as _notify_stage_rank,
     normalize_notify_flow_stage as _normalize_notify_flow_stage,
