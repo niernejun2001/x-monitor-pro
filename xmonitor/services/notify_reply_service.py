@@ -106,6 +106,9 @@ def send_notification_reply(item, message, deps, dm_message=""):
                 status_handle=item.get("status_handle", "") or item.get("handle", ""),
                 fallback_url=_get_status_link_from_item(item),
             )
+            saved_generated_dm_text = _sanitize_dm_message_text(
+                str(row_snapshot.get("notify_dm_text_generated", "") or "").strip()
+            )
             need_reply = not _notify_stage_at_least(resume_stage, "reply_sent")
             need_share = not _notify_stage_at_least(resume_stage, "share_link_ready")
             dm_progress = {
@@ -241,9 +244,25 @@ def send_notification_reply(item, message, deps, dm_message=""):
             if not dm_template_text:
                 dm_template_text = (dm_message_templates[0] if dm_message_templates else DM_FOLLOWUP_TEXT)
             dm_template_text = _sanitize_dm_message_text(dm_template_text)
+            generated_dm_text_cache = str(saved_generated_dm_text or "").strip()
+            generated_dm_meta_cache = {
+                "llm_used": bool(row_snapshot.get("notify_dm_llm_used", False)),
+                "latency_ms": int(row_snapshot.get("notify_dm_llm_latency_ms", 0) or 0),
+                "regen_attempt": int(row_snapshot.get("notify_dm_llm_regen_attempt", 0) or 0),
+            }
 
             def _build_dm_text_supplier():
                 def _supplier():
+                    nonlocal generated_dm_text_cache, generated_dm_meta_cache
+                    if generated_dm_text_cache:
+                        return True, generated_dm_text_cache, {
+                            "error_code": "",
+                            "error_detail": "",
+                            "llm_used": bool(generated_dm_meta_cache.get("llm_used", True)),
+                            "latency_ms": int(generated_dm_meta_cache.get("latency_ms", 0) or 0),
+                            "regen_attempt": int(generated_dm_meta_cache.get("regen_attempt", 0) or 0),
+                            "cached": True,
+                        }
                     if not DM_LLM_REWRITE_ENABLED:
                         return True, dm_template_text, {
                             "error_code": "",
@@ -264,6 +283,12 @@ def send_notification_reply(item, message, deps, dm_message=""):
                     ok_gen, dm_text_generated, meta = _generate_dm_text_with_llm(dm_template_text)
                     meta = meta or {}
                     if ok_gen:
+                        generated_dm_text_cache = _sanitize_dm_message_text(dm_text_generated)
+                        generated_dm_meta_cache = {
+                            "llm_used": bool(meta.get("llm_used", True)),
+                            "latency_ms": int(meta.get("latency_ms", 0) or 0),
+                            "regen_attempt": int(meta.get("regen_attempt", 1) or 1),
+                        }
                         notify_state_facade.update_flow_state(
                             task_key,
                             stage="dm_text_generating",
@@ -272,10 +297,10 @@ def send_notification_reply(item, message, deps, dm_message=""):
                             extra={
                                 "notify_share_link": share_link,
                                 "notify_dm_template_text": dm_template_text,
-                                "notify_dm_text_generated": dm_text_generated,
-                                "notify_dm_llm_used": bool(meta.get("llm_used", True)),
-                                "notify_dm_llm_latency_ms": int(meta.get("latency_ms", 0) or 0),
-                                "notify_dm_llm_regen_attempt": int(meta.get("regen_attempt", 1) or 1),
+                                "notify_dm_text_generated": generated_dm_text_cache,
+                                "notify_dm_llm_used": bool(generated_dm_meta_cache.get("llm_used", True)),
+                                "notify_dm_llm_latency_ms": int(generated_dm_meta_cache.get("latency_ms", 0) or 0),
+                                "notify_dm_llm_regen_attempt": int(generated_dm_meta_cache.get("regen_attempt", 1) or 1),
                                 "notify_dm_llm_error_code": "",
                                 "notify_dm_llm_error_detail": "",
                             },
@@ -299,7 +324,7 @@ def send_notification_reply(item, message, deps, dm_message=""):
                             },
                             save=True,
                         )
-                    return ok_gen, dm_text_generated, meta
+                    return ok_gen, (generated_dm_text_cache if ok_gen else dm_text_generated), meta
 
                 return _supplier
 

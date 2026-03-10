@@ -136,6 +136,7 @@ from xmonitor.services.dm_runtime import (
 from xmonitor.services.dm_common import (
     build_dm_message_probes as _build_dm_message_probes,
     confirm_dm_message_sent as _confirm_dm_message_sent,
+    conversation_contains_dm_text as _conversation_contains_dm_text,
     count_dm_probe_occurrence as _count_dm_probe_occurrence,
     count_dm_sent_markers as _count_dm_sent_markers,
     extract_status_id_candidates_from_text as _extract_status_id_candidates_from_text,
@@ -676,10 +677,9 @@ TAB_OPEN_JITTER_MAX_SEC = 1.2
 ARTICLE_REORDER_CHUNK_MIN = 3
 ARTICLE_REORDER_CHUNK_MAX = 7
 DM_FOLLOWUP_TEXT = (
-    "老板您好，我是 懒猫微服 CEO 王勇，感谢您的关注与支持。\n"
-    "如需了解更详细的产品资料，欢迎添加我们的工程师微信 17612774028，"
-    "我们将为您提供一对一的专业介绍与支持，工程师告诉您购买方式~\n"
-    "备注推特ID给您优惠。"
+    "您好，我是懒猫微服的王勇，最近看您有在关注我们的产品，觉得挺有意思的。\n"
+    "如果您想了解更多，欢迎添加我们工程师微信 17612774028，他会直接给您介绍购买方式。\n"
+    "备注推特ID会有一些优惠。"
 )
 DEFAULT_NOTIFY_REPLY_TEMPLATES = [
     '老板我给您私信了',
@@ -699,6 +699,9 @@ DM_LLM_REWRITE_DEFAULT_PROMPT = (
     "4. 必须明显重写句式，不得大段复用原句；连续复用原文不得超过8个字。\n"
     "5. 在不改变核心信息的前提下，可替换同义表达并重排语序。\n"
     "6. 避免模板腔，不要总用“您好，我是……感谢关注”这类固定开头。\n"
+    "7. 必须保持主语、宾语、关注关系和动作方向不变，不能把用户关注我们的产品改成我们关注用户的产品。\n"
+    "8. 不能把“最近看您有在关注我们的产品”改写成“我在看你们的产品”或任何类似的角色反转表达。\n"
+    "9. 如果模板里表达的是用户在关注我们的产品，改写后也必须保持这个含义。\n"
     "模板如下：\n"
     "{template}"
 )

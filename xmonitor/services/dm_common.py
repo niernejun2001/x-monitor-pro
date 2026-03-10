@@ -172,6 +172,32 @@ def get_dm_conversation_text(tab):
         return ""
 
 
+def conversation_contains_dm_text(tab, text):
+    message = sanitize_dm_message_text(text)
+    haystack = normalize_text_for_compare(get_dm_conversation_text(tab))
+    needle = normalize_text_for_compare(message)
+    if not haystack or not needle:
+        return False
+    if needle in haystack:
+        return True
+
+    probes = build_dm_message_probes(message)
+    if not probes:
+        return False
+
+    hit_count = 0
+    for probe in probes:
+        probe_norm = normalize_text_for_compare(probe)
+        if probe_norm and probe_norm in haystack:
+            hit_count += 1
+
+    if len(probes) == 1:
+        return hit_count >= 1
+    if len(needle) >= 20:
+        return hit_count >= 2
+    return hit_count >= 1
+
+
 def count_dm_probe_occurrence(tab, probe_text):
     if not tab or not probe_text:
         return 0
@@ -192,7 +218,7 @@ def count_dm_sent_markers(tab):
     return total
 
 
-def confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
+def confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15, message_text=''):
     if not probes:
         return False
     before_snapshot = normalize_text_for_compare(str((before_counts or {}).get('__snapshot', '') or ''))
@@ -208,6 +234,8 @@ def confirm_dm_message_sent(tab, before_counts, probes, wait_sec=1.15):
                     return True
             now_markers = count_dm_sent_markers(tab)
             if now_markers > before_markers and current_snapshot != before_snapshot:
+                return True
+            if message_text and current_snapshot != before_snapshot and conversation_contains_dm_text(tab, message_text):
                 return True
         time.sleep(0.12)
     return False

@@ -52,6 +52,38 @@ class DMRecoveryServiceTests(unittest.TestCase):
         self.assertIn('不可私信', err)
         self.assertTrue(any('私信关闭已确认' in msg for _, msg in logs))
 
+    def test_run_dm_send_sequence_once_skips_duplicate_text_send_when_message_exists(self):
+        sent_payloads = []
+        marks = []
+        deps = types.SimpleNamespace(
+            _open_dm_editor_for_handle=lambda tab, handle: (object(), ''),
+            _send_dm_message_with_retry=lambda tab, text, handle='': (sent_payloads.append(text) or (True, '')),
+            _is_dm_closed_error_text=lambda msg: False,
+            _confirm_dm_closed_dual_stage=lambda tab, handle: (False, ''),
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            log_to_ui=lambda level, msg: None,
+            _sanitize_dm_message_text=lambda text: str(text or '').strip(),
+            _prepare_reply_prompt_guard=lambda tab, stage: None,
+            _humanized_gap_between_dm_messages=lambda tab: None,
+            _conversation_contains_dm_text=lambda tab, text: text == 'hello second',
+            DM_LLM_DOWN_FALLBACK_TEMPLATE=True,
+            _is_dm_llm_fallback_allowed=lambda code, detail: False,
+        )
+        ok, err, dm_closed = run_dm_send_sequence_once(
+            tab=types.SimpleNamespace(),
+            dm_handle='@demo',
+            share_link='https://x.com/demo/status/1',
+            dm_text='hello second',
+            deps=deps,
+            mark_func=lambda stage: marks.append(stage),
+        )
+        self.assertTrue(ok)
+        self.assertFalse(dm_closed)
+        self.assertEqual(err, '')
+        self.assertEqual(sent_payloads, ['https://x.com/demo/status/1'])
+        self.assertIn('send_dm_link', marks)
+        self.assertIn('send_dm_text', marks)
+
 
 if __name__ == '__main__':
     unittest.main()

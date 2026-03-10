@@ -123,6 +123,12 @@ def run_dm_send_sequence_once(
                 dm_text_final = deps._sanitize_dm_message_text(dm_text_generated)
         if not dm_text_final:
             return False, 'E_DM_TEXT_EMPTY: 第二条私信文案为空', False
+        if deps._conversation_contains_dm_text(tab, dm_text_final):
+            progress['text_sent'] = True
+            if callable(mark_func):
+                mark_func('send_dm_text')
+            deps.log_to_ui('debug', '📨 检测到第二条私信文案已存在当前会话，跳过重复发送')
+            return True, '', False
         deps._prepare_reply_prompt_guard(tab, '第二条私信前')
         deps._humanized_gap_between_dm_messages(tab)
         ok_dm_2, err_dm_2 = deps._send_dm_message_with_retry(tab, dm_text_final, handle=dm_handle)

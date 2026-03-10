@@ -361,6 +361,94 @@ def send_dm_message(tab, text, deps):
         except Exception:
             return True
 
+    def _clear_composer_after_success(editor_el):
+        cleared = False
+        try:
+            cleared = bool(tab.run_js(
+                """
+                const root = arguments[0];
+                if (!root) return true;
+                const resolveTarget = (el) => {
+                  if (!el) return null;
+                  if (el.value !== undefined || el.isContentEditable || el.getAttribute('contenteditable') === 'true') {
+                    return el;
+                  }
+                  return el.querySelector(
+                    'div[role="textbox"][contenteditable="true"],[data-testid="dmComposerTextInput"] [contenteditable="true"],textarea[data-testid="dm-composer-textarea"],textarea'
+                  );
+                };
+                const dispatchAll = (el) => {
+                  try {
+                    el.dispatchEvent(new InputEvent('beforeinput', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+                  } catch (e) {}
+                  try {
+                    el.dispatchEvent(new InputEvent('input', { bubbles: true, inputType: 'deleteContentBackward', data: null }));
+                  } catch (e) {
+                    try { el.dispatchEvent(new Event('input', { bubbles: true })); } catch (_) {}
+                  }
+                  try { el.dispatchEvent(new Event('change', { bubbles: true })); } catch (e) {}
+                  try { el.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Backspace', code: 'Backspace' })); } catch (e) {}
+                };
+                const setValue = (el, val) => {
+                  if (el.value !== undefined) {
+                    const proto = Object.getPrototypeOf(el);
+                    const desc = proto ? Object.getOwnPropertyDescriptor(proto, 'value') : null;
+                    if (desc && typeof desc.set === 'function') {
+                      desc.set.call(el, val);
+                    } else {
+                      el.value = val;
+                    }
+                  } else {
+                    el.textContent = val;
+                  }
+                  dispatchAll(el);
+                };
+                const el = resolveTarget(root);
+                if (!el) return true;
+                try { el.focus(); } catch (e) {}
+                setValue(el, '');
+                let remain = String((el.value !== undefined) ? (el.value || '') : (el.textContent || '')).trim();
+                if (remain) {
+                  try {
+                    const sel = window.getSelection && window.getSelection();
+                    if (sel) {
+                      sel.removeAllRanges();
+                      const range = document.createRange();
+                      range.selectNodeContents(el);
+                      sel.addRange(range);
+                    }
+                  } catch (e) {}
+                  try { document.execCommand('delete', false, null); } catch (e) {}
+                  dispatchAll(el);
+                  remain = String((el.value !== undefined) ? (el.value || '') : (el.textContent || '')).trim();
+                }
+                try { el.blur(); } catch (e) {}
+                return remain.length === 0;
+                """,
+                editor_el,
+            ))
+        except Exception:
+            cleared = False
+        _clear_dm_binding_marks()
+        if not cleared:
+            try:
+                editor_el.input('', clear=True)
+                cleared = _composer_cleared(editor_el)
+            except Exception:
+                cleared = False
+        return bool(cleared)
+
+    def _finish_send_success(editor_el, *, confirmed=False, link_only=False, success_text=''):
+        cleaned = _clear_composer_after_success(editor_el)
+        if cleaned:
+            if success_text:
+                deps.log_headless_debug(success_text)
+            return True, ''
+        if confirmed or link_only:
+            deps.log_to_ui('warn', '⚠️ 私信已确认发送成功，但发送框残留内容；已按成功收口并阻止后续重贴')
+            return True, ''
+        return False, 'E_DM_POST_SEND_DIRTY_COMPOSER: 私信已发送但输入框仍残留内容'
+
     def _editor_has_text(editor_el, expected_text):
         try:
             remain = tab.run_js(
@@ -738,18 +826,29 @@ def send_dm_message(tab, text, deps):
                     before_counts,
                     probes,
                     wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                    message_text=dm_text,
                 )
                 if _composer_cleared(editor):
                     if link_only_mode:
-                        return True, ''
+                        return _finish_send_success(editor, confirmed=confirmed, link_only=True)
                     if confirmed:
-                        deps.log_headless_debug('私信文本发送后输入框已清空，且已确认消息落库')
-                        return True, ''
+                        return _finish_send_success(
+                            editor,
+                            confirmed=True,
+                            success_text='私信文本发送后输入框已清空，且已确认消息落库',
+                        )
                     last_err = '文本私信输入框已清空，但未确认消息落库'
                     continue
                 if confirmed:
-                    deps.log_headless_debug('私信发送后输入框未清空，但已确认消息落库，按成功处理')
-                    return True, ''
+                    ok_finish, finish_err = _finish_send_success(
+                        editor,
+                        confirmed=True,
+                        success_text='私信发送后输入框未清空，但已确认消息落库，已清理发送框后按成功处理',
+                    )
+                    if ok_finish:
+                        return True, ''
+                    last_err = finish_err
+                    continue
                 if deps.DM_ASSUME_SUCCESS_AFTER_CLICK:
                     deps.log_to_ui('warn', '⚠️ 私信点击发送后状态不确定，但当前配置禁止按成功处理')
                 last_err = '点击私信发送后输入框未清空'
@@ -780,16 +879,21 @@ def send_dm_message(tab, text, deps):
                     before_counts,
                     probes,
                     wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                    message_text=dm_text,
                 )
                 if _composer_cleared(editor):
                     if link_only_mode:
-                        return True, ''
+                        return _finish_send_success(editor, confirmed=confirmed, link_only=True)
                     if confirmed:
-                        return True, ''
+                        return _finish_send_success(editor, confirmed=True)
                     last_err = '文本私信Enter后输入框已清空，但未确认消息落库'
                     continue
                 if confirmed:
-                    return True, ''
+                    ok_finish, finish_err = _finish_send_success(editor, confirmed=True)
+                    if ok_finish:
+                        return True, ''
+                    last_err = finish_err
+                    continue
             last_err = '发送按钮未出现或未激活，且Enter兜底未确认发送'
 
         deps._dm_humanized_idle(tab, 0.06, 0.18, '私信发送DOM兜底前')
@@ -830,18 +934,29 @@ def send_dm_message(tab, text, deps):
                     before_counts,
                     probes,
                     wait_sec=max(deps.DM_SEND_CONFIRM_WAIT_SEC, 1.8 if not link_only_mode else deps.DM_SEND_CONFIRM_WAIT_SEC),
+                    message_text=dm_text,
                 )
                 if _composer_cleared(editor):
                     if link_only_mode:
-                        return True, ''
+                        return _finish_send_success(editor, confirmed=confirmed, link_only=True)
                     if confirmed:
-                        deps.log_headless_debug('DOM文本发送后输入框已清空，且已确认消息落库')
-                        return True, ''
+                        return _finish_send_success(
+                            editor,
+                            confirmed=True,
+                            success_text='DOM文本发送后输入框已清空，且已确认消息落库',
+                        )
                     last_err = 'DOM文本发送后输入框已清空，但未确认消息落库'
                     continue
                 if confirmed:
-                    deps.log_headless_debug('DOM发送后已确认消息落库，按成功处理')
-                    return True, ''
+                    ok_finish, finish_err = _finish_send_success(
+                        editor,
+                        confirmed=True,
+                        success_text='DOM发送后已确认消息落库，已清理发送框后按成功处理',
+                    )
+                    if ok_finish:
+                        return True, ''
+                    last_err = finish_err
+                    continue
                 if deps.DM_ASSUME_SUCCESS_AFTER_CLICK:
                     deps.log_to_ui('warn', '⚠️ 私信DOM发送后状态不确定，但当前配置禁止按成功处理')
                 last_err = 'DOM点击发送后输入框未清空'
