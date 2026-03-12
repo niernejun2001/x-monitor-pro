@@ -692,17 +692,18 @@ DEFAULT_NOTIFY_REPLY_TEMPLATES = [
 DEFAULT_DM_TEMPLATES = [DM_FOLLOWUP_TEXT]
 DM_LLM_REWRITE_DEFAULT_PROMPT = (
     "你是私信文案改写助手。\n"
-    "任务：将给定模板改写成自然、简洁、礼貌、口语化的中文私信。\n"
+    "任务：将给定模板做轻度润色，生成自然、简洁、礼貌、口语化的中文私信。\n"
     "要求：\n"
     "1. 不要改变核心业务信息与联系方式。\n"
     "2. 不要输出解释，只输出最终私信正文。\n"
     "3. 语气真诚，不夸张，不添加模板中没有的承诺。\n"
-    "4. 必须明显重写句式，不得大段复用原句；连续复用原文不得超过8个字。\n"
-    "5. 在不改变核心信息的前提下，可替换同义表达并重排语序。\n"
-    "6. 避免模板腔，不要总用“您好，我是……感谢关注”这类固定开头。\n"
-    "7. 必须保持主语、宾语、关注关系和动作方向不变，不能把用户关注我们的产品改成我们关注用户的产品。\n"
-    "8. 不能把“最近看您有在关注我们的产品”改写成“我在看你们的产品”或任何类似的角色反转表达。\n"
-    "9. 如果模板里表达的是用户在关注我们的产品，改写后也必须保持这个含义。\n"
+    "4. 只做轻度润色和小幅度改写，优先保留原句主干、信息顺序和核心表达，不要大幅重写。\n"
+    "5. 如果模板本身已经自然，可以只微调少数字词或语气词，不要求强行改写。\n"
+    "6. 在不改变核心信息的前提下，可少量替换同义词、顺一下语序，但不要整段改写。\n"
+    "7. 避免模板腔，但不要为了去模板腔而改变原句意思。\n"
+    "8. 必须保持主语、宾语、关注关系和动作方向不变，不能把用户关注我们的产品改成我们关注用户的产品。\n"
+    "9. 不能把“最近看您有在关注我们的产品”改写成“我在看你们的产品”或任何类似的角色反转表达。\n"
+    "10. 如果模板里表达的是用户在关注我们的产品，改写后也必须保持这个含义。\n"
     "模板如下：\n"
     "{template}"
 )
@@ -718,14 +719,14 @@ except Exception:
     DM_LLM_REWRITE_MAX_CHARS = 260
 DM_LLM_REWRITE_MAX_CHARS = max(80, min(1200, DM_LLM_REWRITE_MAX_CHARS))
 try:
-    DM_LLM_REWRITE_TEMPERATURE = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_TEMPERATURE", "0.7"))
+    DM_LLM_REWRITE_TEMPERATURE = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_TEMPERATURE", "0.35"))
 except Exception:
-    DM_LLM_REWRITE_TEMPERATURE = 0.7
+    DM_LLM_REWRITE_TEMPERATURE = 0.35
 DM_LLM_REWRITE_TEMPERATURE = max(0.0, min(1.2, DM_LLM_REWRITE_TEMPERATURE))
 try:
-    DM_LLM_REWRITE_MAX_REGEN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_REGEN", "2"))
+    DM_LLM_REWRITE_MAX_REGEN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_REGEN", "1"))
 except Exception:
-    DM_LLM_REWRITE_MAX_REGEN = 2
+    DM_LLM_REWRITE_MAX_REGEN = 1
 DM_LLM_REWRITE_MAX_REGEN = max(0, min(5, DM_LLM_REWRITE_MAX_REGEN))
 try:
     DM_LLM_REWRITE_DEDUPE_SIZE = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_DEDUPE_SIZE", "200"))
@@ -733,20 +734,20 @@ except Exception:
     DM_LLM_REWRITE_DEDUPE_SIZE = 200
 DM_LLM_REWRITE_DEDUPE_SIZE = max(50, min(1000, DM_LLM_REWRITE_DEDUPE_SIZE))
 try:
-    DM_LLM_REWRITE_SIMILARITY_MAX = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_SIMILARITY_MAX", "0.86"))
+    DM_LLM_REWRITE_SIMILARITY_MAX = float(os.environ.get("XMONITOR_DM_LLM_REWRITE_SIMILARITY_MAX", "0.96"))
 except Exception:
-    DM_LLM_REWRITE_SIMILARITY_MAX = 0.86
+    DM_LLM_REWRITE_SIMILARITY_MAX = 0.96
 DM_LLM_REWRITE_SIMILARITY_MAX = max(0.60, min(0.98, DM_LLM_REWRITE_SIMILARITY_MAX))
 try:
-    DM_LLM_REWRITE_MIN_DIFF_CHARS = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MIN_DIFF_CHARS", "18"))
+    DM_LLM_REWRITE_MIN_DIFF_CHARS = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MIN_DIFF_CHARS", "6"))
 except Exception:
-    DM_LLM_REWRITE_MIN_DIFF_CHARS = 18
-DM_LLM_REWRITE_MIN_DIFF_CHARS = max(8, min(120, DM_LLM_REWRITE_MIN_DIFF_CHARS))
+    DM_LLM_REWRITE_MIN_DIFF_CHARS = 6
+DM_LLM_REWRITE_MIN_DIFF_CHARS = max(4, min(120, DM_LLM_REWRITE_MIN_DIFF_CHARS))
 try:
-    DM_LLM_REWRITE_MAX_SHARED_RUN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_SHARED_RUN", "14"))
+    DM_LLM_REWRITE_MAX_SHARED_RUN = int(os.environ.get("XMONITOR_DM_LLM_REWRITE_MAX_SHARED_RUN", "32"))
 except Exception:
-    DM_LLM_REWRITE_MAX_SHARED_RUN = 14
-DM_LLM_REWRITE_MAX_SHARED_RUN = max(6, min(28, DM_LLM_REWRITE_MAX_SHARED_RUN))
+    DM_LLM_REWRITE_MAX_SHARED_RUN = 32
+DM_LLM_REWRITE_MAX_SHARED_RUN = max(8, min(64, DM_LLM_REWRITE_MAX_SHARED_RUN))
 DM_CLOSED_FALLBACK_REPLY_TEXT = "大佬 您没有开私信 有需要可以给我私信呀"
 DM_REJECT_NEW_MESSAGE_OVERLAY = str(
     os.environ.get("XMONITOR_DM_REJECT_NEW_MESSAGE_OVERLAY", "1")

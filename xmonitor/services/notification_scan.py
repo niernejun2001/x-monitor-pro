@@ -113,7 +113,7 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes, deps, allow_
                         tweet_texts = deps._collect_notification_tweet_texts(article)
                         trace_logs.append(
                             f'A{idx:02d} skip=non_reply status_id=None is_reply_like={is_reply_like} '
-                            f'status_hint={status_hint or '-'} tweetText={tweet_texts or '-'} hrefs={hrefs} text={trace_sample}'
+                            f"status_hint={status_hint or '-'} tweetText={tweet_texts or '-'} hrefs={hrefs} text={trace_sample}"
                         )
                     continue
                 if not status_id and is_reply_like:

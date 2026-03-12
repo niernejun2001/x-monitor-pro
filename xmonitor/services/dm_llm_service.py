@@ -111,6 +111,30 @@ def dm_rewrite_is_too_similar(source_text, generated_text, deps):
     return bool(too_similar), score, diff_chars, shared_run
 
 
+def dm_rewrite_has_subject_inversion(source_text, generated_text, deps):
+    src = deps._normalize_text_for_compare(source_text or '')
+    dst = deps._normalize_text_for_compare(generated_text or '')
+    if not src or not dst:
+        return False, ''
+
+    patterns = [
+        (
+            ['看您有在关注我们的产品', '您有在关注我们的产品', '您在关注我们的产品'],
+            ['我在看你们的产品', '最近在看你们的产品', '我最近在看你们的产品'],
+            'user_interest_inverted_to_self_interest',
+        ),
+        (
+            ['咱们的产品', '我们的产品'],
+            ['你们的产品'],
+            'our_product_inverted_to_your_product',
+        ),
+    ]
+    for src_tokens, dst_tokens, reason in patterns:
+        if any(token in src for token in src_tokens) and any(token in dst for token in dst_tokens):
+            return True, reason
+    return False, ''
+
+
 def record_dm_llm_rewrite_signature(sig, deps):
     if not sig:
         return
@@ -156,12 +180,12 @@ def generate_dm_text_with_llm(template_text, deps):
         'latency_ms': 0,
     }
     style_hints = [
-        '开头不要使用“您好，我是…”，换成自然一点的开场',
-        '减少“感谢您的关注和支持”这种固定套话，改成同义表达',
-        '一句一意，优先短句，读起来像真人即兴输入',
-        '先给价值点，再给联系方式，结尾一句行动建议',
-        '语气礼貌但干练，不要出现公文感',
-        '保持销售目标明确，但像聊天而不是公告',
+        '优先保留原句结构，只做轻微顺句和润色',
+        '保留原有主句和表达方向，只微调少数字词',
+        '尽量不要整段重写，像人工顺一遍句子即可',
+        '保持礼貌自然，但不要增加新的意思',
+        '允许保留大部分原句，只修语气和流畅度',
+        '避免夸张语气词，控制在轻度改写范围内',
     ]
 
     for attempt in range(1, attempts + 1):
@@ -190,6 +214,15 @@ def generate_dm_text_with_llm(template_text, deps):
             copied_phrase = deps._dm_rewrite_contains_forbidden_phrase(generated, forbidden_phrases)
             if copied_phrase:
                 last_meta = {'error_code': 'E_DM_LLM_COPY_PHRASE', 'error_detail': f'命中原句短语复用: {copied_phrase}', 'llm_used': True, 'latency_ms': latency_ms}
+                continue
+            inverted, inversion_reason = dm_rewrite_has_subject_inversion(template_clean, generated, deps)
+            if inverted:
+                last_meta = {
+                    'error_code': 'E_DM_LLM_SUBJECT_INVERTED',
+                    'error_detail': f'改写出现主语/对象反转: {inversion_reason}',
+                    'llm_used': True,
+                    'latency_ms': latency_ms,
+                }
                 continue
             too_similar, sim_score, diff_chars, shared_run = deps._dm_rewrite_is_too_similar(template_clean, generated)
             if too_similar:

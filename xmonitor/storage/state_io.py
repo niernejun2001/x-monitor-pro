@@ -142,19 +142,33 @@ def _apply_state_payload(deps, data):
     deps.LLM_FILTER_PROMPT_TEMPLATE = str(data.get('llm_filter_prompt_template', deps.LLM_FILTER_PROMPT_TEMPLATE) or '').strip()
     deps.LLM_INTENT_PROMPT_TEMPLATE = str(data.get('llm_intent_prompt_template', deps.LLM_INTENT_PROMPT_TEMPLATE) or '').strip()
     deps.DM_LLM_REWRITE_ENABLED = bool(data.get('dm_llm_rewrite_enabled', deps.DM_LLM_REWRITE_ENABLED))
-    deps.DM_LLM_REWRITE_PROMPT_TEMPLATE = str(data.get('dm_llm_rewrite_prompt_template', deps.DM_LLM_REWRITE_PROMPT_TEMPLATE) or '').strip() or deps.DM_LLM_REWRITE_DEFAULT_PROMPT
+    saved_dm_prompt = str(data.get('dm_llm_rewrite_prompt_template', deps.DM_LLM_REWRITE_PROMPT_TEMPLATE) or '').strip()
+    if (
+        saved_dm_prompt
+        and '必须明显重写句式' in saved_dm_prompt
+        and '不要大幅重写' not in saved_dm_prompt
+        and '保持主语、宾语、关注关系和动作方向不变' not in saved_dm_prompt
+    ):
+        saved_dm_prompt = deps.DM_LLM_REWRITE_DEFAULT_PROMPT
+    deps.DM_LLM_REWRITE_PROMPT_TEMPLATE = saved_dm_prompt or deps.DM_LLM_REWRITE_DEFAULT_PROMPT
     try:
         deps.DM_LLM_REWRITE_MAX_CHARS = int(data.get('dm_llm_rewrite_max_chars', deps.DM_LLM_REWRITE_MAX_CHARS))
     except Exception:
         pass
     deps.DM_LLM_REWRITE_MAX_CHARS = max(80, min(1200, int(deps.DM_LLM_REWRITE_MAX_CHARS)))
     try:
-        deps.DM_LLM_REWRITE_TEMPERATURE = float(data.get('dm_llm_rewrite_temperature', deps.DM_LLM_REWRITE_TEMPERATURE))
+        loaded_temp = float(data.get('dm_llm_rewrite_temperature', deps.DM_LLM_REWRITE_TEMPERATURE))
+        if abs(loaded_temp - 0.7) < 1e-9:
+            loaded_temp = deps.DM_LLM_REWRITE_TEMPERATURE
+        deps.DM_LLM_REWRITE_TEMPERATURE = loaded_temp
     except Exception:
         pass
     deps.DM_LLM_REWRITE_TEMPERATURE = max(0.0, min(1.2, float(deps.DM_LLM_REWRITE_TEMPERATURE)))
     try:
-        deps.DM_LLM_REWRITE_MAX_REGEN = int(data.get('dm_llm_rewrite_max_regen', deps.DM_LLM_REWRITE_MAX_REGEN))
+        loaded_regen = int(data.get('dm_llm_rewrite_max_regen', deps.DM_LLM_REWRITE_MAX_REGEN))
+        if loaded_regen == 2:
+            loaded_regen = deps.DM_LLM_REWRITE_MAX_REGEN
+        deps.DM_LLM_REWRITE_MAX_REGEN = loaded_regen
     except Exception:
         pass
     deps.DM_LLM_REWRITE_MAX_REGEN = max(0, min(5, int(deps.DM_LLM_REWRITE_MAX_REGEN)))
