@@ -62,6 +62,13 @@ def inspect_direct_compose_picker_state(tab, handle_norm):
               ) {
                 searchScene = true;
               }
+              if (
+                handle &&
+                (rootText.includes('@' + handle) || rootText.includes(handle)) &&
+                blockedHints.some((k) => rootText.includes(k))
+              ) {
+                blockedMatch = true;
+              }
               if (noResultHints.some((k) => rootText.includes(k))) {
                 noResults = true;
               }

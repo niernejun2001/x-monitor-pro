@@ -143,6 +143,14 @@ def open_dm_editor_for_handle(tab, handle, deps, ignore_cached_unavailable=False
 
             recipient_input = _wait_first_visible(tab, recipient_input_selectors, timeout=2.8, poll=0.1)
             if not recipient_input:
+                if try_rescue_dm_popup(tab, handle_norm, log_headless_debug, log_to_ui):
+                    recipient_input = _wait_first_visible(tab, recipient_input_selectors, timeout=1.8, poll=0.1)
+                if not recipient_input:
+                    search_closed, search_state = _compose_search_indicates_closed()
+                    if search_closed:
+                        entry_stage = f"recipient_input_closed_{idx}"
+                        log_to_ui("debug", f"📨 未找到收件人输入框且命中禁发提示，判定不可私信: @{handle_norm} state={search_state}")
+                        return None, "该用户当前不可私信（新建私信搜索无结果）"
                 entry_stage = f"recipient_input_missing_{idx}"
                 continue
 
