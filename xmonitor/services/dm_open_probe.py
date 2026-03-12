@@ -29,12 +29,25 @@ def inspect_direct_compose_picker_state(tab, handle_norm):
               '搜索无结果',
             ];
             const nextHints = ['next', '下一步', '继续', '开始'];
+            const blockedHints = [
+              '不能向',
+              '无法向',
+              '不可向',
+              '不能给',
+              '无法给',
+              'cannot send direct messages',
+              'cannot message',
+              "can't message",
+              "can't be messaged",
+              'unable to message',
+            ];
             let searchScene = false;
             let noResults = false;
             let candidateCount = 0;
             let exactMatch = false;
             let nextVisible = false;
             let nextDisabled = false;
+            let blockedMatch = false;
             let typedValue = '';
 
             for (const root of roots) {
@@ -77,6 +90,13 @@ def inspect_direct_compose_picker_state(tab, handle_norm):
                   }
                   continue;
                 }
+                if (
+                  handle &&
+                  (txt.includes('@' + handle) || txt.includes(handle)) &&
+                  blockedHints.some((k) => txt.includes(k))
+                ) {
+                  blockedMatch = true;
+                }
                 candidateCount += 1;
                 if (handle && (txt.includes('@' + handle) || txt.includes(handle))) {
                   exactMatch = true;
@@ -91,6 +111,7 @@ def inspect_direct_compose_picker_state(tab, handle_norm):
               exactMatch: !!exactMatch,
               nextVisible: !!nextVisible,
               nextDisabled: !!nextDisabled,
+              blockedMatch: !!blockedMatch,
               typedValue: String(typedValue || ''),
             };
             """,
@@ -105,6 +126,7 @@ def inspect_direct_compose_picker_state(tab, handle_norm):
         'exact_match': bool(state.get('exactMatch')),
         'next_visible': bool(state.get('nextVisible')),
         'next_disabled': bool(state.get('nextDisabled')),
+        'blocked_match': bool(state.get('blockedMatch')),
         'typed_value': str(state.get('typedValue', '') or '').strip().lower(),
     }
 
@@ -117,8 +139,11 @@ def direct_compose_state_indicates_closed(state, handle_norm):
     candidate_count = int((state or {}).get('candidate_count', 0) or 0)
     next_visible = bool((state or {}).get('next_visible'))
     next_disabled = bool((state or {}).get('next_disabled'))
+    blocked_match = bool((state or {}).get('blocked_match'))
     search_scene = bool((state or {}).get('search_scene'))
     typed_handle = bool(handle_norm) and (handle_norm in typed_value)
+    if blocked_match and typed_handle:
+        return True
     if no_results and typed_handle:
         return True
     if search_scene and typed_handle and (not exact_match) and candidate_count <= 0 and next_visible and next_disabled:

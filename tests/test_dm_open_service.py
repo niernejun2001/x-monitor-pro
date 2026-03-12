@@ -40,6 +40,19 @@ class DMOpenServiceTests(unittest.TestCase):
         }
         self.assertFalse(direct_compose_state_indicates_closed(state, 'designbyjl'))
 
+    def test_blocked_match_candidate_is_closed(self):
+        state = {
+            'search_scene': True,
+            'no_results': False,
+            'candidate_count': 1,
+            'exact_match': True,
+            'next_visible': True,
+            'next_disabled': True,
+            'blocked_match': True,
+            'typed_value': '@xufei2022',
+        }
+        self.assertTrue(direct_compose_state_indicates_closed(state, 'Xufei2022'))
+
 
 if __name__ == '__main__':
     unittest.main()
