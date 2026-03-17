@@ -93,6 +93,7 @@ class RoutesBasicTests(unittest.TestCase):
         deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = ''
         deps.NOTIFICATION_REPLY_ONLY_MODE = True
         deps._build_notify_tts_runtime_payload = lambda include_secrets=True: {'notify_tts_enabled': False}
+        deps._build_notify_server_audio_runtime_payload = lambda: {'notify_server_audio_enabled': False, 'notify_server_audio_ready': False}
         deps._build_twitter_cli_runtime_payload = lambda: {'twitter_cli_enabled': True, 'twitter_cli_available': True}
         deps._get_twitter_cli_status = lambda verify=False: {'status': 'ok', 'verify': bool(verify), 'authenticated': bool(verify)}
         deps._fetch_twitter_cli_tweet_detail = lambda tweet_id, max_count=8, force_refresh=False: {

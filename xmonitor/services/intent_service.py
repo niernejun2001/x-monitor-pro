@@ -102,17 +102,32 @@ def is_business_consult_signal(content, deps):
     if not text:
         return False
     text_low = text.lower()
+    compact = re.sub(r'\s+', '', unicodedata.normalize('NFKC', text_low))
     consult_hits = find_keyword_hits(text_low, deps.INTENT_CONSULT_KEYWORDS)
     if not consult_hits:
         return False
     product_hits = find_keyword_hits(text_low, deps.INTENT_PRODUCT_KEYWORDS)
     contact_hits = find_keyword_hits(text_low, deps.INTENT_CONTACT_KEYWORDS)
     has_qmark = ('?' in text) or ('？' in text)
+    short_consult_phrases = (
+        '想了解',
+        '了解下',
+        '了解一下',
+        '咨询下',
+        '咨询一下',
+        '请教下',
+        '请教一下',
+        '问下',
+        '问一下',
+    )
+    polite_titles = ('老板', '老闆', '大佬', '佬', '哥', '姐')
     if product_hits:
         return True
     if contact_hits and any(k in text_low for k in ['咨询', '了解', '报价', '价格', '购买', '试用', '部署', '开通', '合作']):
         return True
     if has_qmark and any(k in text_low for k in ['企业版', '私有化', '部署', '试用', '采购', '算力', '性能']):
+        return True
+    if any(title in compact for title in polite_titles) and any(phrase in compact for phrase in short_consult_phrases):
         return True
     return False
 

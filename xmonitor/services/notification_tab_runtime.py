@@ -119,6 +119,10 @@ def scan_persistent_notification_tab(blocked_users, deps, max_recent_minutes=Non
                     deps._ensure_notify_flow_fields(item)
                     deps.pending_results.append(item)
                 deps.enqueue_new_data(item)
+                try:
+                    deps._enqueue_notify_server_audio(item)
+                except Exception as audio_err:
+                    deps.log_to_ui('warn', f'🔊 [ServerAudio] 通知播报入队失败: {audio_err}')
                 new_count += 1
 
             if new_count > 0:

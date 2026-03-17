@@ -22,6 +22,13 @@ def register_basic_routes(app, deps):
                     twitter_cli_payload = dict(builder() or {})
                 except Exception:
                     twitter_cli_payload = {}
+            server_audio_payload = {}
+            builder = getattr(deps, '_build_notify_server_audio_runtime_payload', None)
+            if callable(builder):
+                try:
+                    server_audio_payload = dict(builder() or {})
+                except Exception:
+                    server_audio_payload = {}
             return jsonify({
                 'token': deps.global_token,
                 'tasks': list(deps.monitor_tasks),
@@ -52,6 +59,7 @@ def register_basic_routes(app, deps):
                 'notify_voice_block_keywords_text': str(deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ''),
                 'notification_reply_only_mode': bool(deps.NOTIFICATION_REPLY_ONLY_MODE),
                 **deps._build_notify_tts_runtime_payload(include_secrets=True),
+                **server_audio_payload,
                 **twitter_cli_payload,
             })
 

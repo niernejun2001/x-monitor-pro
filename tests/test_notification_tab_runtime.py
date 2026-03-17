@@ -36,14 +36,16 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.LLM_FILTER_MODEL = ''
         deps.LLM_FILTER_API_KEY = ''
         deps.LLM_FILTER_TIMEOUT_SEC = 12.0
-        deps.analyze_comment_intent = lambda *args, **kwargs: {'intent_score': 0, 'intent_level': 'noise', 'is_intent_user': False, 'force_notify': False, 'llm_used': False, 'reason': '', 'signals': []}
-        deps._should_notify_voice_by_intent = lambda analysis: False
+        audio_items = []
+        deps.analyze_comment_intent = lambda *args, **kwargs: {'intent_score': 62, 'intent_level': 'medium', 'is_intent_user': True, 'force_notify': True, 'llm_used': False, 'reason': '', 'signals': ['short_reply_intent_signal']}
+        deps._should_notify_voice_by_intent = lambda analysis: True
         deps.data_lock = threading.Lock()
         deps.history_ids = set()
         deps.should_skip_duplicate_content = lambda handle, content: False
         deps.pending_results = []
         deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
+        deps._enqueue_notify_server_audio = lambda item: audio_items.append(dict(item))
         deps.save_state = lambda: None
         deps.log_to_ui = lambda level, msg: None
         self.assertEqual(scan_persistent_notification_tab([], deps), 1)
@@ -51,6 +53,8 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         self.assertIn('k1', deps.history_ids)
         self.assertGreater(deps.notification_last_refresh_at, 0.0)
         self.assertEqual(deps.notification_refresh_interval, 10.0)
+        self.assertEqual(len(audio_items), 1)
+        self.assertTrue(audio_items[0]['voice_should_notify'])
 
     def test_scan_only_does_not_advance_refresh_clock(self):
         tab = types.SimpleNamespace(
@@ -85,6 +89,7 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.pending_results = []
         deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
+        deps._enqueue_notify_server_audio = lambda item: None
         deps.save_state = lambda: None
         logs = []
         deps.log_to_ui = lambda level, msg: logs.append((level, msg))
@@ -131,6 +136,7 @@ class NotificationTabRuntimeTests(unittest.TestCase):
         deps.pending_results = []
         deps._ensure_notify_flow_fields = lambda row: row
         deps.enqueue_new_data = lambda item: None
+        deps._enqueue_notify_server_audio = lambda item: None
         deps.save_state = lambda: None
         logs = []
         deps.log_to_ui = lambda level, msg: logs.append((level, msg))

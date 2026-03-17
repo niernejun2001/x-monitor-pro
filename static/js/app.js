@@ -18,6 +18,7 @@
         let notifyTtsProvider = 'doubao';
         let notifyTtsReady = false;
         let notifyTtsVoiceType = '';
+        let notifyServerAudioEnabled = false;
         let notifyBackendAudio = null;
         let notifyBrowserUtterance = null;
         let notifyAudioContext = null;
@@ -143,6 +144,7 @@
         }
 
         function replayNotifyVoiceIfNeeded(item, reason = 'replay') {
+            if (notifyServerAudioEnabled) return false;
             if (!shouldReplayNotifyVoiceForItem(item)) return false;
             const key = String(item.key || '').trim();
             const content = String(item.content || '').trim();
@@ -860,6 +862,7 @@
         }
 
         function announceNewNotifyByVoice(force = false, contentText = '') {
+            if (notifyServerAudioEnabled) return;
             const cleanText = String(contentText || '').trim();
             notifyVoiceQueue.push({ force: !!force, contentText: cleanText });
             processNotifyVoiceQueue();
@@ -940,6 +943,7 @@
             notifyTtsProvider = String(d.notify_tts_provider || 'doubao');
             notifyTtsReady = !!d.notify_tts_ready;
             notifyTtsVoiceType = String(d.notify_tts_voice_type || '');
+            notifyServerAudioEnabled = !!d.notify_server_audio_enabled;
             applyNotifyTtsState(d);
             setNotifyTtsResult(
                 `当前状态: ${notifyTtsReady ? '已就绪' : '未就绪'}\n音色: ${notifyTtsVoiceType || '-'}\n编码: ${d.notify_tts_encoding || '-'}`,
@@ -1299,6 +1303,7 @@
 
         function enqueueNotifyIntentCheck(item) {
             if(!item || item.source !== '通知页面') return;
+            if(notifyServerAudioEnabled) return;
             const key = String(item.key || '').trim();
             if(key && hasAnnouncedNotifyVoiceKey(key)) return;
             notifyIntentQueue.push({

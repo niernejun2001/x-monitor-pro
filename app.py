@@ -211,6 +211,12 @@ from xmonitor.services.tts_config_service import (
     build_notify_tts_runtime_payload as _build_notify_tts_runtime_payload_impl,
     normalize_notify_tts_config_from_payload as _normalize_notify_tts_config_from_payload_impl,
 )
+from xmonitor.services.server_audio_service import (
+    build_notify_server_audio_runtime_payload as _build_notify_server_audio_runtime_payload_impl,
+    detect_server_audio_player as _detect_server_audio_player_impl,
+    enqueue_notify_server_audio as _enqueue_notify_server_audio_impl,
+    ensure_notify_server_audio_worker as _ensure_notify_server_audio_worker_impl,
+)
 from xmonitor.services.twitter_cli_service import (
     build_twitter_cli_runtime_payload as _build_twitter_cli_runtime_payload_impl,
     enrich_notification_from_twitter_cli as _enrich_notification_from_twitter_cli_impl,
@@ -418,6 +424,12 @@ except Exception:
 UPDATES_EVENT_BUFFER_MAX = max(200, min(50000, int(UPDATES_EVENT_BUFFER_MAX)))
 updates_event_seq = 0
 updates_event_buffer = deque(maxlen=UPDATES_EVENT_BUFFER_MAX)
+notify_server_audio_queue = queue.Queue()
+notify_server_audio_thread = None
+notify_server_audio_thread_lock = threading.Lock()
+notify_server_audio_last_error = ''
+notify_server_audio_last_ok_at = 0.0
+notify_server_audio_queue_size = 0
 global_token = ""
 delegated_account = ""  # 新增：委派账户用户名（格式：@username 或 username）
 delegated_enabled = False  # 委派账户功能开关（仅当为 True 时才会执行委派切换）
@@ -941,6 +953,10 @@ DOUBAO_TTS_ENABLED = str(
         LOCAL_TTS_CONFIG.get("enabled", "1" if (DOUBAO_TTS_APP_ID and DOUBAO_TTS_ACCESS_TOKEN) else "0"),
     )
 ).strip().lower() in {"1", "true", "yes", "on"}
+NOTIFY_SERVER_AUDIO_ENABLED = str(
+    os.environ.get("XMONITOR_NOTIFY_SERVER_AUDIO_ENABLED", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+NOTIFY_SERVER_AUDIO_PLAYER_INFO = _detect_server_audio_player_impl()
 
 
 def _safe_float(val, default_val):
@@ -959,6 +975,18 @@ def _safe_int(val, default_val):
 
 def _build_notify_tts_runtime_payload(include_secrets=True):
     return _build_notify_tts_runtime_payload_impl(sys.modules[__name__], include_secrets=include_secrets)
+
+
+def _build_notify_server_audio_runtime_payload():
+    return _build_notify_server_audio_runtime_payload_impl(sys.modules[__name__])
+
+
+def _ensure_notify_server_audio_worker():
+    return _ensure_notify_server_audio_worker_impl(sys.modules[__name__])
+
+
+def _enqueue_notify_server_audio(item):
+    return _enqueue_notify_server_audio_impl(item, sys.modules[__name__])
 
 
 def _build_twitter_cli_runtime_payload():
