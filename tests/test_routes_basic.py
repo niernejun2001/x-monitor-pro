@@ -93,6 +93,19 @@ class RoutesBasicTests(unittest.TestCase):
         deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = ''
         deps.NOTIFICATION_REPLY_ONLY_MODE = True
         deps._build_notify_tts_runtime_payload = lambda include_secrets=True: {'notify_tts_enabled': False}
+        deps._build_twitter_cli_runtime_payload = lambda: {'twitter_cli_enabled': True, 'twitter_cli_available': True}
+        deps._get_twitter_cli_status = lambda verify=False: {'status': 'ok', 'verify': bool(verify), 'authenticated': bool(verify)}
+        deps._fetch_twitter_cli_tweet_detail = lambda tweet_id, max_count=8, force_refresh=False: {
+            'status': 'ok',
+            'tweet_id': str(tweet_id),
+            'tweet': {'id': str(tweet_id), 'text': 'detail'},
+            'reply_count': 0,
+        }
+        deps._fetch_twitter_cli_user = lambda handle, force_refresh=False: {
+            'status': 'ok',
+            'handle': str(handle),
+            'user': {'screen_name': str(handle).lstrip('@')},
+        }
         deps.monitor_tasks_repo = FakeMonitorTasksRepo()
         deps.pending_results_repo = FakePendingRepo()
         deps.processed_users_repo = types.SimpleNamespace(clear=lambda: None)
@@ -148,6 +161,20 @@ class RoutesBasicTests(unittest.TestCase):
         data = resp.get_json()
         self.assertEqual(data['last_seq'], 3)
         self.assertEqual(data['new_items'], [{'id': 1}])
+
+    def test_twitter_cli_routes(self):
+        client, _ = self._client()
+        resp = client.get('/api/twitter_cli/status?verify=1')
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.get_json()['authenticated'])
+
+        resp2 = client.post('/api/twitter_cli/tweet_detail', json={'tweet_id': '123'})
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(resp2.get_json()['tweet_id'], '123')
+
+        resp3 = client.get('/api/twitter_cli/user?handle=@demo')
+        self.assertEqual(resp3.status_code, 200)
+        self.assertEqual(resp3.get_json()['user']['screen_name'], 'demo')
 
 
 if __name__ == '__main__':

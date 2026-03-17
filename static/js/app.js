@@ -10,6 +10,7 @@
         let notifyVoicePlaying = false;
         let notifyVoiceTimer = null;
         const notifyVoiceQueue = [];
+        const notifyVoiceAnnouncedKeys = new Set();
         const notifyIntentQueue = [];
         let notifyIntentBusy = false;
         let notifyRowSeq = 0;
@@ -27,9 +28,14 @@
         let notifyAudioUnlocked = false;
         const NOTIFY_AUDIO_GAIN_KEY = 'xmonitor_notify_audio_gain_v1';
         const NOTIFY_AUDIO_GAIN_DEFAULT = 5.0;
+        const NOTIFY_PROMPT_CHIME_URL = '/static/audio/notify-chime.wav';
         let notifyAudioGainValue = NOTIFY_AUDIO_GAIN_DEFAULT;
+        let notifyPromptChimeBuffer = null;
+        let notifyPromptChimeLoadPromise = null;
         const NOTIFY_AUDIO_DIAG_ENDPOINT = '/api/debug/notify_audio';
         const NOTIFY_TABLE_HEIGHT_KEY = 'xmonitor_notify_table_height_v1';
+        const NOTIFY_VOICE_ANNOUNCED_KEY = 'xmonitor_notify_voice_announced_v1';
+        const NOTIFY_VOICE_ANNOUNCED_MAX = 400;
         let llmTimeoutMaxSec = 120;
         let updatesLastSeq = 0;
         let updatesPollFailStreak = 0;
@@ -76,6 +82,80 @@
             range.addEventListener('input', () => setNotifyAudioGain(range.value, false));
             range.addEventListener('change', () => setNotifyAudioGain(range.value, true));
         }
+
+        function loadNotifyVoiceAnnouncedKeys() {
+            let raw = '';
+            try { raw = localStorage.getItem(NOTIFY_VOICE_ANNOUNCED_KEY) || ''; } catch (_) { raw = ''; }
+            if (!raw) return;
+            try {
+                const rows = JSON.parse(raw);
+                if (!Array.isArray(rows)) return;
+                const now = Date.now();
+                rows.forEach(entry => {
+                    if (!entry || typeof entry !== 'object') return;
+                    const key = String(entry.key || '').trim();
+                    const ts = Number(entry.ts || 0);
+                    if (!key) return;
+                    if (Number.isFinite(ts) && (now - ts) > 24 * 3600 * 1000) return;
+                    notifyVoiceAnnouncedKeys.add(key);
+                });
+            } catch (_) {}
+        }
+
+        function saveNotifyVoiceAnnouncedKeys() {
+            try {
+                const now = Date.now();
+                const rows = Array.from(notifyVoiceAnnouncedKeys).slice(-NOTIFY_VOICE_ANNOUNCED_MAX).map(key => ({ key, ts: now }));
+                localStorage.setItem(NOTIFY_VOICE_ANNOUNCED_KEY, JSON.stringify(rows));
+            } catch (_) {}
+        }
+
+        function hasAnnouncedNotifyVoiceKey(key) {
+            const normKey = String(key || '').trim();
+            if (!normKey) return false;
+            return notifyVoiceAnnouncedKeys.has(normKey);
+        }
+
+        function markAnnouncedNotifyVoiceKey(key) {
+            const normKey = String(key || '').trim();
+            if (!normKey || notifyVoiceAnnouncedKeys.has(normKey)) return;
+            notifyVoiceAnnouncedKeys.add(normKey);
+            if (notifyVoiceAnnouncedKeys.size > NOTIFY_VOICE_ANNOUNCED_MAX) {
+                const overflow = notifyVoiceAnnouncedKeys.size - NOTIFY_VOICE_ANNOUNCED_MAX;
+                Array.from(notifyVoiceAnnouncedKeys).slice(0, overflow).forEach(oldKey => notifyVoiceAnnouncedKeys.delete(oldKey));
+            }
+            saveNotifyVoiceAnnouncedKeys();
+        }
+
+        function shouldReplayNotifyVoiceForItem(item) {
+            if (!item || item.source !== '通知页面') return false;
+            const key = String(item.key || '').trim();
+            if (!key || hasAnnouncedNotifyVoiceKey(key)) return false;
+            if (isNotifyItemReplied(item)) return false;
+            if (!resolveNotifyVoiceShouldSpeak(item)) return false;
+            const stage = String(item.notify_flow_stage || '').trim().toLowerCase();
+            if (stage === 'done' || stage === 'dm_closed_confirmed') return false;
+            const ageMin = Number(item.notification_age_minutes);
+            if (Number.isFinite(ageMin) && ageMin >= 0) {
+                return ageMin <= 6;
+            }
+            return false;
+        }
+
+        function replayNotifyVoiceIfNeeded(item, reason = 'replay') {
+            if (!shouldReplayNotifyVoiceForItem(item)) return false;
+            const key = String(item.key || '').trim();
+            const content = String(item.content || '').trim();
+            if (!content || shouldSuppressNotifyVoice(content)) {
+                markAnnouncedNotifyVoiceKey(key);
+                return false;
+            }
+            markAnnouncedNotifyVoiceKey(key);
+            announceNewNotifyByVoice(false, content);
+            try { console.debug('[NotifyVoiceReplay]', { key, reason, content }); } catch (_) {}
+            return true;
+        }
+
         function clampNotifyTableHeight(rawHeight) {
             const minHeight = 220;
             const maxHeight = Math.max(280, Math.floor(window.innerHeight * 0.75));
@@ -303,6 +383,73 @@
             });
         }
 
+        function _isNotifyWebAudioReady(ctx = null) {
+            const target = ctx || notifyAudioContext;
+            return !!(target && notifyAudioUnlocked && target.state === 'running');
+        }
+
+        function _loadNotifyPromptChimeBuffer(ctx) {
+            if (notifyPromptChimeBuffer) {
+                return Promise.resolve(notifyPromptChimeBuffer);
+            }
+            if (notifyPromptChimeLoadPromise) {
+                return notifyPromptChimeLoadPromise;
+            }
+            notifyPromptChimeLoadPromise = fetch(NOTIFY_PROMPT_CHIME_URL, { cache: 'force-cache' })
+                .then((resp) => {
+                    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+                    return resp.arrayBuffer();
+                })
+                .then((arrBuf) => _decodeAudioBuffer(ctx, arrBuf.slice(0)))
+                .then((buffer) => {
+                    notifyPromptChimeBuffer = buffer;
+                    return buffer;
+                })
+                .catch((e) => {
+                    notifyPromptChimeLoadPromise = null;
+                    throw e;
+                });
+            return notifyPromptChimeLoadPromise;
+        }
+
+        function _ensureNotifyWebAudioReady(ctx = null, reason = '') {
+            const target = ctx || _getOrCreateNotifyAudioContext();
+            if (!target) return Promise.resolve(false);
+            if (_isNotifyWebAudioReady(target)) {
+                return Promise.resolve(true);
+            }
+            if (target.state === 'running') {
+                notifyAudioUnlocked = true;
+                _notifyAudioDiag('webaudio_mark_unlocked', {
+                    reason: String(reason || ''),
+                    ctx_state: _getNotifyAudioCtxState(),
+                });
+                return Promise.resolve(true);
+            }
+            _notifyAudioDiag('webaudio_resume_try', {
+                reason: String(reason || ''),
+                ctx_state: _getNotifyAudioCtxState(),
+                unlocked: !!notifyAudioUnlocked,
+            });
+            return target.resume().then(() => {
+                const ready = target.state === 'running';
+                if (ready) notifyAudioUnlocked = true;
+                _notifyAudioDiag('webaudio_resume_ok', {
+                    reason: String(reason || ''),
+                    ctx_state: _getNotifyAudioCtxState(),
+                    unlocked: !!notifyAudioUnlocked,
+                });
+                return ready;
+            }).catch((e) => {
+                _notifyAudioDiag('webaudio_resume_fail', {
+                    reason: String(reason || ''),
+                    ctx_state: _getNotifyAudioCtxState(),
+                    err: String((e && (e.message || e.name)) || e || 'unknown'),
+                });
+                return false;
+            });
+        }
+
         function _playNotifyPromptChime(done = null) {
             const finish = _onceNotifyDone(done);
             const ctx = _getOrCreateNotifyAudioContext();
@@ -312,42 +459,43 @@
             }
 
             const playNow = () => {
-                try {
-                    const now = ctx.currentTime + 0.01;
-                    const notes = [
-                        { f: 880, d: 0.10, delay: 0.00 },  // ding
-                        { f: 660, d: 0.14, delay: 0.14 },  // dong
-                    ];
-                    notes.forEach((n) => {
-                        const osc = ctx.createOscillator();
-                        const gain = ctx.createGain();
-                        osc.type = 'sine';
-                        osc.frequency.setValueAtTime(n.f, now + n.delay);
-                        const attack = now + n.delay;
-                        const release = attack + n.d;
-                        gain.gain.setValueAtTime(0.0001, attack);
-                        gain.gain.exponentialRampToValueAtTime(0.06, attack + 0.01);
-                        gain.gain.exponentialRampToValueAtTime(0.0001, release);
-                        osc.connect(gain);
-                        gain.connect(notifyAudioGainNode || ctx.destination);
-                        osc.start(attack);
-                        osc.stop(release + 0.01);
-                    });
-                    setTimeout(() => finish(true), 340);
-                } catch (e) {
+                if (!_isNotifyWebAudioReady(ctx)) {
+                    finish(true);
+                    return;
+                }
+                _loadNotifyPromptChimeBuffer(ctx).then((buffer) => {
+                    try {
+                        const src = ctx.createBufferSource();
+                        const chimeGain = ctx.createGain();
+                        src.buffer = buffer;
+                        chimeGain.gain.value = 0.72;
+                        src.connect(chimeGain);
+                        chimeGain.connect(notifyAudioGainNode || ctx.destination);
+                        src.onended = () => finish(true);
+                        src.start(0);
+                    } catch (e) {
+                        _notifyAudioDiag('prompt_chime_fail', {
+                            err: String((e && (e.message || e.name)) || e || 'unknown'),
+                            ctx_state: _getNotifyAudioCtxState(),
+                        });
+                        finish(false, '提示音播放失败');
+                    }
+                }).catch((e) => {
                     _notifyAudioDiag('prompt_chime_fail', {
                         err: String((e && (e.message || e.name)) || e || 'unknown'),
                         ctx_state: _getNotifyAudioCtxState(),
                     });
                     finish(false, '提示音播放失败');
-                }
+                });
             };
 
-            if (ctx.state === 'suspended') {
-                ctx.resume().then(() => playNow()).catch(() => finish(false, '音频上下文未解锁'));
-                return;
-            }
-            playNow();
+            _ensureNotifyWebAudioReady(ctx, 'prompt_chime').then((ready) => {
+                if (!ready) {
+                    finish(true);
+                    return;
+                }
+                playNow();
+            });
         }
 
         function _playNotifyVoiceByWebAudioData(audioBase64, done = null) {
@@ -395,18 +543,17 @@
                     finish(false, 'WebAudio 解码播放失败');
                 });
             };
-            if (ctx.state === 'suspended') {
-                _notifyAudioDiag('webaudio_resume_try', { ctx_state: _getNotifyAudioCtxState() });
-                ctx.resume().then(() => playDecoded()).catch((e) => {
-                    _notifyAudioDiag('webaudio_resume_fail', {
+            _ensureNotifyWebAudioReady(ctx, 'webaudio_play').then((ready) => {
+                if (!ready) {
+                    _notifyAudioDiag('webaudio_not_ready', {
                         ctx_state: _getNotifyAudioCtxState(),
-                        err: String((e && (e.message || e.name)) || e || 'unknown'),
+                        unlocked: !!notifyAudioUnlocked,
                     });
-                    finish(false, '音频上下文未解锁，请先点击页面');
-                });
-                return;
-            }
-            playDecoded();
+                    finish(false, 'WebAudio未解锁');
+                    return;
+                }
+                playDecoded();
+            });
         }
         function _onceNotifyDone(done = null) {
             let called = false;
@@ -458,6 +605,35 @@
             _stopNotifyBrowserSpeech();
         }
 
+        function _playNotifyVoiceByHtmlAudioData(audioBase64, mime, done = null) {
+            const finish = _onceNotifyDone(done);
+            const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
+            const src = `data:${safeMime};base64,${audioBase64}`;
+            const audio = new Audio(src);
+            notifyBackendAudio = audio;
+            audio.volume = 1.0;
+            audio.onended = () => {
+                if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                finish(true);
+            };
+            audio.onerror = () => {
+                if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                finish(false, '浏览器音频播放错误');
+            };
+            const p = audio.play();
+            if (p && typeof p.then === 'function') {
+                p.catch((e) => {
+                    const blocked = e && (e.name === 'NotAllowedError' || /notallowed/i.test(String(e.message || '')));
+                    _notifyAudioDiag('play_htmlaudio_reject', {
+                        err: String((e && (e.message || e.name)) || e || 'unknown'),
+                        blocked: !!blocked,
+                    });
+                    if(notifyBackendAudio === audio) notifyBackendAudio = null;
+                    finish(false, blocked ? '浏览器阻止音频播放，请检查页面是否静音或自动播放策略' : '浏览器音频播放失败');
+                });
+            }
+        }
+
         function _playNotifyVoiceByAudioData(audioBase64, mime, done = null) {
             const finish = _onceNotifyDone(done);
             const b64 = String(audioBase64 || '').trim();
@@ -475,6 +651,24 @@
             try {
                 _stopNotifyBrowserSpeech();
                 _stopNotifyBackendAudio();
+                const playHtmlFallback = (reason = '') => {
+                    _notifyAudioDiag('play_htmlaudio_fallback', {
+                        ctx_state: _getNotifyAudioCtxState(),
+                        unlocked: !!notifyAudioUnlocked,
+                        reason: String(reason || ''),
+                    });
+                    _playNotifyVoiceByHtmlAudioData(b64, mime, (ok, msg) => {
+                        if (ok) {
+                            finish(true);
+                            return;
+                        }
+                        _notifyAudioDiag('play_htmlaudio_fallback_fail', {
+                            ctx_state: _getNotifyAudioCtxState(),
+                            err: String(msg || 'unknown'),
+                        });
+                        finish(false, msg || '浏览器音频播放失败');
+                    });
+                };
                 const playSpeech = () => {
                     const ctx = _getOrCreateNotifyAudioContext();
                     if (ctx) {
@@ -488,35 +682,11 @@
                                 ctx_state: _getNotifyAudioCtxState(),
                                 err: String(msg || 'unknown'),
                             });
-                            finish(false, msg || 'WebAudio播放失败');
+                            playHtmlFallback(msg || 'WebAudio播放失败');
                         });
                         return;
                     }
-                    const safeMime = String(mime || 'audio/mpeg').trim() || 'audio/mpeg';
-                    const src = `data:${safeMime};base64,${b64}`;
-                    const audio = new Audio(src);
-                    notifyBackendAudio = audio;
-                    audio.volume = 1.0;
-                    audio.onended = () => {
-                        if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                        finish(true);
-                    };
-                    audio.onerror = () => {
-                        if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                        finish(false, '浏览器音频播放错误');
-                    };
-                    const p = audio.play();
-                    if (p && typeof p.then === 'function') {
-                        p.catch((e) => {
-                            const blocked = e && (e.name === 'NotAllowedError' || /notallowed/i.test(String(e.message || '')));
-                            _notifyAudioDiag('play_htmlaudio_reject', {
-                                err: String((e && (e.message || e.name)) || e || 'unknown'),
-                                blocked: !!blocked,
-                            });
-                            if(notifyBackendAudio === audio) notifyBackendAudio = null;
-                            finish(false, blocked ? '浏览器阻止音频播放，请检查页面是否静音或自动播放策略' : '浏览器音频播放失败');
-                        });
-                    }
+                    playHtmlFallback('no_audio_context');
                 };
 
                 _playNotifyPromptChime((chimeOk, chimeMsg) => {
@@ -578,16 +748,75 @@
         }
 
         function _playNotifyVoiceByBrowser(contentText = '', done = null) {
-            // 已禁用浏览器语音链路，保留函数仅为兼容旧调用。
-            if (typeof done === 'function') done(false);
+            const finish = _onceNotifyDone(done);
+            const text = buildNotifyVoiceText(contentText);
+            if (!text) {
+                finish(false, '浏览器语音内容为空');
+                return;
+            }
+            if (!('speechSynthesis' in window)) {
+                finish(false, '浏览器语音不可用');
+                return;
+            }
+            try {
+                _stopNotifyBackendAudio();
+                _stopNotifyBrowserSpeech();
+                const utterance = new SpeechSynthesisUtterance(text);
+                const voice = cachedNotifyVoice || pickNotifyVoice();
+                if (voice) utterance.voice = voice;
+                utterance.lang = (voice && voice.lang) || 'zh-CN';
+                utterance.rate = 1.0;
+                utterance.pitch = 1.0;
+                utterance.volume = 1.0;
+                utterance.onend = () => {
+                    if (notifyBrowserUtterance === utterance) notifyBrowserUtterance = null;
+                    finish(true);
+                };
+                utterance.onerror = (e) => {
+                    if (notifyBrowserUtterance === utterance) notifyBrowserUtterance = null;
+                    const errMsg = String(((e && e.error) || (e && e.name) || 'browser speech failed'));
+                    _notifyAudioDiag('browser_speech_fail', {
+                        err: errMsg,
+                        voice: voice ? String(voice.name || '') : '',
+                    });
+                    finish(false, errMsg);
+                };
+                notifyBrowserUtterance = utterance;
+                _notifyAudioDiag('browser_speech_start', {
+                    text_len: text.length,
+                    voice: voice ? String(voice.name || '') : '',
+                    lang: utterance.lang,
+                });
+                window.speechSynthesis.cancel();
+                window.speechSynthesis.speak(utterance);
+            } catch (e) {
+                _notifyAudioDiag('browser_speech_exception', {
+                    err: String((e && (e.message || e.name)) || e || 'unknown'),
+                });
+                finish(false, '浏览器语音播放失败');
+            }
         }
 
         function _playNotifyVoiceOnce(contentText = '', done = null) {
             if (notifyTtsReady) {
-                _playNotifyVoiceByDoubao(contentText, done);
+                _playNotifyVoiceByDoubao(contentText, (ok, msg) => {
+                    if (ok) {
+                        if (typeof done === 'function') done(true, msg || '');
+                        return;
+                    }
+                    _notifyAudioDiag('doubao_play_fallback_browser', {
+                        err: String(msg || 'unknown'),
+                        ready: !!notifyTtsReady,
+                    });
+                    _playNotifyVoiceByBrowser(contentText, (browserOk, browserMsg) => {
+                        if (typeof done === 'function') {
+                            done(browserOk, browserOk ? '' : (browserMsg || msg || '通知播报失败'));
+                        }
+                    });
+                });
                 return;
             }
-            if (typeof done === 'function') done(false, '豆包TTS未就绪（notify_tts_ready=false）');
+            _playNotifyVoiceByBrowser(contentText, done);
         }
 
         function processNotifyVoiceQueue() {
@@ -605,7 +834,24 @@
             }
 
             notifyVoiceTimer = setTimeout(() => {
+                let settled = false;
+                const watchdog = setTimeout(() => {
+                    _notifyAudioDiag('voice_watchdog_timeout', {
+                        queue_len: notifyVoiceQueue.length,
+                        ctx_state: _getNotifyAudioCtxState(),
+                        unlocked: !!notifyAudioUnlocked,
+                    });
+                    stopNotifyVoicePlayback();
+                    if (settled) return;
+                    settled = true;
+                    lastNotifyVoiceAt = Date.now();
+                    notifyVoicePlaying = false;
+                    processNotifyVoiceQueue();
+                }, 15000);
                 _playNotifyVoiceOnce(item.contentText, () => {
+                    clearTimeout(watchdog);
+                    if (settled) return;
+                    settled = true;
                     lastNotifyVoiceAt = Date.now();
                     notifyVoicePlaying = false;
                     processNotifyVoiceQueue();
@@ -667,11 +913,24 @@
         window.onload = () => {
             bindNotifyTableHeightPersistence();
             restoreNotifyAudioGain();
+            loadNotifyVoiceAnnouncedKeys();
             bindNotifyAudioGainControl();
             const unlockOnce = () => {
-                unlockNotifyAudioByGesture().finally(() => {});
+                unlockNotifyAudioByGesture().finally(() => {
+                    processNotifyVoiceQueue();
+                });
             };
             document.addEventListener('pointerdown', unlockOnce, { once: true });
+            document.addEventListener('keydown', unlockOnce, { once: true });
+            window.addEventListener('focus', () => {
+                pollUpdatesIncremental();
+                processNotifyVoiceQueue();
+            });
+            document.addEventListener('visibilitychange', () => {
+                if (document.visibilityState !== 'visible') return;
+                pollUpdatesIncremental();
+                processNotifyVoiceQueue();
+            });
             switchControlPanel('control');
             fetch('/api/state').then(r=>r.json()).then(d=>{
             document.getElementById('token').value = d.token || '';
@@ -703,7 +962,10 @@
             if(d.is_running) setStatus(true);
 
             if(d.pending && d.pending.length > 0) {
-                d.pending.forEach(item => addRow(item, false));
+                d.pending.forEach(item => {
+                    addRow(item, false);
+                    replayNotifyVoiceIfNeeded(item, 'state_load');
+                });
             }
             updatesLastSeq = Math.max(0, Number(d.updates_last_seq || 0) || 0);
 
@@ -1037,7 +1299,10 @@
 
         function enqueueNotifyIntentCheck(item) {
             if(!item || item.source !== '通知页面') return;
+            const key = String(item.key || '').trim();
+            if(key && hasAnnouncedNotifyVoiceKey(key)) return;
             notifyIntentQueue.push({
+                key,
                 content: String(item.content || '').trim(),
                 analysis: item
             });
@@ -1062,6 +1327,7 @@
             // 优先复用后端已计算好的意向结果，避免重复调用模型。
             if(task.analysis && typeof task.analysis === 'object') {
                 if(resolveNotifyVoiceShouldSpeak(task.analysis)) {
+                    if(task.key) markAnnouncedNotifyVoiceKey(task.key);
                     announceNewNotifyByVoice(false, content);
                 }
                 processNotifyIntentQueue();
@@ -1080,6 +1346,7 @@
                 if(d.status !== 'ok') return;
                 const a = d.analysis || {};
                 if(resolveNotifyVoiceShouldSpeak(a)) {
+                    if(task.key) markAnnouncedNotifyVoiceKey(task.key);
                     announceNewNotifyByVoice(false, content);
                 }
             }).catch(() => {
@@ -1842,6 +2109,7 @@
                     if(!row) return;
                     applyNotifyReplyState(row, isNotifyItemReplied(item), item.notify_reply_time || item.reply_time || '');
                     applyNotifyFlowState(row, item);
+                    replayNotifyVoiceIfNeeded(item, 'sync');
                 });
             }).catch(() => {});
         }

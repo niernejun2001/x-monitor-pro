@@ -154,6 +154,36 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes, deps, allow_
                     continue
 
                 content = deps._extract_notification_content(article, article_text, handle)
+                twitter_cli_enriched = None
+                if (
+                    status_id
+                    and getattr(deps, 'TWITTER_CLI_ENABLED', False)
+                    and getattr(deps, 'TWITTER_CLI_NOTIFY_ENRICH', False)
+                    and ((not content) or (not status_handle))
+                ):
+                    try:
+                        twitter_cli_enriched = deps._enrich_notification_from_twitter_cli(
+                            status_id,
+                            handle_hint=handle,
+                            content_hint=content,
+                        )
+                    except Exception as enrich_err:
+                        twitter_cli_enriched = {
+                            'status': 'err',
+                            'msg': str(enrich_err),
+                        }
+                    if isinstance(twitter_cli_enriched, dict) and twitter_cli_enriched.get('status') == 'ok':
+                        enriched_content = str(twitter_cli_enriched.get('content', '') or '').strip()
+                        enriched_status_handle = str(twitter_cli_enriched.get('status_handle', '') or '').strip()
+                        if (not content) and enriched_content:
+                            content = enriched_content
+                        if (not status_handle) and enriched_status_handle:
+                            status_handle = enriched_status_handle
+                        if idx <= trace_limit:
+                            trace_logs.append(
+                                f'A{idx:02d} enrich=twitter_cli status_id={status_id} '
+                                f'handle={status_handle or handle} content={deps._normalize_one_line(content, 80)}'
+                            )
                 if not content:
                     skipped_no_content += 1
                     if idx <= trace_limit:
@@ -200,6 +230,15 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes, deps, allow_
                 seen_in_page.add(unique_key)
 
                 new_captured += 1
+                status_url = (
+                    str((twitter_cli_enriched or {}).get('status_url', '') or '').strip()
+                    if isinstance(twitter_cli_enriched, dict) and str((twitter_cli_enriched or {}).get('status_url', '') or '').strip() else
+                    (
+                        f"https://x.com/{deps.normalize_handle(status_handle)}/status/{status_id}"
+                        if status_id and status_handle else
+                        (f'https://x.com/i/status/{status_id}' if status_id else '')
+                    )
+                )
                 results.append({
                     'handle': handle,
                     'content': content,
@@ -213,11 +252,15 @@ def scan_notifications_page(page, blocked_list, max_recent_minutes, deps, allow_
                     'is_mention_to_me': bool(is_mention_to_me),
                     'notification_text': relation['normalized_text'][:600],
                     'notification_age_minutes': (round(float(age_minutes), 2) if age_minutes is not None else None),
-                    'status_url': (
-                        f"https://x.com/{deps.normalize_handle(status_handle)}/status/{status_id}"
-                        if status_id and status_handle else
-                        (f'https://x.com/i/status/{status_id}' if status_id else '')
-                    )
+                    'status_url': status_url,
+                    'status_handle': (status_handle or '').strip(),
+                    'twitter_cli_enriched': bool(
+                        isinstance(twitter_cli_enriched, dict) and twitter_cli_enriched.get('status') == 'ok'
+                    ),
+                    'twitter_cli_enrich_source': (
+                        str((twitter_cli_enriched or {}).get('source', '') or '').strip()
+                        if isinstance(twitter_cli_enriched, dict) else ''
+                    ),
                 })
                 if deps.NOTIFICATION_VERBOSE_TRACE:
                     deps.log_to_ui('debug', f'📬 [NotifyCandidate][{notification_type}] {handle} - {content[:20]}...')

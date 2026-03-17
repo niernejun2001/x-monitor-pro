@@ -1,3 +1,4 @@
+import random
 import time
 
 from xmonitor.services.notify_reply_context import (
@@ -33,8 +34,6 @@ def send_notification_reply(item, message, deps, dm_message=""):
     _wait_document_ready = deps._wait_document_ready
     _is_unhandled_prompt_error = deps._is_unhandled_prompt_error
     _capture_runtime_diagnostic = deps._capture_runtime_diagnostic
-    time = __import__('time')
-    random = __import__('random')
     """针对通知记录发送回复。"""
     global last_reply_prepare_refresh_ts
     if not global_token.strip():

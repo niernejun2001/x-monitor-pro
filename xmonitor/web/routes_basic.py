@@ -15,6 +15,13 @@ def register_basic_routes(app, deps):
                 if isinstance(row, dict) and row.get('source') == '通知页面':
                     deps._ensure_notify_flow_fields(row)
                 pending_rows.append(dict(row) if isinstance(row, dict) else row)
+            twitter_cli_payload = {}
+            builder = getattr(deps, '_build_twitter_cli_runtime_payload', None)
+            if callable(builder):
+                try:
+                    twitter_cli_payload = dict(builder() or {})
+                except Exception:
+                    twitter_cli_payload = {}
             return jsonify({
                 'token': deps.global_token,
                 'tasks': list(deps.monitor_tasks),
@@ -45,6 +52,7 @@ def register_basic_routes(app, deps):
                 'notify_voice_block_keywords_text': str(deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT or ''),
                 'notification_reply_only_mode': bool(deps.NOTIFICATION_REPLY_ONLY_MODE),
                 **deps._build_notify_tts_runtime_payload(include_secrets=True),
+                **twitter_cli_payload,
             })
 
     @app.route('/api/task/add', methods=['POST'])
@@ -163,6 +171,41 @@ def register_basic_routes(app, deps):
         except Exception as e:
             deps.log_to_ui('warn', f'⚠️ 打开用户回复页失败 @{handle}: {e}')
             return jsonify({'status': 'err', 'msg': f'打开失败: {e}'}), 500
+
+    @app.route('/api/twitter_cli/status')
+    def twitter_cli_status():
+        verify = str(request.args.get('verify', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}
+        getter = getattr(deps, '_get_twitter_cli_status', None)
+        if not callable(getter):
+            return jsonify({'status': 'err', 'msg': 'twitter-cli 未接入'}), 501
+        payload = dict(getter(verify=verify) or {})
+        http_status = 200 if payload.get('status') == 'ok' else 500
+        return jsonify(payload), http_status
+
+    @app.route('/api/twitter_cli/tweet_detail', methods=['POST'])
+    def twitter_cli_tweet_detail():
+        payload = request.get_json(silent=True) or {}
+        tweet_id = str(payload.get('tweet_id', payload.get('status_id', '')) or '').strip()
+        if not tweet_id:
+            return jsonify({'status': 'err', 'msg': 'tweet_id 不能为空'}), 400
+        fetcher = getattr(deps, '_fetch_twitter_cli_tweet_detail', None)
+        if not callable(fetcher):
+            return jsonify({'status': 'err', 'msg': 'twitter-cli 未接入'}), 501
+        result = dict(fetcher(tweet_id, max_count=payload.get('max_count', 8), force_refresh=bool(payload.get('force_refresh', False))) or {})
+        http_status = 200 if result.get('status') == 'ok' else 500
+        return jsonify(result), http_status
+
+    @app.route('/api/twitter_cli/user')
+    def twitter_cli_user():
+        raw_handle = str(request.args.get('handle', '') or '').strip()
+        if not raw_handle:
+            return jsonify({'status': 'err', 'msg': 'handle 不能为空'}), 400
+        fetcher = getattr(deps, '_fetch_twitter_cli_user', None)
+        if not callable(fetcher):
+            return jsonify({'status': 'err', 'msg': 'twitter-cli 未接入'}), 501
+        result = dict(fetcher(raw_handle, force_refresh=str(request.args.get('force_refresh', '') or '').strip().lower() in {'1', 'true', 'yes', 'on'}) or {})
+        http_status = 200 if result.get('status') == 'ok' else 500
+        return jsonify(result), http_status
 
     @app.route('/api/toggle_headless', methods=['POST'])
     def toggle_headless():

@@ -1,6 +1,7 @@
 import threading
 import types
 import unittest
+from unittest import mock
 
 from xmonitor.services.notify_reply_service import send_notification_reply
 
@@ -99,6 +100,50 @@ class NotifyReplyServiceTests(unittest.TestCase):
         self.assertEqual(supplier_results[0][1], '缓存好的第二条私信文案')
         self.assertEqual(supplier_results[1][1], '缓存好的第二条私信文案')
         self.assertTrue(any(stage == 'done' for _, stage, _ in flow_updates))
+
+    def test_finally_returns_to_notifications_without_random_name_error(self):
+        logs = []
+        tab = types.SimpleNamespace(url='https://x.com/messages/1', get=lambda url: logs.append(('tab_get', url)))
+
+        class FakeNotifyFacade:
+            def find_pending_item_by_key(self, key):
+                return 0, {'key': key, 'source': '通知页面', 'handle': '@demo', 'notify_flow_stage': 'reply_pending'}
+
+            def update_flow_state(self, key, stage='', error='', retry_at=0.0, extra=None, save=False):
+                return True
+
+        deps = types.SimpleNamespace(
+            global_token='token',
+            extract_status_id_from_notification_item=lambda item: '1234567890123456789',
+            reply_action_lock=threading.Lock(),
+            _throttle_reply_action_if_needed=lambda: None,
+            _set_reply_flow_active=lambda active: logs.append(('flow_active', bool(active))),
+            notify_state_facade=FakeNotifyFacade(),
+            ensure_reply_work_tab=lambda: tab,
+            _prepare_reply_prompt_guard=lambda tab_obj, stage='': None,
+            log_to_ui=lambda level, msg: logs.append((level, msg)),
+            _resolve_notify_resume_stage=lambda row: 'reply_pending',
+            _normalize_dm_share_link=lambda raw, status_id='', status_handle='', fallback_url='': '',
+            _get_status_link_from_item=lambda item, matched_handle='', matched_status_id='': '',
+            _notify_stage_at_least=lambda current, target: False,
+            _reply_humanized_idle=lambda tab_obj, low=0.0, high=0.0, stage='': None,
+            _prepare_notifications_view_impl=lambda tab_obj, deps_obj, force_refresh=False: None,
+            _match_target_card_impl=lambda tab_obj, item, status_id, deps_obj: (_ for _ in ()).throw(RuntimeError('boom')),
+            _send_reply_from_button_impl=lambda *args, **kwargs: (True, ''),
+            _sanitize_dm_message_text=lambda text: str(text or '').strip(),
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            DM_CLOSED_FALLBACK_REPLY_TEXT='fallback',
+            _wait_document_ready=lambda tab_obj, timeout=5.0: None,
+            _is_unhandled_prompt_error=lambda err: False,
+            _capture_runtime_diagnostic=lambda *args, **kwargs: '',
+        )
+
+        with mock.patch('xmonitor.services.notify_reply_service.time.sleep', lambda _: None):
+            ok, err = send_notification_reply({'key': 'n1', 'handle': '@demo'}, '公开回复', deps, dm_message='模板')
+
+        self.assertFalse(ok)
+        self.assertIn('boom', err)
+        self.assertIn(('tab_get', 'https://x.com/notifications'), logs)
 
 
 if __name__ == '__main__':

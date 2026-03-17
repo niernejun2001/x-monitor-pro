@@ -211,6 +211,13 @@ from xmonitor.services.tts_config_service import (
     build_notify_tts_runtime_payload as _build_notify_tts_runtime_payload_impl,
     normalize_notify_tts_config_from_payload as _normalize_notify_tts_config_from_payload_impl,
 )
+from xmonitor.services.twitter_cli_service import (
+    build_twitter_cli_runtime_payload as _build_twitter_cli_runtime_payload_impl,
+    enrich_notification_from_twitter_cli as _enrich_notification_from_twitter_cli_impl,
+    fetch_twitter_cli_tweet_detail as _fetch_twitter_cli_tweet_detail_impl,
+    fetch_twitter_cli_user as _fetch_twitter_cli_user_impl,
+    get_twitter_cli_status as _get_twitter_cli_status_impl,
+)
 from xmonitor.runtime.monitor_runtime import monitoring_loop as _monitoring_loop_impl
 from xmonitor.storage.state_io import (
     load_state as _load_state_impl,
@@ -496,6 +503,20 @@ except Exception:
 NOTIFICATION_REPLY_ONLY_MODE = str(
     os.environ.get("XMONITOR_NOTIFY_REPLY_ONLY", "1")
 ).strip().lower() not in {"0", "false", "no", "off"}
+TWITTER_CLI_ENABLED = str(
+    os.environ.get("XMONITOR_TWITTER_CLI_ENABLED", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+TWITTER_CLI_NOTIFY_ENRICH = str(
+    os.environ.get("XMONITOR_TWITTER_CLI_NOTIFY_ENRICH", "1")
+).strip().lower() not in {"0", "false", "no", "off"}
+try:
+    TWITTER_CLI_TWEET_CACHE_TTL_SEC = float(os.environ.get("XMONITOR_TWITTER_CLI_TWEET_CACHE_TTL_SEC", "300"))
+except Exception:
+    TWITTER_CLI_TWEET_CACHE_TTL_SEC = 300.0
+try:
+    TWITTER_CLI_USER_CACHE_TTL_SEC = float(os.environ.get("XMONITOR_TWITTER_CLI_USER_CACHE_TTL_SEC", "600"))
+except Exception:
+    TWITTER_CLI_USER_CACHE_TTL_SEC = 600.0
 ENGINE_VERSION = "v11.3"
 REPLY_ACTION_GAP_MIN_SEC = 1.0
 REPLY_ACTION_GAP_MAX_SEC = 2.0
@@ -938,6 +959,40 @@ def _safe_int(val, default_val):
 
 def _build_notify_tts_runtime_payload(include_secrets=True):
     return _build_notify_tts_runtime_payload_impl(sys.modules[__name__], include_secrets=include_secrets)
+
+
+def _build_twitter_cli_runtime_payload():
+    return _build_twitter_cli_runtime_payload_impl(sys.modules[__name__])
+
+
+def _get_twitter_cli_status(verify=False):
+    return _get_twitter_cli_status_impl(sys.modules[__name__], verify=verify)
+
+
+def _fetch_twitter_cli_tweet_detail(tweet_id, max_count=8, force_refresh=False):
+    return _fetch_twitter_cli_tweet_detail_impl(
+        sys.modules[__name__],
+        tweet_id,
+        max_count=max_count,
+        force_refresh=force_refresh,
+    )
+
+
+def _fetch_twitter_cli_user(screen_name, force_refresh=False):
+    return _fetch_twitter_cli_user_impl(
+        sys.modules[__name__],
+        screen_name,
+        force_refresh=force_refresh,
+    )
+
+
+def _enrich_notification_from_twitter_cli(status_id, handle_hint='', content_hint=''):
+    return _enrich_notification_from_twitter_cli_impl(
+        sys.modules[__name__],
+        status_id,
+        handle_hint=handle_hint,
+        content_hint=content_hint,
+    )
 
 
 def _normalize_notify_tts_config_from_payload(payload):
