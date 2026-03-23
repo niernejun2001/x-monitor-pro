@@ -2,6 +2,61 @@ import time
 from DrissionPage import ChromiumPage
 
 
+def _read_browser_cookie_value(browser, cookie_name):
+    if browser is None or not cookie_name:
+        return ''
+    try:
+        rows = browser.cookies(all_domains=True, all_info=True)
+    except TypeError:
+        try:
+            rows = browser.cookies(all_domains=True)
+        except Exception:
+            return ''
+    except Exception:
+        return ''
+    for row in list(rows or []):
+        if not isinstance(row, dict):
+            try:
+                name = getattr(row, 'name', '')
+                value = getattr(row, 'value', '')
+            except Exception:
+                continue
+        else:
+            name = row.get('name', '')
+            value = row.get('value', '')
+        if str(name or '').strip() == str(cookie_name or '').strip():
+            return str(value or '').strip()
+    return ''
+
+
+def _resolve_auth_bootstrap_strategy(saved_token, profile_token):
+    saved = str(saved_token or '').strip()
+    profile = str(profile_token or '').strip()
+    if profile:
+        return {
+            'mode': 'reuse_profile',
+            'token': profile,
+            'has_profile_token': True,
+            'saved_token_present': bool(saved),
+            'tokens_match': bool(saved and saved == profile),
+        }
+    if saved:
+        return {
+            'mode': 'inject_saved',
+            'token': saved,
+            'has_profile_token': False,
+            'saved_token_present': True,
+            'tokens_match': False,
+        }
+    return {
+        'mode': 'no_token',
+        'token': '',
+        'has_profile_token': False,
+        'saved_token_present': False,
+        'tokens_match': False,
+    }
+
+
 def init_global_browser(deps):
     with deps.browser_init_lock:
         if deps.browser_initialized and deps.global_browser:
@@ -71,8 +126,20 @@ def init_global_browser(deps):
                     )
                     deps._set_runtime_attr('global_browser', ChromiumPage(co))
                     deps.global_browser.get('https://x.com')
-                    cookie_dict = {'name': 'auth_token', 'value': deps.global_token.strip(), 'domain': '.x.com', 'path': '/', 'secure': True}
-                    deps.global_browser.set.cookies(cookie_dict)
+                    profile_auth_token = _read_browser_cookie_value(deps.global_browser, 'auth_token')
+                    bootstrap = _resolve_auth_bootstrap_strategy(deps.global_token, profile_auth_token)
+                    if bootstrap['mode'] == 'inject_saved':
+                        cookie_dict = {'name': 'auth_token', 'value': bootstrap['token'], 'domain': '.x.com', 'path': '/', 'secure': True}
+                        deps.global_browser.set.cookies(cookie_dict)
+                        deps.log_to_ui('info', '🔐 未检测到 Profile 登录态，已注入保存的 auth_token')
+                    elif bootstrap['mode'] == 'reuse_profile':
+                        deps._set_runtime_attr('global_token', bootstrap['token'])
+                        if bootstrap['saved_token_present'] and (not bootstrap['tokens_match']):
+                            deps.log_to_ui('info', '🔐 检测到 Profile 内已有登录态，已优先复用浏览器会话，不覆盖为旧 auth_token')
+                        else:
+                            deps.log_to_ui('debug', '🔐 已复用固定 Profile 内的登录态')
+                    else:
+                        deps.log_to_ui('warn', '⚠️ 未检测到可用 auth_token，将以当前浏览器会话状态继续（如需使用请手动登录）')
                     deps.global_browser.refresh()
                     time.sleep(3)
                     deps._set_runtime_attr('browser_initialized', True)
