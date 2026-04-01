@@ -6,6 +6,8 @@ __pycache__/
 
 venv/
 .pyi-venv/
+frontend/node_modules/
+frontend/.vite/
 
 data/
 out/

@@ -6,9 +6,9 @@ import types
 import unittest
 from collections import deque
 
-from xmonitor.storage import state_io
+from xmonitor.storage.state import io as state_io
 from xmonitor.runtime.runtime_state import build_runtime_state, set_runtime_attr
-from xmonitor.storage.storage_sqlite import APP_STATE_KEY, PROCESSED_USERS_KEY, has_blob, has_processed_users_table, has_structured_state, load_blob, load_processed_users_set, load_structured_state
+from xmonitor.storage.state.sqlite import APP_STATE_KEY, PROCESSED_USERS_KEY, has_blob, has_processed_users_table, has_structured_state, load_blob, load_processed_users_set, load_structured_state
 
 
 class FakeDeps(types.SimpleNamespace):

@@ -1,6 +1,6 @@
 import unittest
 
-from xmonitor.browser.browser_manager import _resolve_auth_bootstrap_strategy
+from xmonitor.browser.core.manager import _resolve_auth_bootstrap_strategy
 
 
 class BrowserManagerTests(unittest.TestCase):

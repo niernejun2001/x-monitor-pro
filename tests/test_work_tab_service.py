@@ -2,7 +2,7 @@ import threading
 import types
 import unittest
 
-from xmonitor.browser.work_tab_service import ensure_reply_work_tab
+from xmonitor.browser.tabs.work_tab_service import ensure_reply_work_tab
 from xmonitor.runtime.runtime_state import build_runtime_state, set_runtime_attr
 
 

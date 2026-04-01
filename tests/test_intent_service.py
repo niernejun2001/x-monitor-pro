@@ -1,8 +1,9 @@
 import types
 import unittest
 
-from xmonitor.services.intent_service import (
+from xmonitor.services.analysis.intent import (
     is_business_consult_signal,
+    llm_intent_analysis,
     rule_based_intent_analysis,
     should_notify_voice_by_intent,
 )
@@ -52,6 +53,26 @@ class IntentServiceTests(unittest.TestCase):
             'block_intent': result['block_intent'],
         }
         self.assertTrue(should_notify_voice_by_intent(analysis))
+
+    def test_llm_intent_analysis_tolerates_none_score(self):
+        deps = self._make_deps()
+        deps._build_intent_analysis_prompt = lambda content: f'prompt:{content}'
+        deps._call_openai_compatible_json = lambda *args, **kwargs: ({
+            'intent_score': None,
+            'intent_level': 'medium',
+            'is_intent_user': True,
+            'force_notify': False,
+            'buying_signals': ['咨询'],
+            'reason': '正常咨询',
+        }, '{}')
+        deps._is_negative_intent_reason = lambda reason: False
+        deps._score_to_intent_level = lambda score: 'high' if score >= 85 else ('medium' if score >= 55 else ('low' if score >= 25 else 'noise'))
+
+        result = llm_intent_analysis('老板 想了解下', deps)
+
+        self.assertIsInstance(result, dict)
+        self.assertEqual(result['intent_score'], 0)
+        self.assertEqual(result['intent_level'], 'medium')
 
 
 if __name__ == '__main__':

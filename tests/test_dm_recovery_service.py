@@ -1,7 +1,9 @@
+import os
 import types
 import unittest
+from unittest import mock
 
-from xmonitor.services.dm_recovery_service import read_dm_session_state, run_dm_send_sequence_once
+from xmonitor.services.dm.recovery_service import read_dm_session_state, run_dm_send_sequence_once, run_dm_send_with_recovery
 
 
 class DMRecoveryServiceTests(unittest.TestCase):
@@ -83,6 +85,80 @@ class DMRecoveryServiceTests(unittest.TestCase):
         self.assertEqual(sent_payloads, ['https://x.com/demo/status/1'])
         self.assertIn('send_dm_link', marks)
         self.assertIn('send_dm_text', marks)
+
+    def test_run_dm_send_sequence_once_falls_back_to_template_when_llm_down(self):
+        sent_payloads = []
+        logs = []
+
+        deps = types.SimpleNamespace(
+            _open_dm_editor_for_handle=lambda tab, handle: (object(), ''),
+            _send_dm_message_with_retry=lambda tab, text, handle='': (sent_payloads.append(text) or (True, '')),
+            _is_dm_closed_error_text=lambda msg: False,
+            _confirm_dm_closed_dual_stage=lambda tab, handle: (False, ''),
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            log_to_ui=lambda level, msg: logs.append((level, msg)),
+            _sanitize_dm_message_text=lambda text: str(text or '').strip(),
+            _prepare_reply_prompt_guard=lambda tab, stage: None,
+            _humanized_gap_between_dm_messages=lambda tab: None,
+            _conversation_contains_dm_text=lambda tab, text: False,
+            DM_LLM_DOWN_FALLBACK_TEMPLATE=True,
+            _is_dm_llm_fallback_allowed=lambda code, detail: True,
+        )
+
+        def dm_text_supplier():
+            return False, '', {'error_code': 'E_DM_LLM_GENERATE_FAILED', 'error_detail': 'llm down'}
+
+        ok, err, dm_closed = run_dm_send_sequence_once(
+            tab=types.SimpleNamespace(),
+            dm_handle='@demo',
+            share_link='https://x.com/demo/status/1',
+            dm_text='模板文案',
+            deps=deps,
+            dm_text_supplier=dm_text_supplier,
+        )
+
+        self.assertTrue(ok)
+        self.assertFalse(dm_closed)
+        self.assertEqual(err, '')
+        self.assertEqual(sent_payloads, ['https://x.com/demo/status/1', '模板文案'])
+        self.assertTrue(any('模板降级' in msg for _, msg in logs))
+
+    def test_run_dm_send_with_recovery_skips_headful_fallback_without_display(self):
+        logs = []
+        deps = types.SimpleNamespace(
+            _enter_dm_critical=lambda section='': True,
+            _leave_dm_critical=lambda: None,
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            DM_RECOVERY_ENABLE_RECREATE_TAB=False,
+            DM_RECOVERY_ENABLE_RESTART_BROWSER=False,
+            DM_RECOVERY_ENABLE_HEADFUL_FALLBACK=True,
+            DM_RECOVERY_HEADFUL_REQUIRE_DISPLAY=True,
+            _classify_dm_error_text=lambda err: 'other',
+            _is_dm_soft_send_error_text=lambda err: False,
+            _capture_runtime_diagnostic=lambda *args, **kwargs: None,
+            ensure_reply_work_tab=lambda force_recreate=False: types.SimpleNamespace(),
+            restart_global_browser=lambda: None,
+            log_to_ui=lambda level, msg: logs.append((level, msg)),
+            headless_mode=True,
+        )
+
+        def fail_once(*args, **kwargs):
+            return False, '普通失败', False
+
+        with mock.patch('xmonitor.services.dm.recovery_service.run_dm_send_sequence_once', side_effect=fail_once):
+            with mock.patch.dict(os.environ, {}, clear=True):
+                ok, err, dm_closed, _ = run_dm_send_with_recovery(
+                    tab=types.SimpleNamespace(),
+                    dm_handle='@demo',
+                    share_link='https://x.com/demo/status/1',
+                    dm_text='模板文案',
+                    deps=deps,
+                )
+
+        self.assertFalse(ok)
+        self.assertFalse(dm_closed)
+        self.assertIn('普通失败', err)
+        self.assertTrue(any('跳过本次有头兜底' in msg for _, msg in logs))
 
 
 if __name__ == '__main__':

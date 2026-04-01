@@ -1,7 +1,7 @@
 import types
 import unittest
 
-from xmonitor.services.notification_scan import scan_notifications_page
+from xmonitor.services.notify.scan import scan_notifications_page
 
 
 class _FakeLink:

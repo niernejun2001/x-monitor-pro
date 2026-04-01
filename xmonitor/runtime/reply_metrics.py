@@ -1,4 +1,4 @@
-from xmonitor.services.reply_runtime import is_reply_flow_active, record_reply_outcome, set_reply_flow_active
+from xmonitor.services.reply.runtime import is_reply_flow_active, record_reply_outcome, set_reply_flow_active
 
 
 def set_reply_flow_active_deps(active, deps):

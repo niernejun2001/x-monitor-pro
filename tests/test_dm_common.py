@@ -1,7 +1,7 @@
 import types
 import unittest
 
-from xmonitor.services.dm_common import confirm_dm_message_sent, conversation_contains_dm_text
+from xmonitor.services.dm.common import confirm_dm_message_sent, conversation_contains_dm_text
 
 
 class DMCommonTests(unittest.TestCase):

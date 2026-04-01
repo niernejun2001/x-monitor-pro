@@ -3,7 +3,7 @@ import tempfile
 import types
 import unittest
 
-from xmonitor.storage.storage_sqlite import (
+from xmonitor.storage.state.sqlite import (
     has_blob,
     has_processed_users_table,
     has_structured_state,

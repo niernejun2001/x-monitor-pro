@@ -3,7 +3,7 @@ import types
 import unittest
 from unittest import mock
 
-from xmonitor.services.notify_reply_service import send_notification_reply
+from xmonitor.services.notify.reply_service import send_notification_reply
 
 
 class NotifyReplyServiceTests(unittest.TestCase):
@@ -138,7 +138,7 @@ class NotifyReplyServiceTests(unittest.TestCase):
             _capture_runtime_diagnostic=lambda *args, **kwargs: '',
         )
 
-        with mock.patch('xmonitor.services.notify_reply_service.time.sleep', lambda _: None):
+        with mock.patch('xmonitor.services.notify.reply_service.time.sleep', lambda _: None):
             ok, err = send_notification_reply({'key': 'n1', 'handle': '@demo'}, '公开回复', deps, dm_message='模板')
 
         self.assertFalse(ok)

@@ -4,7 +4,7 @@ import unittest
 
 from flask import Flask
 
-from xmonitor.web.routes_notify import register_notify_routes
+from xmonitor.web.notify_routes import register_notify_routes
 
 
 class FakePendingRepo:
@@ -92,6 +92,59 @@ class RoutesNotifyTests(unittest.TestCase):
         resp = client.post('/api/notify_retry', json={'key': 'n1'})
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.get_json()['status'], 'retry_waiting')
+
+    def test_notify_reply_budget_block_returns_429(self):
+        client, deps = self._client(send_ok=True)
+        logs = []
+        deps.log_to_ui = lambda level, msg: logs.append((level, msg))
+        deps._check_reply_failure_budget = lambda handle: (False, '预算熔断中')
+
+        resp = client.post('/api/notify_reply', json={'key': 'n1', 'message': 'hi', 'dm_message': 'dm'})
+
+        self.assertEqual(resp.status_code, 429)
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'err')
+        self.assertIn('预算熔断中', data['msg'])
+        self.assertTrue(any('触发失败预算熔断' in msg for _, msg in logs))
+
+    def test_notify_reply_retries_after_unhandled_prompt(self):
+        client, deps = self._client(send_ok=False)
+        logs = []
+        sent_calls = {'count': 0}
+        recover_stages = []
+        recover_gets = []
+
+        class RecoverTab:
+            url = 'https://x.com/home'
+
+            def get(self, url):
+                recover_gets.append(url)
+                self.url = url
+
+        recover_tab = RecoverTab()
+        deps.log_to_ui = lambda level, msg: logs.append((level, msg))
+        deps.UNHANDLED_PROMPT_AUTO_RETRY = 1
+        deps.ensure_reply_work_tab = lambda force_recreate=False: recover_tab
+        deps._prepare_reply_prompt_guard = lambda tab, stage='': recover_stages.append(stage)
+        deps._is_unhandled_prompt_error = lambda err: '未处理的提示框' in str(err or '')
+
+        def fake_send(item, message, dm_message=''):
+            sent_calls['count'] += 1
+            if sent_calls['count'] == 1:
+                return False, '存在未处理的提示框'
+            return True, ''
+
+        deps.send_notification_reply = fake_send
+
+        resp = client.post('/api/notify_reply', json={'key': 'n1', 'message': 'hi', 'dm_message': 'dm'})
+
+        self.assertEqual(resp.status_code, 200)
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'ok')
+        self.assertEqual(sent_calls['count'], 2)
+        self.assertIn('https://x.com/notifications', recover_gets)
+        self.assertTrue(any('自动恢复重试1' in stage for stage in recover_stages))
+        self.assertTrue(any('自动恢复后重试' in msg for _, msg in logs))
 
 
 if __name__ == '__main__':

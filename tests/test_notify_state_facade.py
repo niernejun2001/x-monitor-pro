@@ -2,7 +2,7 @@ import threading
 import types
 import unittest
 
-from xmonitor.storage.notify_state_facade import NotifyStateFacade
+from xmonitor.storage.notify.facade import NotifyStateFacade
 
 
 class NotifyStateFacadeTests(unittest.TestCase):

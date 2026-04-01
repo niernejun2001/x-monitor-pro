@@ -3,7 +3,7 @@ import types
 import unittest
 from unittest import mock
 
-from xmonitor.services.dm_flow_service import (
+from xmonitor.services.dm.flow_service import (
     dm_humanized_idle,
     ensure_dm_context_for_handle,
     should_use_share_link_quick_path,

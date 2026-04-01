@@ -1,6 +1,6 @@
 import unittest
 
-from xmonitor.services.dm_open_service import direct_compose_state_indicates_closed
+from xmonitor.services.dm.open_service import direct_compose_state_indicates_closed
 
 
 class DMOpenServiceTests(unittest.TestCase):

@@ -2,7 +2,7 @@ import threading
 import types
 import unittest
 
-from xmonitor.services.filter_service import (
+from xmonitor.services.analysis.filter import (
     is_emoji_only_content,
     make_content_signature,
     normalize_content_for_filter,
