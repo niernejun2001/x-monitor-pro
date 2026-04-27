@@ -29,6 +29,27 @@ NOTIFICATION_MENTION_YOU_KEYWORDS = (
     'mentioned you in a post',
 )
 
+NOTIFICATION_ACTION_NOISE_KEYWORDS = tuple(
+    sorted(
+        dict.fromkeys(
+            list(NOTIFICATION_REPLY_TO_YOU_KEYWORDS)
+            + list(NOTIFICATION_MENTION_YOU_KEYWORDS)
+            + [
+                'liked your',
+                'liked',
+                'retweeted',
+                'reposted',
+                'followed you',
+                '点赞了',
+                '转发了',
+                '关注了你',
+            ]
+        ),
+        key=len,
+        reverse=True,
+    )
+)
+
 
 def normalize_notification_text(text):
     return re.sub(r'\s+', ' ', str(text or '')).strip()
@@ -90,10 +111,7 @@ def is_noise_notification_text(text, handle, user_name_candidates):
         return True
     if is_display_name_like(text, user_name_candidates):
         return True
-    action_keywords = [
-        'replied to you', 'mentioned you', 'liked', 'retweeted', 'reposted', 'followed you',
-        '回复了你', '提到了你', '点赞了', '转发了', '关注了你'
-    ]
+    action_keywords = NOTIFICATION_ACTION_NOISE_KEYWORDS
     if any(k in low for k in action_keywords) and len(text) <= 40:
         cleaned = re.sub(r'@\w+', ' ', low)
         cleaned = re.sub(r'\b\d+[smhd]\b', ' ', cleaned, flags=re.IGNORECASE)
@@ -109,9 +127,16 @@ def score_notification_candidate(text, source, user_name_candidates):
     low = text.lower()
     stripped_bonus = 0
     source_key = source
-    if str(source or '').endswith('_stripped'):
-        source_key = str(source)[:-9]
-        stripped_bonus = 50
+    while True:
+        if str(source_key or '').endswith('_stripped'):
+            source_key = str(source_key)[:-9]
+            stripped_bonus += 50
+            continue
+        if str(source_key or '').endswith('_trimmed'):
+            source_key = str(source_key)[:-8]
+            stripped_bonus += 35
+            continue
+        break
     source_score = {
         'tweetText': 120,
         'lang': 95,
@@ -133,8 +158,16 @@ def score_notification_candidate(text, source, user_name_candidates):
         score -= 80
     if re.match(r'^\s*@\w+\s*$', text):
         score -= 40
-    if any(k in low for k in ['replied to you', 'mentioned you', '回复了你', '提到了你']):
+    if any(k in low for k in NOTIFICATION_ACTION_NOISE_KEYWORDS):
         score -= 25
+    if source_key in {'line', 'cleaned'}:
+        if (
+            ('·' in text)
+            or re.search(r'\d+\s*(秒|分钟|分|小时|天)', text)
+            or re.search(r'(^|\s)回复(?:\s|$)', text)
+            or any(k in low for k in NOTIFICATION_ACTION_NOISE_KEYWORDS)
+        ):
+            score -= 90
     return score
 
 

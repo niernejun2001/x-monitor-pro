@@ -42,6 +42,16 @@ export interface PendingItem {
   [key: string]: unknown
 }
 
+export interface NotificationScheduleSnapshot {
+  period_label?: string
+  boost_active?: boolean
+  idle_active?: boolean
+  scan_multiplier?: number
+  refresh_multiplier?: number
+  idle_scan_streak?: number
+  boost_age_sec?: number | null
+}
+
 export interface StatePayload {
   token?: string
   token_configured?: boolean
@@ -51,6 +61,19 @@ export interface StatePayload {
   updates_last_seq: number
   updates_buffer_size: number
   notification_monitoring: boolean
+  notification_schedule_snapshot?: NotificationScheduleSnapshot
+  notification_schedule_text?: string
+  notification_refresh_interval?: number
+  notification_last_refresh_at?: number
+  notification_next_refresh_at?: number
+  notification_scan_interval?: number
+  notification_last_scan_at?: number
+  notification_next_scan_at?: number
+  notification_last_new_item_at?: number
+  notification_idle_scan_streak?: number
+  notification_full_refresh_pending?: boolean
+  notification_full_refresh_reason?: string
+  notification_dm_light_scan_count?: number
   delegated_account: string
   delegated_enabled: boolean
   headless_mode: boolean
@@ -62,6 +85,8 @@ export interface StatePayload {
   llm_filter_model: string
   llm_filter_timeout_sec: number
   llm_filter_timeout_max_sec: number
+  llm_filter_retry_count?: number
+  llm_filter_retry_backoff_sec?: number
   llm_filter_prompt_template: string
   llm_intent_prompt_template: string
   dm_llm_rewrite_enabled: boolean

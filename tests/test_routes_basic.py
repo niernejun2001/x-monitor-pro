@@ -2,6 +2,9 @@ import queue
 import threading
 import types
 import unittest
+import tempfile
+import os
+from pathlib import Path
 
 from flask import Flask
 
@@ -81,6 +84,7 @@ class FakeBrowser:
 class RoutesBasicTests(unittest.TestCase):
     def _make_deps(self):
         deps = types.SimpleNamespace()
+        deps.BASE_DIR = '/tmp/xmonitor-test'
         deps.data_lock = threading.Lock()
         deps.global_token = 'token'
         deps.monitor_active = False
@@ -110,6 +114,27 @@ class RoutesBasicTests(unittest.TestCase):
         deps.DM_LLM_REWRITE_DEDUPE_SIZE = 50
         deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = ''
         deps.NOTIFICATION_REPLY_ONLY_MODE = True
+        deps.notification_refresh_interval = 88.0
+        deps.notification_last_refresh_at = 123.0
+        deps.notification_next_refresh_at = 211.0
+        deps.notification_scan_interval = 9.5
+        deps.notification_last_scan_at = 456.0
+        deps.notification_next_scan_at = 465.5
+        deps.notification_last_new_item_at = 100.0
+        deps.notification_idle_scan_streak = 2
+        deps.notification_full_refresh_pending = False
+        deps.notification_full_refresh_reason = ''
+        deps.notification_dm_light_scan_count = 0
+        deps.get_notification_schedule_snapshot = lambda: {
+            'period_label': 'active',
+            'boost_active': True,
+            'idle_active': False,
+            'scan_multiplier': 0.72,
+            'refresh_multiplier': 0.79,
+            'idle_scan_streak': deps.notification_idle_scan_streak,
+            'boost_age_sec': 23.0,
+        }
+        deps.format_notification_schedule_snapshot = lambda snapshot: 'period=active mode=boost scanX=0.72 refreshX=0.79 idleStreak=2 boostAge=23s'
         deps._build_notify_tts_runtime_payload = lambda include_secrets=True: {
             'notify_tts_enabled': False,
             'notify_tts_access_token_configured': False,
@@ -191,6 +216,27 @@ class RoutesBasicTests(unittest.TestCase):
         self.assertEqual(data['last_seq'], 3)
         self.assertEqual(data['new_items'], [{'id': 1}])
 
+    def test_index_includes_asset_version_query(self):
+        deps = self._make_deps()
+        templates_dir = str((Path(__file__).resolve().parents[1] / 'templates'))
+        app = Flask(__name__, template_folder=templates_dir)
+        register_basic_routes(app, deps)
+        client = app.test_client()
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deps.BASE_DIR = tmpdir
+            os.makedirs(os.path.join(tmpdir, 'static', 'app'), exist_ok=True)
+            js_path = os.path.join(tmpdir, 'static', 'app', 'app.js')
+            css_path = os.path.join(tmpdir, 'static', 'app', 'app.css')
+            with open(js_path, 'w', encoding='utf-8') as f:
+                f.write('console.log(1)')
+            with open(css_path, 'w', encoding='utf-8') as f:
+                f.write('body{}')
+            resp = client.get('/')
+            html = resp.get_data(as_text=True)
+        self.assertEqual(resp.status_code, 200)
+        self.assertIn('/static/app/app.js?v=', html)
+        self.assertIn('/static/app/app.css?v=', html)
+
     def test_state_endpoint_masks_secret_fields(self):
         client, deps = self._client()
         deps.LLM_FILTER_API_KEY = 'secret-key'
@@ -203,6 +249,18 @@ class RoutesBasicTests(unittest.TestCase):
         self.assertTrue(data['browser_proxy_configured'])
         self.assertEqual(data['browser_proxy_source'], 'XMONITOR_PROXY')
         self.assertEqual(data['browser_proxy_display'], 'socks5://127.0.0.1:1080')
+        self.assertTrue(data['twitter_cli_enabled'])
+        self.assertTrue(data['twitter_cli_available'])
+        self.assertEqual(data['llm_filter_retry_count'], 2)
+        self.assertEqual(data['llm_filter_retry_backoff_sec'], 0.35)
+        self.assertEqual(data['notification_schedule_snapshot']['period_label'], 'active')
+        self.assertEqual(data['notification_schedule_text'], 'period=active mode=boost scanX=0.72 refreshX=0.79 idleStreak=2 boostAge=23s')
+        self.assertEqual(data['notification_refresh_interval'], 88.0)
+        self.assertEqual(data['notification_next_refresh_at'], 211.0)
+        self.assertEqual(data['notification_scan_interval'], 9.5)
+        self.assertEqual(data['notification_last_scan_at'], 456.0)
+        self.assertEqual(data['notification_next_scan_at'], 465.5)
+        self.assertFalse(data['notification_full_refresh_pending'])
 
     def test_start_route_reuses_saved_token_when_payload_missing(self):
         client, deps = self._client()

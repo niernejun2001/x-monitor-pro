@@ -1,6 +1,8 @@
 import random
 import time
 
+from xmonitor.services.notify.schedule_state import update_notification_refresh_schedule
+
 
 def run_headful_soft_maintenance(blocked_users, notify_enabled, deps):
     """
@@ -33,8 +35,11 @@ def run_headful_soft_maintenance(blocked_users, notify_enabled, deps):
                         break
             except Exception:
                 pass
-        deps._set_runtime_attr('notification_last_refresh_at', time.time())
-        deps._set_runtime_attr('notification_refresh_interval', deps._schedule_next_notification_refresh_interval(deps.notification_refresh_interval))
+        update_notification_refresh_schedule(
+            deps,
+            last_refresh_at=time.time(),
+            interval=deps._schedule_next_notification_refresh_interval(deps.notification_refresh_interval),
+        )
         return True
     except Exception as e:
         deps.log_to_ui('warn', f'⚠️ 有头轻量维护失败: {e}')

@@ -2,6 +2,7 @@ import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { PendingItem } from '../types'
 import * as api from '../api/services'
+import { useAppStore } from './app'
 
 type FilterKind = 'notify' | 'tweet'
 
@@ -21,7 +22,7 @@ export const useResultsStore = defineStore('results', () => {
   const filterText = ref<Record<FilterKind, string>>({ notify: '', tweet: '' })
   const selectedReplyByKey = ref<Record<string, string>>({})
   const selectedDmByKey = ref<Record<string, string>>({})
-  const polling = ref<{ updates: number | null; sync: number | null }>({ updates: null, sync: null })
+  const polling = ref<{ updates: number | null; sync: number | null; state: number | null }>({ updates: null, sync: null, state: null })
   let rowSeq = 0
 
   function assignRow(item: PendingItem) {
@@ -95,6 +96,12 @@ export const useResultsStore = defineStore('results', () => {
     }
   }
 
+  async function syncAppState() {
+    const app = useAppStore()
+    const payload = await api.fetchState()
+    app.hydrate(payload)
+  }
+
   function startPolling() {
     stopPolling()
     polling.value.updates = window.setInterval(() => {
@@ -103,12 +110,16 @@ export const useResultsStore = defineStore('results', () => {
     polling.value.sync = window.setInterval(() => {
       syncNotifyFlow().catch(() => undefined)
     }, 6000)
+    polling.value.state = window.setInterval(() => {
+      syncAppState().catch(() => undefined)
+    }, 5000)
   }
 
   function stopPolling() {
     if (polling.value.updates) window.clearInterval(polling.value.updates)
     if (polling.value.sync) window.clearInterval(polling.value.sync)
-    polling.value = { updates: null, sync: null }
+    if (polling.value.state) window.clearInterval(polling.value.state)
+    polling.value = { updates: null, sync: null, state: null }
   }
 
   async function markDone(key: string, handle = '') {
@@ -156,5 +167,6 @@ export const useResultsStore = defineStore('results', () => {
     clear,
     clearAllBlocklist,
     syncNotifyFlow,
+    syncAppState,
   }
 })

@@ -1,6 +1,8 @@
 import threading
+import time
 import types
 import unittest
+from unittest import mock
 
 from xmonitor.runtime.reply_metrics import (
     is_reply_flow_active_deps,
@@ -41,6 +43,28 @@ class ReplyMetricsTests(unittest.TestCase):
         self.assertIn('demo', deps.reply_handle_failures)
         record_reply_outcome_deps('@demo', True, '', deps)
         self.assertEqual(deps.runtime_state.reply_failure_streak, 0)
+
+    def test_record_reply_outcome_sets_cooldown_when_budget_exceeded(self):
+        deps = self._make_deps()
+        base_now = 1000.0
+        with mock.patch('xmonitor.services.reply.runtime.time.time', return_value=base_now):
+            record_reply_outcome_deps('@demo', False, 'err1', deps)
+            record_reply_outcome_deps('@demo', False, 'err2', deps)
+            record_reply_outcome_deps('@demo', False, 'err3', deps)
+
+        record = deps.reply_handle_failures['demo']
+        self.assertEqual(record['count'], 3)
+        self.assertGreaterEqual(record['cooldown_until'], base_now + 120)
+
+    def test_record_reply_outcome_resets_window_after_expiry(self):
+        deps = self._make_deps()
+        with mock.patch('xmonitor.services.reply.runtime.time.time', return_value=1000.0):
+            record_reply_outcome_deps('@demo', False, 'err1', deps)
+        with mock.patch('xmonitor.services.reply.runtime.time.time', return_value=1101.0):
+            record_reply_outcome_deps('@demo', False, 'err2', deps)
+
+        record = deps.reply_handle_failures['demo']
+        self.assertEqual(record['count'], 1)
 
 
 if __name__ == '__main__':

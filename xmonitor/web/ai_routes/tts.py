@@ -2,6 +2,8 @@ import time
 
 from flask import jsonify, request
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 
 def register_tts_routes(app, deps):
     @app.route('/api/set_notify_tts_config', methods=['POST'])
@@ -37,7 +39,7 @@ def register_tts_routes(app, deps):
             return jsonify({'status': 'ok', 'msg': '豆包TTS测试通过', 'latency_ms': elapsed_ms, 'audio_b64_len': len(str(audio_b64 or '')), **deps._build_notify_tts_runtime_payload(include_secrets=False)})
         except Exception as e:
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
-            return jsonify({'status': 'err', 'msg': f'豆包TTS测试失败: {e}', 'latency_ms': elapsed_ms, **deps._build_notify_tts_runtime_payload(include_secrets=False)}), 500
+            return jsonify({'status': 'err', 'msg': f'豆包TTS测试失败: {format_runtime_error(e)}', 'latency_ms': elapsed_ms, **deps._build_notify_tts_runtime_payload(include_secrets=False)}), 500
 
     @app.route('/api/tts/synthesize', methods=['POST'])
     def tts_synthesize():
@@ -58,6 +60,6 @@ def register_tts_routes(app, deps):
                 'audio_base64': audio_b64,
             })
         except Exception as e:
-            err_msg = str(e)
+            err_msg = format_runtime_error(e)
             deps.log_to_ui('warn', f'🔊 豆包TTS合成失败: {err_msg}')
             return jsonify({'status': 'err', 'msg': err_msg, 'provider': 'doubao'}), 500

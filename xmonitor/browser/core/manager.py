@@ -1,6 +1,12 @@
 import time
 from DrissionPage import ChromiumPage
 
+from xmonitor.services.support.error_format import format_runtime_error
+
+
+def _format_browser_error(err):
+    return format_runtime_error(err)
+
 
 def _read_browser_cookie_value(browser, cookie_name):
     if browser is None or not cookie_name:
@@ -165,7 +171,8 @@ def init_global_browser(deps):
                             'headless_force_temp_profile': bool(deps.HEADLESS_FORCE_TEMP_PROFILE),
                         },
                     )
-                    err_text = str(e).lower()
+                    display_error = _format_browser_error(e)
+                    err_text = display_error.lower()
                     connection_failed = any(keyword in err_text for keyword in [
                         'cannot connect', '连接失败', 'disconnected', 'connection failed', 'timed out', 'timeout'
                     ])
@@ -186,11 +193,11 @@ def init_global_browser(deps):
                     if deps.global_browser_dir:
                         deps.cleanup_browser_user_data_dir(deps.global_browser_dir)
                         deps._set_runtime_attr('global_browser_dir', None)
-                    deps.log_to_ui('warn', f'⚠️ 浏览器初始化失败({attempt}/{max_attempts}): {str(e)}')
+                    deps.log_to_ui('warn', f'⚠️ 浏览器初始化失败({attempt}/{max_attempts}): {display_error}')
             if attempt < max_attempts:
                 time.sleep(1.5 * attempt)
 
-        raise RuntimeError(f'浏览器初始化失败，已重试 {max_attempts} 次: {last_error}')
+        raise RuntimeError(f'浏览器初始化失败，已重试 {max_attempts} 次: {_format_browser_error(last_error)}')
 
 
 def cleanup_global_browser(deps):

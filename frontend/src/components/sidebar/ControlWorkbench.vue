@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { storeToRefs } from 'pinia'
-import { computed, ref } from 'vue'
+import { computed } from 'vue'
 import { useAppStore } from '../../stores/app'
 import { useToastStore } from '../../stores/toast'
 
@@ -13,7 +13,6 @@ const {
   isRunning,
   notificationMonitoring,
   headlessMode,
-  delegatedAccount,
   notifyTtsEnabled,
   notifyTtsAppId,
   notifyTtsAccessToken,
@@ -29,6 +28,8 @@ const {
   llmApiKeyConfigured,
   llmTimeoutSec,
   llmTimeoutMaxSec,
+  llmRetryCount,
+  llmRetryBackoffSec,
   llmIntentPromptTemplate,
   llmFilterPromptTemplate,
   dmLlmRewriteEnabled,
@@ -36,61 +37,56 @@ const {
   notifyVoiceBlockKeywords,
   llmIntentInput,
   llmIntentResult,
+  notificationToggleBusy,
+  llmTestBusy,
   serverAudioMeta,
   browserProxyMeta,
+  notificationScheduleMeta,
 } = storeToRefs(app)
 
-const jumpHandle = ref('')
-const controlSection = ref<'delegation' | 'voice' | 'ai'>('delegation')
-const aiSection = ref<'connection' | 'rewrite' | 'analysis'>('connection')
+const statusPill = computed(() => {
+  if (isRunning.value) return '运行中'
+  if (tokenConfigured.value) return '已就绪'
+  return '待配置'
+})
 
-const controlSectionButtons = [
-  { key: 'delegation', label: '委派', hint: '账号与跳转' },
-  { key: 'voice', label: '语音', hint: '播报与声音' },
-  { key: 'ai', label: 'AI', hint: '过滤与改写' },
-] as const
+const audioSummary = computed(() => {
+  if (serverAudioMeta.value.enabled) return `服务端 / ${serverAudioMeta.value.player}`
+  return notifyTtsEnabled.value ? '浏览器播放' : '浏览器兜底'
+})
 
-const aiSectionButtons = [
-  { key: 'connection', label: '连接' },
-  { key: 'rewrite', label: '改写' },
-  { key: 'analysis', label: '分析' },
-] as const
+const aiSummary = computed(() => {
+  if (!llmFilterEnabled.value) return '规则优先'
+  return llmModel.value?.trim() || '模型已启用'
+})
 
-const controlSectionSummary = computed<Record<'delegation' | 'voice' | 'ai', string>>(() => ({
-  delegation: delegatedAccount.value?.trim() ? delegatedAccount.value.trim() : '未绑定',
-  voice: notifyTtsEnabled.value ? (notifyTtsVoiceType.value?.trim() || '已启用') : '浏览器兜底',
-  ai: llmFilterEnabled.value ? (llmModel.value?.trim() || '模型已启用') : '过滤关闭',
-}))
+const notificationScheduleTone = computed(() => {
+  if (notificationScheduleMeta.value.pendingFullRefresh) return 'border-amber-400/25 bg-amber-400/10 text-amber-700'
+  if (notificationScheduleMeta.value.mode === '提速') return 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700'
+  if (notificationScheduleMeta.value.mode === '降频') return 'border-emerald-200/90 bg-white/80 text-emerald-700'
+  return 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700'
+})
 
-const engineCards = computed(() => [
+const compactStatusCards = computed(() => [
   {
-    label: '运行状态',
-    value: isRunning.value ? '运行中' : '待机',
-    tone: isRunning.value ? 'border-emerald-400/20 bg-emerald-400/8 text-emerald-200' : 'border-rose-400/20 bg-rose-400/8 text-rose-200',
+    label: 'Token',
+    value: tokenConfigured.value ? '已保存' : '缺失',
+    tone: tokenConfigured.value ? 'border-emerald-400/20 text-emerald-700' : 'border-amber-400/20 text-amber-700',
   },
   {
-    label: '通知扫描',
-    value: notificationMonitoring.value ? '已启用' : '已关闭',
-    tone: notificationMonitoring.value ? 'border-sky-400/20 bg-sky-400/8 text-sky-200' : 'border-slate-800 bg-slate-950/80 text-slate-400',
+    label: '通知',
+    value: notificationMonitoring.value ? '开启' : '关闭',
+    tone: notificationMonitoring.value ? 'border-emerald-400/30 text-emerald-700' : 'border-emerald-100/90 text-emerald-700/80',
   },
   {
-    label: '浏览器模式',
+    label: '浏览器',
     value: headlessMode.value ? '无头' : '有头',
-    tone: 'border-slate-800 bg-slate-950/80 text-slate-200',
+    tone: 'border-emerald-100/90 text-emerald-800',
   },
   {
-    label: '语音输出',
-    value: serverAudioMeta.value.enabled ? `服务端/${serverAudioMeta.value.player}` : '浏览器前端',
-    tone: 'border-slate-800 bg-slate-950/80 text-slate-200',
-  },
-  {
-    label: '网络代理',
-    value: browserProxyMeta.value.configured
-      ? `${browserProxyMeta.value.source || 'ENV'} · ${browserProxyMeta.value.display || '已配置'}`
-      : '未配置',
-    tone: browserProxyMeta.value.configured
-      ? 'border-emerald-400/20 bg-emerald-400/8 text-emerald-200'
-      : 'border-amber-400/20 bg-amber-400/8 text-amber-200',
+    label: 'AI',
+    value: aiSummary.value,
+    tone: llmFilterEnabled.value ? 'border-emerald-400/20 text-emerald-700' : 'border-emerald-100/90 text-emerald-700/80',
   },
 ])
 
@@ -139,23 +135,6 @@ async function handleTestVoice() {
   }
 }
 
-async function handleDelegationSave() {
-  try {
-    await app.saveDelegation()
-  } catch (error: any) {
-    toast.push(error?.message || '保存委派账户失败', 'error', 4200)
-  }
-}
-
-async function handleJump() {
-  if (!jumpHandle.value.trim()) return
-  try {
-    await app.jumpToReplies(jumpHandle.value.trim())
-  } catch (error: any) {
-    toast.push(error?.message || '打开用户回复页失败', 'error', 4200)
-  }
-}
-
 async function handleSaveNotifyTts() {
   try {
     await app.saveNotifyTts()
@@ -191,299 +170,250 @@ async function handleAnalyzeIntent() {
 
 <template>
   <section class="space-y-4">
-    <div class="rounded-2xl border border-sky-400/20 bg-gradient-to-br from-sky-400/10 to-emerald-400/5 p-4">
+    <div class="rounded-3xl border border-emerald-400/30 bg-gradient-to-br from-emerald-300/35 via-white/85 to-lime-200/35 p-4 shadow-[0_18px_46px_rgba(16,185,129,0.14)]">
       <div class="flex items-start justify-between gap-3">
         <div>
-          <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-sky-300">Quick Actions</div>
-          <p class="mt-2 text-xs leading-6 text-slate-400">高频控制放在最上面，长配置收进分组，减少来回滚动。</p>
+          <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-emerald-600">Today</div>
+          <h3 class="mt-1 text-lg font-semibold text-emerald-950">今日操作</h3>
+          <p class="mt-1 text-xs leading-5 text-emerald-700/80">启动、通知、播报这几个高频动作集中在这里。</p>
         </div>
-        <div class="rounded-2xl border border-sky-400/25 bg-sky-400/10 px-3 py-2 text-right">
-          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-sky-200/80">Token</div>
-          <div class="mt-1 text-sm font-semibold text-slate-50">{{ tokenConfigured ? '已配置' : '缺失' }}</div>
+        <div
+          class="rounded-full border px-3 py-1 text-xs font-semibold"
+          :class="isRunning ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700' : 'border-emerald-200/90 bg-emerald-50/80 text-emerald-700'"
+        >
+          {{ statusPill }}
         </div>
       </div>
 
-      <div class="mt-4 grid gap-3 sm:grid-cols-2">
-        <label class="sm:col-span-2 space-y-2">
-          <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">启动 Token</span>
+      <label class="mt-4 block space-y-2">
+        <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-emerald-700/60">启动 Token</span>
+        <input
+          v-model="token"
+          type="password"
+          aria-label="启动 Token"
+          :placeholder="tokenConfigured ? '已保存，留空沿用已存 Token' : '输入 auth_token 后启动'"
+          class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15"
+        />
+      </label>
+
+      <button
+        type="button"
+        class="mt-4 w-full rounded-3xl px-5 py-4 text-base font-semibold shadow-[0_16px_32px_rgba(16,185,129,0.18)] transition"
+        :class="isRunning ? 'bg-rose-500 text-white hover:brightness-105' : 'bg-gradient-to-r from-emerald-400 to-lime-300 text-emerald-950 hover:brightness-105'"
+        @click="handleStartStop(!isRunning)"
+      >
+        {{ isRunning ? '停止监控' : '启动监控' }}
+      </button>
+
+      <div class="mt-4 grid gap-2">
+        <label class="flex cursor-pointer items-center justify-between gap-3 rounded-2xl border border-emerald-100/90 bg-white/75 px-4 py-3">
+          <div>
+            <div class="text-sm font-semibold text-emerald-950">通知捕获</div>
+            <div class="text-xs text-emerald-700/60">{{ notificationToggleBusy ? '切换中' : notificationMonitoring ? '正在捕获通知' : '已暂停通知捕获' }}</div>
+          </div>
           <input
-            v-model="token"
-            type="password"
-            aria-label="启动 Token"
-            :placeholder="tokenConfigured ? '已保存，留空则沿用已存 Token' : '输入 auth_token 后启动监控'"
-            class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10"
+            v-model="notificationMonitoring"
+            :disabled="notificationToggleBusy"
+            type="checkbox"
+            class="h-5 w-5 accent-emerald-400 disabled:cursor-not-allowed disabled:opacity-50"
+            @change="handleNotificationToggle"
           />
         </label>
+
         <button
           type="button"
-          class="rounded-2xl px-4 py-3 text-sm font-semibold transition"
-          :class="isRunning ? 'bg-rose-500 text-white hover:bg-rose-400' : 'bg-emerald-400 text-slate-950 hover:bg-emerald-300'"
-          @click="handleStartStop(!isRunning)"
-        >
-          {{ isRunning ? '停止监控' : '启动监控' }}
-        </button>
-        <button
-          type="button"
-          class="rounded-2xl border border-slate-700 bg-slate-950/70 px-4 py-3 text-sm font-semibold text-slate-100 transition hover:border-slate-600"
+          class="rounded-2xl border border-emerald-200/90 bg-white/75 px-4 py-3 text-sm font-semibold text-emerald-950 transition hover:border-emerald-400"
           @click="handleTestVoice"
         >
-          测试播报
+          测试播报声音
         </button>
+      </div>
+    </div>
+
+    <div class="rounded-3xl border border-emerald-100/90 bg-white/75 p-4">
+      <div class="flex items-start justify-between gap-3">
+        <div>
+          <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-emerald-600">Status</div>
+          <h3 class="mt-1 text-sm font-semibold text-emerald-950">当前状态</h3>
+          <p class="mt-1 text-xs leading-5 text-emerald-700/60">只显示判断运行是否正常需要看的信息。</p>
+        </div>
+        <label class="flex cursor-pointer items-center gap-2 rounded-full border border-emerald-100/90 bg-emerald-50/80 px-3 py-2 text-xs text-emerald-700">
+          <span>{{ headlessMode ? '无头' : '有头' }}</span>
+          <input v-model="headlessMode" type="checkbox" class="h-4 w-4 accent-emerald-400" @change="handleHeadlessToggle" />
+        </label>
       </div>
 
       <div class="mt-4 grid grid-cols-2 gap-2">
         <div
-          v-for="card in engineCards"
+          v-for="card in compactStatusCards"
           :key="card.label"
-          class="rounded-2xl border px-3 py-3"
+          class="rounded-2xl border bg-white/70 px-3 py-3"
           :class="card.tone"
         >
           <div class="font-mono text-[10px] uppercase tracking-[0.12em] opacity-70">{{ card.label }}</div>
-          <div class="mt-2 text-sm font-semibold">{{ card.value }}</div>
+          <div class="mt-2 truncate text-sm font-semibold">{{ card.value }}</div>
         </div>
       </div>
 
-      <div class="mt-4 grid gap-3 sm:grid-cols-2">
-        <label class="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
+      <div class="mt-4 rounded-2xl border px-4 py-3" :class="notificationScheduleTone">
+        <div class="flex items-start justify-between gap-3">
           <div>
-            <div class="text-sm font-medium text-slate-100">通知扫描</div>
-            <div class="text-xs text-slate-500">控制通知标签页抓取开关</div>
+            <div class="font-mono text-[10px] uppercase tracking-[0.12em] opacity-70">Scheduler</div>
+            <div class="mt-1 text-sm font-semibold">
+              {{ notificationScheduleMeta.period }} · {{ notificationScheduleMeta.mode }}
+            </div>
           </div>
-          <input v-model="notificationMonitoring" type="checkbox" class="h-5 w-5 accent-emerald-400" @change="handleNotificationToggle" />
-        </label>
-        <label class="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
-          <div>
-            <div class="text-sm font-medium text-slate-100">浏览器模式</div>
-            <div class="text-xs text-slate-500">切换有头 / 无头执行</div>
+          <div class="text-right font-mono text-[11px] opacity-80">
+            {{ notificationScheduleMeta.scanInterval.toFixed(0) }}s / {{ notificationScheduleMeta.refreshInterval.toFixed(0) }}s
           </div>
-          <input v-model="headlessMode" type="checkbox" class="h-5 w-5 accent-emerald-400" @change="handleHeadlessToggle" />
-        </label>
+        </div>
+        <div class="mt-3 grid grid-cols-3 gap-2 text-[11px]">
+          <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+            <div class="opacity-60">下次扫描</div>
+            <div class="mt-1 font-mono">{{ notificationScheduleMeta.nextScanIn }}s</div>
+          </div>
+          <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+            <div class="opacity-60">下次刷新</div>
+            <div class="mt-1 font-mono">{{ notificationScheduleMeta.nextRefreshIn }}s</div>
+          </div>
+          <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+            <div class="opacity-60">空转</div>
+            <div class="mt-1 font-mono">{{ notificationScheduleMeta.idleScanStreak }}</div>
+          </div>
+        </div>
+        <details class="group mt-2">
+          <summary class="cursor-pointer list-none text-[11px] text-emerald-700 transition hover:text-emerald-950">
+            查看调度细节
+          </summary>
+          <div class="mt-2 grid grid-cols-2 gap-2 text-[11px] opacity-85">
+            <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+              <div class="opacity-60">扫描倍率</div>
+              <div class="mt-1 font-mono">{{ notificationScheduleMeta.scanMultiplier.toFixed(2) }}x</div>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+              <div class="opacity-60">刷新倍率</div>
+              <div class="mt-1 font-mono">{{ notificationScheduleMeta.refreshMultiplier.toFixed(2) }}x</div>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+              <div class="opacity-60">上次扫描</div>
+              <div class="mt-1 font-mono">{{ notificationScheduleMeta.lastScanAge }}s</div>
+            </div>
+            <div class="rounded-xl border border-white/10 bg-black/10 px-2 py-2">
+              <div class="opacity-60">上次刷新</div>
+              <div class="mt-1 font-mono">{{ notificationScheduleMeta.lastRefreshAge }}s</div>
+            </div>
+          </div>
+        </details>
+        <div v-if="notificationScheduleMeta.pendingFullRefresh" class="mt-3 rounded-xl border border-amber-300/20 bg-black/10 px-3 py-2 text-xs">
+          私信关键区轻扫 {{ notificationScheduleMeta.lightScanCount }} 次，退出后补完整刷新
+        </div>
       </div>
     </div>
 
-    <div class="rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-      <div class="mb-4 flex items-center justify-between gap-3">
-        <div>
-          <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-sky-300">Workbench</div>
-          <div class="mt-1 text-sm font-medium text-slate-100">控制中心分组</div>
-        </div>
-        <div class="rounded-full border border-slate-800 px-2.5 py-1 text-[11px] text-slate-400">
-          {{ controlSectionSummary[controlSection] }}
-        </div>
-      </div>
-
-      <div class="grid grid-cols-3 gap-2">
-        <button
-          v-for="button in controlSectionButtons"
-          :key="button.key"
-          type="button"
-          class="rounded-2xl border px-3 py-2 text-left transition"
-          :class="button.key === controlSection
-            ? 'border-sky-400/35 bg-sky-400/12 text-slate-50'
-            : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
-          @click="controlSection = button.key"
-        >
-          <div class="text-xs font-semibold">{{ button.label }}</div>
-          <div class="mt-1 text-[10px] text-slate-500">{{ button.hint }}</div>
-        </button>
-      </div>
-
-      <div v-if="controlSection === 'delegation'" class="mt-4 space-y-4">
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-xs leading-6 text-slate-400">
-          当前委派账户: <span class="font-mono text-slate-100">{{ controlSectionSummary.delegation }}</span>
-        </div>
-        <div class="grid gap-3">
-          <label class="space-y-2">
-            <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">委派账户</span>
-            <input
-              v-model="delegatedAccount"
-              type="text"
-              aria-label="委派账户"
-              placeholder="@username"
-              class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10"
-            />
-          </label>
-          <div class="grid gap-3 sm:grid-cols-[minmax(0,1fr)_140px]">
-            <label class="space-y-2">
-              <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">快速跳转回复页</span>
-              <input
-                v-model="jumpHandle"
-                type="text"
-                aria-label="推特用户 ID"
-                placeholder="输入 @ID，回车打开该用户回复页"
-                class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10"
-                @keydown.enter.prevent="handleJump"
-              />
-            </label>
-            <button type="button" class="mt-auto rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="handleJump">打开回复页</button>
-          </div>
-          <button type="button" class="w-full rounded-2xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950" @click="handleDelegationSave">保存账户配置</button>
-        </div>
-      </div>
-
-      <div v-else-if="controlSection === 'voice'" class="mt-4 space-y-4">
-        <label class="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
+    <details class="group rounded-3xl border border-emerald-100/90 bg-white/70 p-4">
+      <summary class="cursor-pointer list-none">
+        <div class="flex items-center justify-between gap-3">
           <div>
-            <div class="text-sm font-medium text-slate-100">启用豆包 TTS</div>
-            <div class="text-xs text-slate-500">服务端播报失败时仍可用浏览器兜底</div>
+            <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-emerald-600">Advanced</div>
+            <h3 class="mt-1 text-sm font-semibold text-emerald-950">高级配置</h3>
           </div>
-          <input v-model="notifyTtsEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
-        </label>
-
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-300">
-          {{ voiceStatusText }}
+          <span class="rounded-full border border-emerald-100/90 px-3 py-1 text-xs text-emerald-700/80 group-open:hidden">展开</span>
+          <span class="hidden rounded-full border border-emerald-100/90 px-3 py-1 text-xs text-emerald-700/80 group-open:inline">收起</span>
         </div>
+        <p class="mt-2 text-xs leading-5 text-emerald-700/60">账号、语音、AI、代理等低频配置都放在这里。</p>
+      </summary>
 
-        <div class="grid gap-3 sm:grid-cols-2">
-          <label class="space-y-2">
-            <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">App ID</span>
-            <input v-model="notifyTtsAppId" type="text" aria-label="豆包 App ID" placeholder="AppID" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </label>
-          <label class="space-y-2">
-            <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">音色</span>
-            <input v-model="notifyTtsVoiceType" type="text" aria-label="豆包音色" placeholder="例如 zh_female_vv_uranus_bigtts" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </label>
-        </div>
-
-        <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-            认证与密钥
-            <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开后配置 Access Token / Secret</span>
+      <div class="mt-4 space-y-4">
+        <details class="rounded-2xl border border-emerald-100/90 bg-white/70 p-4">
+          <summary class="cursor-pointer list-none text-sm font-medium text-emerald-950">
+            语音播报
+            <span class="ml-2 text-xs text-emerald-700/60">{{ audioSummary }}</span>
           </summary>
-          <div class="mt-4 space-y-3">
-            <input v-model="notifyTtsAccessToken" type="password" aria-label="豆包 Access Token" :placeholder="notifyTtsAccessTokenConfigured ? '已保存，留空保持不变' : 'Access Token'" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-            <input v-model="notifyTtsSecretKey" type="password" aria-label="豆包 Secret Key" :placeholder="notifyTtsSecretKeyConfigured ? '已保存，留空保持不变' : 'Secret Key（可选）'" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </div>
-        </details>
-
-        <div class="grid gap-3 sm:grid-cols-2">
-          <button type="button" class="rounded-2xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950" @click="handleSaveNotifyTts">保存豆包配置</button>
-          <button type="button" class="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="handleTestVoice">立即试播</button>
-        </div>
-
-        <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-          <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-            最近播报结果
-            <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开查看返回文本</span>
-          </summary>
-          <pre class="mt-4 max-h-[180px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950/80 p-4 font-mono text-[11px] leading-6 text-slate-400">{{ notifyTtsResult }}</pre>
-        </details>
-      </div>
-
-      <div v-else class="mt-4 space-y-4">
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-300">
-          {{ aiStatusText }}
-        </div>
-
-        <div class="grid grid-cols-3 gap-2">
-          <button
-            v-for="button in aiSectionButtons"
-            :key="button.key"
-            type="button"
-            class="rounded-2xl border px-3 py-2 text-xs font-medium transition"
-            :class="button.key === aiSection
-              ? 'border-sky-400/35 bg-sky-400/12 text-slate-50'
-              : 'border-slate-800 bg-slate-900/70 text-slate-400 hover:border-slate-700 hover:text-slate-200'"
-            @click="aiSection = button.key"
-          >
-            {{ button.label }}
-          </button>
-        </div>
-
-        <div v-if="aiSection === 'connection'" class="space-y-4">
-          <label class="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
-            <div>
-              <div class="text-sm font-medium text-slate-100">启用 LLM 过滤</div>
-              <div class="text-xs text-slate-500">规则未命中时调用小模型判定</div>
-            </div>
-            <input v-model="llmFilterEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
-          </label>
-
-          <div class="grid gap-3">
-            <label class="space-y-2">
-              <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">Base URL</span>
-              <input v-model="llmBaseUrl" type="text" aria-label="LLM Base URL" placeholder="Base URL" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
+          <div class="mt-4 space-y-4">
+            <label class="flex items-center justify-between gap-3 rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3">
+              <div>
+                <div class="text-sm font-medium text-emerald-950">启用豆包 TTS</div>
+                <div class="text-xs text-emerald-700/60">{{ voiceStatusText }}</div>
+              </div>
+              <input v-model="notifyTtsEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
             </label>
             <div class="grid gap-3 sm:grid-cols-2">
-              <label class="space-y-2">
-                <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">模型名</span>
-                <input v-model="llmModel" type="text" aria-label="LLM 模型名" placeholder="例如 qwen3.5:4b" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-              </label>
-              <label class="space-y-2">
-                <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">超时秒数</span>
-                <input v-model="llmTimeoutSec" type="number" min="2" :max="llmTimeoutMaxSec" aria-label="LLM 超时秒数" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-              </label>
+              <input v-model="notifyTtsAppId" type="text" aria-label="豆包 App ID" placeholder="App ID" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+              <input v-model="notifyTtsVoiceType" type="text" aria-label="豆包音色" placeholder="音色" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
             </div>
-          </div>
-
-          <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-              鉴权与连通性
-              <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开配置 API Key 并测试</span>
-            </summary>
-            <div class="mt-4 space-y-3">
-              <input v-model="llmApiKey" type="password" aria-label="LLM API Key" :placeholder="llmApiKeyConfigured ? '已保存，留空保持不变' : 'API Key（无则填 EMPTY）'" class="w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-              <div class="grid gap-3 sm:grid-cols-2">
-                <button type="button" class="rounded-2xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950" @click="handleSaveLlm">保存配置</button>
-                <button type="button" class="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="handleTestLlm">测试模型</button>
+            <details class="rounded-2xl border border-emerald-100/90 bg-white/70 p-4">
+              <summary class="cursor-pointer list-none text-sm font-medium text-emerald-950">密钥</summary>
+              <div class="mt-4 space-y-3">
+                <input v-model="notifyTtsAccessToken" type="password" aria-label="豆包 Access Token" :placeholder="notifyTtsAccessTokenConfigured ? 'Access Token 已保存' : 'Access Token'" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <input v-model="notifyTtsSecretKey" type="password" aria-label="豆包 Secret Key" :placeholder="notifyTtsSecretKeyConfigured ? 'Secret Key 已保存' : 'Secret Key（可选）'" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
               </div>
+            </details>
+            <div class="grid gap-3 sm:grid-cols-2">
+              <button type="button" class="rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-400 px-4 py-3 text-sm font-semibold text-emerald-950" @click="handleSaveNotifyTts">保存语音配置</button>
+              <button type="button" class="rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3 text-sm font-semibold text-emerald-800" @click="handleTestVoice">立即试播</button>
             </div>
-          </details>
-        </div>
+            <pre class="max-h-[150px] overflow-auto rounded-2xl border border-emerald-100/90 bg-white/80 p-4 font-mono text-[11px] leading-6 text-emerald-700/80">{{ notifyTtsResult }}</pre>
+          </div>
+        </details>
 
-        <div v-else-if="aiSection === 'rewrite'" class="space-y-4">
-          <label class="flex items-center justify-between gap-3 rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3">
-            <div>
-              <div class="text-sm font-medium text-slate-100">第二条私信启用 LLM 改写</div>
-              <div class="text-xs text-slate-500">基于模板生成轻度变化的话术</div>
+        <details class="rounded-2xl border border-emerald-100/90 bg-white/70 p-4">
+          <summary class="cursor-pointer list-none text-sm font-medium text-emerald-950">
+            AI 与私信文案
+            <span class="ml-2 text-xs text-emerald-700/60">{{ aiStatusText }}</span>
+          </summary>
+          <div class="mt-4 space-y-4">
+            <label class="flex items-center justify-between gap-3 rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3">
+              <div>
+                <div class="text-sm font-medium text-emerald-950">启用 LLM 过滤</div>
+                <div class="text-xs text-emerald-700/60">规则未命中时调用模型判断</div>
+              </div>
+              <input v-model="llmFilterEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
+            </label>
+            <div class="grid gap-3">
+              <input v-model="llmBaseUrl" type="text" aria-label="LLM Base URL" placeholder="Base URL" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+              <div class="grid gap-3 sm:grid-cols-2">
+                <input v-model="llmModel" type="text" aria-label="LLM 模型名" placeholder="模型名，例如 qwen3.5:4b" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <input v-model="llmTimeoutSec" type="number" min="2" :max="llmTimeoutMaxSec" aria-label="LLM 超时秒数" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+              </div>
+              <div class="grid gap-3 sm:grid-cols-2">
+                <input v-model="llmRetryCount" type="number" min="0" max="4" aria-label="LLM 重试次数" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <input v-model="llmRetryBackoffSec" type="number" min="0.05" max="5" step="0.05" aria-label="LLM 重试退避秒数" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+              </div>
+              <input v-model="llmApiKey" type="password" aria-label="LLM API Key" :placeholder="llmApiKeyConfigured ? 'API Key 已保存' : 'API Key（无则填 EMPTY）'" class="w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
             </div>
-            <input v-model="dmLlmRewriteEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
-          </label>
-
-          <label class="space-y-2">
-            <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">改写 Prompt</span>
-            <textarea v-model="dmLlmRewritePromptTemplate" aria-label="第二条私信改写 Prompt" placeholder="支持 {template} 占位" class="min-h-[120px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </label>
-
-          <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-              通知播报屏蔽词
-              <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开维护关键词</span>
-            </summary>
-            <textarea v-model="notifyVoiceBlockKeywords" aria-label="通知不播报关键词" placeholder="逗号或换行分隔" class="mt-4 min-h-[120px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </details>
-
-          <button type="button" class="w-full rounded-2xl bg-sky-400 px-4 py-3 text-sm font-semibold text-slate-950" @click="handleSaveLlm">保存改写配置</button>
-        </div>
-
-        <div v-else class="space-y-4">
-          <label class="space-y-2">
-            <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-slate-500">测试评论</span>
-            <textarea v-model="llmIntentInput" aria-label="评论意向分析输入" placeholder="输入评论内容，例如：老板 想了解下" class="min-h-[112px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-          </label>
-          <button type="button" class="w-full rounded-2xl bg-emerald-400 px-4 py-3 text-sm font-semibold text-slate-950" @click="handleAnalyzeIntent">分析评论意向</button>
-
-          <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4">
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-              分析 Prompt
-              <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开编辑两个 Prompt 模板</span>
-            </summary>
-            <div class="mt-4 space-y-3">
-              <textarea v-model="llmIntentPromptTemplate" aria-label="意向分析 Prompt" placeholder="意向分析 Prompt（支持 {content} 占位）" class="min-h-[120px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-              <textarea v-model="llmFilterPromptTemplate" aria-label="内容过滤 Prompt" placeholder="内容过滤 Prompt（支持 {content} 占位）" class="min-h-[120px] w-full rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3 text-sm text-slate-100 outline-none transition focus:border-sky-400/45 focus:ring-4 focus:ring-sky-400/10" />
-              <button type="button" class="w-full rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="handleSaveLlm">保存分析配置</button>
+            <label class="flex items-center justify-between gap-3 rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3">
+              <div>
+                <div class="text-sm font-medium text-emerald-950">第二条私信启用 LLM 改写</div>
+                <div class="text-xs text-emerald-700/60">基于模板生成轻度变化话术</div>
+              </div>
+              <input v-model="dmLlmRewriteEnabled" type="checkbox" class="h-5 w-5 accent-emerald-400" />
+            </label>
+            <details class="rounded-2xl border border-emerald-100/90 bg-white/70 p-4">
+              <summary class="cursor-pointer list-none text-sm font-medium text-emerald-950">Prompt 与屏蔽词</summary>
+              <div class="mt-4 space-y-3">
+                <textarea v-model="dmLlmRewritePromptTemplate" aria-label="第二条私信改写 Prompt" placeholder="私信改写 Prompt，支持 {template}" class="min-h-[100px] w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <textarea v-model="notifyVoiceBlockKeywords" aria-label="通知不播报关键词" placeholder="通知播报屏蔽词，逗号或换行分隔" class="min-h-[88px] w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <textarea v-model="llmIntentPromptTemplate" aria-label="意向分析 Prompt" placeholder="意向分析 Prompt，支持 {content}" class="min-h-[88px] w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+                <textarea v-model="llmFilterPromptTemplate" aria-label="内容过滤 Prompt" placeholder="内容过滤 Prompt，支持 {content}" class="min-h-[88px] w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+              </div>
+            </details>
+            <label class="space-y-2">
+              <span class="text-[11px] font-medium uppercase tracking-[0.12em] text-emerald-700/60">测试评论</span>
+              <textarea v-model="llmIntentInput" aria-label="评论意向分析输入" placeholder="输入评论内容，例如：老板 想了解下" class="min-h-[88px] w-full rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15" />
+            </label>
+            <div class="grid gap-3 sm:grid-cols-3">
+              <button type="button" class="rounded-2xl bg-gradient-to-r from-emerald-400 to-teal-400 px-4 py-3 text-sm font-semibold text-emerald-950" @click="handleSaveLlm">保存 AI 配置</button>
+              <button type="button" :disabled="llmTestBusy" class="rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3 text-sm font-semibold text-emerald-800 disabled:cursor-not-allowed disabled:opacity-50" @click="handleTestLlm">{{ llmTestBusy ? '测试中...' : '测试模型' }}</button>
+              <button type="button" class="rounded-2xl bg-emerald-400 px-4 py-3 text-sm font-semibold text-emerald-950" @click="handleAnalyzeIntent">分析评论</button>
             </div>
-          </details>
+            <pre class="max-h-[180px] overflow-auto rounded-2xl border border-emerald-100/90 bg-white/80 p-4 font-mono text-[11px] leading-6 text-emerald-700/80">{{ llmIntentResult }}</pre>
+          </div>
+        </details>
 
-          <details class="group rounded-2xl border border-slate-800 bg-slate-950/70 p-4" open>
-            <summary class="cursor-pointer list-none text-sm font-medium text-slate-100">
-              分析结果
-              <span class="ml-2 text-xs text-slate-500 group-open:hidden">展开查看输出</span>
-            </summary>
-            <pre class="mt-4 max-h-[220px] overflow-auto rounded-2xl border border-slate-800 bg-slate-950/80 p-4 font-mono text-[11px] leading-6 text-slate-400">{{ llmIntentResult }}</pre>
-          </details>
+        <div class="rounded-2xl border border-emerald-100/90 bg-white/70 px-4 py-3 text-xs leading-5 text-emerald-700/80">
+          网络代理: <span class="text-emerald-800">{{ browserProxyMeta.configured ? `${browserProxyMeta.source || 'ENV'} · ${browserProxyMeta.display || '已配置'}` : '未配置' }}</span>
         </div>
       </div>
-    </div>
+    </details>
   </section>
 </template>

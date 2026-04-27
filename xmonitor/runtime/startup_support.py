@@ -3,6 +3,8 @@ import os
 import shutil
 import socket
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 
 def load_local_json_config(path, *, logging_module):
     try:
@@ -13,7 +15,7 @@ def load_local_json_config(path, *, logging_module):
             if isinstance(obj, dict):
                 return obj
     except Exception as e:
-        logging_module.warning(f'读取本地配置失败: {e}')
+        logging_module.warning(f'读取本地配置失败: {format_runtime_error(e)}')
     return {}
 
 
@@ -25,14 +27,14 @@ def save_local_json_config(path, cfg):
             json.dump(cfg, f, ensure_ascii=False, indent=2)
         return True, ''
     except Exception as e:
-        return False, str(e)
+        return False, format_runtime_error(e)
 
 
 def ensure_directory(path, *, logging_module):
     try:
         os.makedirs(path, exist_ok=True)
     except Exception as e:
-        logging_module.error(f'创建数据目录失败: {e}')
+        logging_module.error(f'创建数据目录失败: {format_runtime_error(e)}')
 
 
 def migrate_legacy_state_files(base_dir, state_file, processed_file, *, logging_module):
@@ -58,7 +60,7 @@ def migrate_legacy_state_files(base_dir, state_file, processed_file, *, logging_
         for legacy_processed in legacy_processed_candidates:
             sync_if_newer(legacy_processed, processed_file, '黑名单文件')
     except Exception as e:
-        logging_module.warning(f'迁移历史数据文件失败: {e}')
+        logging_module.warning(f'迁移历史数据文件失败: {format_runtime_error(e)}')
 
 
 def get_free_port(host='127.0.0.1'):

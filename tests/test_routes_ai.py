@@ -27,6 +27,8 @@ class RoutesAITests(unittest.TestCase):
         deps.LLM_FILTER_MODEL = ''
         deps.LLM_FILTER_TIMEOUT_SEC = 8.0
         deps.LLM_FILTER_TIMEOUT_MAX_SEC = 120.0
+        deps.LLM_FILTER_RETRY_COUNT = 2
+        deps.LLM_FILTER_RETRY_BACKOFF_SEC = 0.35
         deps.LLM_FILTER_PROMPT_TEMPLATE = ''
         deps.LLM_INTENT_PROMPT_TEMPLATE = ''
         deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = ''
@@ -149,6 +151,8 @@ class RoutesAITests(unittest.TestCase):
             'api_key': 'EMPTY',
             'model': 'qwen3',
             'timeout_sec': 9,
+            'retry_count': 3,
+            'retry_backoff_sec': 0.5,
             'notify_voice_block_keywords_text': 'foo\nbar',
             'dm_llm_rewrite_enabled': True,
             'dm_llm_rewrite_prompt_template': 'rewrite me',
@@ -157,10 +161,14 @@ class RoutesAITests(unittest.TestCase):
         data = resp.get_json()
         self.assertTrue(data['llm_filter_enabled'])
         self.assertEqual(deps.LLM_FILTER_MODEL, 'qwen3')
+        self.assertEqual(deps.LLM_FILTER_RETRY_COUNT, 3)
+        self.assertEqual(deps.LLM_FILTER_RETRY_BACKOFF_SEC, 0.5)
         self.assertEqual(deps.NOTIFY_VOICE_BLOCK_KEYWORDS, ['foo', 'bar'])
         self.assertEqual(deps.llm_filter_cache, {})
         self.assertTrue(deps.DM_LLM_REWRITE_ENABLED)
         self.assertTrue(data['llm_filter_api_key_configured'])
+        self.assertEqual(data['llm_filter_retry_count'], 3)
+        self.assertEqual(data['llm_filter_retry_backoff_sec'], 0.5)
 
     def test_set_llm_filter_config_preserves_api_key_when_omitted(self):
         client, deps = self._client()
@@ -201,6 +209,24 @@ class RoutesAITests(unittest.TestCase):
         self.assertEqual(data['status'], 'ok')
         self.assertEqual(data['audio_base64'], 'QUJD')
         self.assertEqual(data['mime'], 'audio/mpeg')
+
+    def test_tts_synthesize_formats_blank_error(self):
+        class _BlankError(Exception):
+            def __str__(self):
+                return ''
+
+        client, deps = self._client()
+        deps._synthesize_doubao_tts_audio_base64 = lambda text: (_ for _ in ()).throw(_BlankError())
+        logs = []
+        deps.log_to_ui = lambda level, msg: logs.append((level, msg))
+
+        resp = client.post('/api/tts/synthesize', json={'text': '测试播报'})
+
+        self.assertEqual(resp.status_code, 500)
+        data = resp.get_json()
+        self.assertEqual(data['status'], 'err')
+        self.assertEqual(data['msg'], '_BlankError')
+        self.assertTrue(any('_BlankError' in msg for _, msg in logs))
 
 
 if __name__ == '__main__':

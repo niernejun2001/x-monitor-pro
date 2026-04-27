@@ -1,6 +1,8 @@
 import re
 import time
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 ACCOUNT_SWITCHER_SELECTORS = [
     'css:[data-testid="SideNav_AccountSwitcher_Button"]',
     'css:button[data-testid="SideNav_AccountSwitcher_Button"]',
@@ -120,6 +122,6 @@ def click_visible_confirm_button(page, *, log_to_ui, sleep_fn=time.sleep, timeou
                     log_to_ui("success", "✅ 确认按钮已点击")
                     return True
     except Exception as e:
-        log_to_ui("warn", f"⚠️ 处理弹窗出错: {str(e)}")
+        log_to_ui("warn", f"⚠️ 处理弹窗出错: {format_runtime_error(e)}")
         return False
     return None

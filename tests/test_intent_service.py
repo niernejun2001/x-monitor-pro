@@ -2,6 +2,7 @@ import types
 import unittest
 
 from xmonitor.services.analysis.intent import (
+    analyze_comment_intent,
     is_business_consult_signal,
     llm_intent_analysis,
     rule_based_intent_analysis,
@@ -73,6 +74,28 @@ class IntentServiceTests(unittest.TestCase):
         self.assertIsInstance(result, dict)
         self.assertEqual(result['intent_score'], 0)
         self.assertEqual(result['intent_level'], 'medium')
+
+    def test_analyze_comment_intent_formats_blank_llm_error(self):
+        class _BlankError(Exception):
+            def __str__(self):
+                return ''
+
+        deps = self._make_deps()
+        deps._normalize_one_line = lambda text, limit=120: str(text or '')[:limit]
+        logs = []
+        deps.log_to_ui = lambda level, msg: logs.append((level, msg))
+        deps._llm_runtime_ready = lambda **kwargs: True
+        deps.INTENT_LLM_PRIMARY_MODE = False
+        deps._intent_level_rank = lambda level: {'noise': 0, 'low': 1, 'medium': 2, 'high': 3}.get(level, 0)
+        deps._max_intent_level = lambda *levels: max(levels, key=lambda level: deps._intent_level_rank(level))
+        deps._is_negative_intent_reason = lambda reason: False
+        deps._call_openai_compatible_json = lambda *args, **kwargs: (_ for _ in ()).throw(_BlankError())
+        deps._build_intent_analysis_prompt = lambda content: f'prompt:{content}'
+
+        result = analyze_comment_intent('老板 想了解下', deps)
+
+        self.assertEqual(result['llm_error'], '_BlankError')
+        self.assertTrue(any('_BlankError' in msg for _, msg in logs))
 
 
 if __name__ == '__main__':

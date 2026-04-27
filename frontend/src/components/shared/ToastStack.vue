@@ -14,9 +14,9 @@ const { items } = storeToRefs(store)
         :key="item.id"
         class="pointer-events-auto rounded-2xl border px-4 py-3 shadow-2xl backdrop-blur"
         :class="{
-          'border-sky-400/35 bg-slate-950/92 text-slate-100': item.type === 'info',
-          'border-emerald-400/35 bg-emerald-500/10 text-emerald-50': item.type === 'success',
-          'border-rose-400/35 bg-rose-500/10 text-rose-50': item.type === 'error'
+          'border-emerald-400/50 bg-white/95 text-emerald-950': item.type === 'info',
+          'border-emerald-400/35 bg-emerald-500/10 text-emerald-800': item.type === 'success',
+          'border-rose-400/35 bg-rose-500/10 text-rose-700': item.type === 'error'
         }"
       >
         <div class="text-sm leading-6">{{ item.message }}</div>

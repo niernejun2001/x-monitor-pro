@@ -12,7 +12,7 @@ const sampleItem: PendingItem = {
 }
 
 describe('NotifyWorkbench', () => {
-  it('emits status filter and command actions', async () => {
+  it('emits status filter and selection actions', async () => {
     const wrapper = mount(NotifyWorkbench, {
       props: {
         notifyCount: 1,
@@ -55,12 +55,11 @@ describe('NotifyWorkbench', () => {
     if (!retryButton) throw new Error('retry button missing')
     await retryButton.trigger('click')
 
-    const commandButton = wrapper.findAll('button').find((button) => button.text().includes('批量已处理'))
-    if (!commandButton) throw new Error('command button missing')
-    await commandButton.trigger('click')
+    const queueItem = wrapper.find('[data-testid="queue-item"]')
+    await queueItem.trigger('click')
 
     expect(wrapper.emitted('update:statusFilter')?.[0]).toEqual(['retry'])
-    expect(wrapper.emitted('command')?.[0]).toEqual(['bulk_done'])
+    expect(wrapper.emitted('select-item')?.[0]).toEqual(['notify-1'])
   })
 
   it('shows empty state action when filtered list is empty', async () => {

@@ -1,5 +1,6 @@
 import logging
 
+from xmonitor.services.support.error_format import format_runtime_error
 from xmonitor.services.support.state_payload import build_storage_state_payload
 from xmonitor.storage.state.io_common import write_json_snapshot
 from xmonitor.storage.state.sqlite import (
@@ -21,7 +22,7 @@ def save_state(deps):
         _save_structured_state(deps, deps.pending_results, deps.history_ids, deps.content_dedupe)
         sqlite_ok = True
     except Exception as e:
-        logging.error(f'保存SQLite状态失败: {e}')
+        logging.error(f'保存SQLite状态失败: {format_runtime_error(e)}')
 
     json_ok = False
     if _sqlite_json_fallback_enabled(deps):
@@ -29,7 +30,7 @@ def save_state(deps):
             write_json_snapshot(deps.STATE_FILE, state)
             json_ok = True
         except Exception as e:
-            logging.error(f'保存JSON状态失败: {e}')
+            logging.error(f'保存JSON状态失败: {format_runtime_error(e)}')
 
     if sqlite_ok or json_ok:
         logging.info(
@@ -48,7 +49,7 @@ def save_processed_users(deps):
         _save_processed_users_set(deps, payload)
         sqlite_ok = True
     except Exception as e:
-        logging.error(f'保存SQLite黑名单失败: {e}')
+        logging.error(f'保存SQLite黑名单失败: {format_runtime_error(e)}')
 
     json_ok = False
     if _sqlite_json_fallback_enabled(deps):
@@ -56,7 +57,7 @@ def save_processed_users(deps):
             write_json_snapshot(deps.PROCESSED_FILE, payload)
             json_ok = True
         except Exception as e:
-            logging.error(f'保存JSON黑名单失败: {e}')
+            logging.error(f'保存JSON黑名单失败: {format_runtime_error(e)}')
 
     if sqlite_ok or json_ok:
         logging.info(f'💾 已保存 {len(deps.processed_users)} 个已处理用户')

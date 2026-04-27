@@ -7,6 +7,8 @@ import tempfile
 import threading
 import time
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 
 def _safe_log(deps, level, message):
     logger = getattr(deps, 'log_to_ui', None)
@@ -139,8 +141,9 @@ def _server_audio_worker(deps):
                 f"🔊 [ServerAudio] 已播报通知: {payload.get('handle', '') or '-'} {str(payload.get('content', '') or '')[:36]}"
             )
         except Exception as exc:
-            deps.notify_server_audio_last_error = str(exc)
-            _safe_log(deps, 'warn', f'🔊 [ServerAudio] 播报失败: {exc}')
+            err_text = format_runtime_error(exc)
+            deps.notify_server_audio_last_error = err_text
+            _safe_log(deps, 'warn', f'🔊 [ServerAudio] 播报失败: {err_text}')
         finally:
             try:
                 deps.notify_server_audio_queue_size = max(0, int(queue_obj.qsize()))

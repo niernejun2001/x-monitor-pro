@@ -1,4 +1,5 @@
 from xmonitor.services.analysis.intent_rules import rule_based_intent_analysis
+from xmonitor.services.support.error_format import format_runtime_error
 
 
 def _safe_int_score(value, default=0):
@@ -159,8 +160,8 @@ def analyze_comment_intent(content, deps, *, base_url=None, api_key=None, model=
             log_to_ui('debug', '🤖 [Intent] llm_empty_result -> rule_only')
             return result
     except Exception as e:
-        result['llm_error'] = str(e)
-        log_to_ui('warn', f'🤖 [Intent] llm_error: {e}')
+        result['llm_error'] = format_runtime_error(e)
+        log_to_ui('warn', f"🤖 [Intent] llm_error: {result['llm_error']}")
         return result
 
     llm_score = _safe_int_score(llm_result.get('intent_score', 0), 0)

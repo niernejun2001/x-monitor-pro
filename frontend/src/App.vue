@@ -22,6 +22,7 @@ const { notifyItems, tweetItems } = storeToRefs(results)
 
 onMounted(async () => {
   try {
+    app.startClock()
     await app.bootstrap()
     results.startPolling()
   } catch (error: any) {
@@ -30,12 +31,13 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  app.stopClock()
   results.stopPolling()
 })
 </script>
 
 <template>
-  <div class="min-h-screen bg-slate-950 text-slate-100">
+  <div class="min-h-screen bg-transparent text-emerald-950">
     <ToastStack />
     <main class="mx-auto flex w-full max-w-[1560px] flex-col gap-6 px-4 py-5 lg:px-6">
       <AppHeader :status-text="statusText" :running="isRunning" />

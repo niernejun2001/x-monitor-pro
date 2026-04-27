@@ -56,6 +56,8 @@ export const useAppStore = defineStore('app', () => {
   const llmApiKeyConfigured = ref(false)
   const llmTimeoutSec = ref(8)
   const llmTimeoutMaxSec = ref(120)
+  const llmRetryCount = ref(2)
+  const llmRetryBackoffSec = ref(0.35)
   const llmIntentPromptTemplate = ref('')
   const llmFilterPromptTemplate = ref('')
   const dmLlmRewriteEnabled = ref(false)
@@ -63,6 +65,10 @@ export const useAppStore = defineStore('app', () => {
   const notifyVoiceBlockKeywords = ref('')
   const llmIntentInput = ref('')
   const llmIntentResult = ref('等待测试或分析...')
+  const notificationToggleBusy = ref(false)
+  const llmTestBusy = ref(false)
+  const clockNowSec = ref(Date.now() / 1000)
+  const clockTimer = ref<number | null>(null)
 
   const statusText = computed(() => (isRunning.value ? '运行中' : '系统待机'))
   const serverAudioMeta = computed(() => ({
@@ -75,6 +81,44 @@ export const useAppStore = defineStore('app', () => {
     source: state.value?.browser_proxy_source || '',
     display: state.value?.browser_proxy_display || '',
   }))
+  const notificationScheduleMeta = computed(() => {
+    const snapshot = state.value?.notification_schedule_snapshot || {}
+    const mode = snapshot.boost_active ? '提速' : snapshot.idle_active ? '降频' : '常规'
+    const period = snapshot.period_label === 'quiet' ? '夜间' : '白天'
+    const scanMultiplier = Number(snapshot.scan_multiplier || 1)
+    const refreshMultiplier = Number(snapshot.refresh_multiplier || 1)
+    const nowSec = clockNowSec.value
+    const nextScanAt = Number(state.value?.notification_next_scan_at || 0)
+    const lastScanAt = Number(state.value?.notification_last_scan_at || 0)
+    const scanInterval = Number(state.value?.notification_scan_interval || 0)
+    const nextRefreshAt = Number(state.value?.notification_next_refresh_at || 0)
+    const lastRefreshAt = Number(state.value?.notification_last_refresh_at || 0)
+    const nextScanIn = nextScanAt > 0 ? Math.max(0, Math.round(nextScanAt - nowSec)) : 0
+    const lastScanAge = lastScanAt > 0 ? Math.max(0, Math.round(nowSec - lastScanAt)) : 0
+    const nextRefreshIn = nextRefreshAt > 0 ? Math.max(0, Math.round(nextRefreshAt - nowSec)) : 0
+    const lastRefreshAge = lastRefreshAt > 0 ? Math.max(0, Math.round(nowSec - lastRefreshAt)) : 0
+    return {
+      period,
+      mode,
+      text: state.value?.notification_schedule_text || '-',
+      scanMultiplier,
+      refreshMultiplier,
+      scanInterval,
+      nextScanAt,
+      nextScanIn,
+      lastScanAt,
+      lastScanAge,
+      nextRefreshAt,
+      nextRefreshIn,
+      lastRefreshAt,
+      lastRefreshAge,
+      idleScanStreak: Number(state.value?.notification_idle_scan_streak ?? snapshot.idle_scan_streak ?? 0),
+      refreshInterval: Number(state.value?.notification_refresh_interval || 0),
+      pendingFullRefresh: !!state.value?.notification_full_refresh_pending,
+      pendingReason: state.value?.notification_full_refresh_reason || '',
+      lightScanCount: Number(state.value?.notification_dm_light_scan_count || 0),
+    }
+  })
 
   function hydrate(payload: StatePayload) {
     state.value = payload
@@ -101,6 +145,8 @@ export const useAppStore = defineStore('app', () => {
     llmApiKey.value = ''
     llmTimeoutSec.value = Number(payload.llm_filter_timeout_sec || 8)
     llmTimeoutMaxSec.value = Number(payload.llm_filter_timeout_max_sec || 120)
+    llmRetryCount.value = Number(payload.llm_filter_retry_count || 2)
+    llmRetryBackoffSec.value = Number(payload.llm_filter_retry_backoff_sec || 0.35)
     llmIntentPromptTemplate.value = payload.llm_intent_prompt_template || ''
     llmFilterPromptTemplate.value = payload.llm_filter_prompt_template || ''
     dmLlmRewriteEnabled.value = payload.dm_llm_rewrite_enabled !== false
@@ -133,8 +179,21 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function saveNotificationSwitch() {
-    await api.toggleNotification(notificationMonitoring.value)
-    toast.push(`通知监控已${notificationMonitoring.value ? '启用' : '禁用'}`, 'success')
+    const requestedValue = notificationMonitoring.value
+    const previousValue = !!state.value?.notification_monitoring
+    notificationToggleBusy.value = true
+    try {
+      await api.toggleNotification(requestedValue)
+      notificationMonitoring.value = requestedValue
+      if (state.value) state.value.notification_monitoring = requestedValue
+      toast.push(`通知监控已${requestedValue ? '启用' : '禁用'}`, 'success')
+    } catch (error: any) {
+      notificationMonitoring.value = previousValue
+      if (state.value) state.value.notification_monitoring = previousValue
+      throw error
+    } finally {
+      notificationToggleBusy.value = false
+    }
   }
 
   async function saveHeadlessSwitch() {
@@ -180,6 +239,8 @@ export const useAppStore = defineStore('app', () => {
       base_url: llmBaseUrl.value,
       model: llmModel.value,
       timeout_sec: llmTimeoutSec.value,
+      retry_count: llmRetryCount.value,
+      retry_backoff_sec: llmRetryBackoffSec.value,
       llm_intent_prompt_template: llmIntentPromptTemplate.value,
       llm_filter_prompt_template: llmFilterPromptTemplate.value,
       dm_llm_rewrite_enabled: dmLlmRewriteEnabled.value,
@@ -193,16 +254,25 @@ export const useAppStore = defineStore('app', () => {
   }
 
   async function testLlm() {
+    llmTestBusy.value = true
+    llmIntentResult.value = '正在测试模型连通性...'
     const payload: Record<string, unknown> = {
       base_url: llmBaseUrl.value,
       model: llmModel.value,
       timeout_sec: llmTimeoutSec.value,
     }
     if (llmApiKey.value.trim()) payload.api_key = llmApiKey.value.trim()
-    const data = await api.testLlmModel(payload)
-    llmIntentResult.value = data.status === 'ok'
-      ? `模型可用: ${data.model || '-'}\n延迟: ${data.latency_ms || 0}ms\n接口: ${data.endpoint || '-'}`
-      : `测试失败: ${data.msg || '未知错误'}`
+    try {
+      const data = await api.testLlmModel(payload)
+      llmIntentResult.value = data.status === 'ok'
+        ? `模型可用: ${data.model || '-'}\n延迟: ${data.latency_ms || 0}ms\n接口: ${data.endpoint || '-'}`
+        : `测试失败: ${data.msg || '未知错误'}`
+    } catch (error: any) {
+      llmIntentResult.value = `测试失败: ${error?.message || '请求异常'}`
+      throw error
+    } finally {
+      llmTestBusy.value = false
+    }
   }
 
   async function analyzeIntentInput() {
@@ -216,6 +286,21 @@ export const useAppStore = defineStore('app', () => {
     if (llmApiKey.value.trim()) payload.api_key = llmApiKey.value.trim()
     const data = await api.analyzeIntent(payload)
     llmIntentResult.value = buildIntentLines((data as any).analysis || {})
+  }
+
+  function startClock() {
+    if (clockTimer.value !== null) return
+    clockNowSec.value = Date.now() / 1000
+    clockTimer.value = window.setInterval(() => {
+      clockNowSec.value = Date.now() / 1000
+    }, 1000)
+  }
+
+  function stopClock() {
+    if (clockTimer.value !== null) {
+      window.clearInterval(clockTimer.value)
+      clockTimer.value = null
+    }
   }
 
   return {
@@ -242,6 +327,8 @@ export const useAppStore = defineStore('app', () => {
     llmApiKeyConfigured,
     llmTimeoutSec,
     llmTimeoutMaxSec,
+    llmRetryCount,
+    llmRetryBackoffSec,
     llmIntentPromptTemplate,
     llmFilterPromptTemplate,
     dmLlmRewriteEnabled,
@@ -249,9 +336,13 @@ export const useAppStore = defineStore('app', () => {
     notifyVoiceBlockKeywords,
     llmIntentInput,
     llmIntentResult,
+    notificationToggleBusy,
+    llmTestBusy,
+    clockNowSec,
     statusText,
     serverAudioMeta,
     browserProxyMeta,
+    notificationScheduleMeta,
     hydrate,
     bootstrap,
     start,
@@ -265,5 +356,7 @@ export const useAppStore = defineStore('app', () => {
     saveLlmConfig,
     testLlm,
     analyzeIntentInput,
+    startClock,
+    stopClock,
   }
 })

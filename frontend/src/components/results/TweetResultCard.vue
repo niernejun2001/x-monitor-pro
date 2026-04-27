@@ -15,22 +15,22 @@ const statusCards = computed(() => [
   {
     label: '来源状态',
     value: props.item.status_url ? '可打开' : '缺失',
-    tone: props.item.status_url ? 'border-sky-400/20 bg-sky-400/10 text-sky-200' : 'border-slate-800 bg-slate-950/70 text-slate-400',
+    tone: props.item.status_url ? 'border-emerald-400/30 bg-emerald-400/10 text-emerald-700' : 'border-emerald-100/90 bg-white/70 text-emerald-700/80',
   },
   {
     label: '状态绑定',
     value: props.item.status_id ? '已关联' : '未关联',
-    tone: props.item.status_id ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200' : 'border-slate-800 bg-slate-950/70 text-slate-400',
+    tone: props.item.status_id ? 'border-emerald-400/20 bg-emerald-400/10 text-emerald-700' : 'border-emerald-100/90 bg-white/70 text-emerald-700/80',
   },
   {
     label: '作者',
     value: String(props.item.handle || '-'),
-    tone: 'border-slate-800 bg-slate-950/70 text-slate-200',
+    tone: 'border-emerald-100/90 bg-white/70 text-emerald-800',
   },
   {
     label: '捕获时间',
     value: String(props.item.time || '-'),
-    tone: 'border-slate-800 bg-slate-950/70 text-slate-200',
+    tone: 'border-emerald-100/90 bg-white/70 text-emerald-800',
   },
 ])
 
@@ -43,25 +43,25 @@ const detailRows = computed(() => [
 </script>
 
 <template>
-  <article class="rounded-[22px] border border-slate-800 bg-slate-950/55 p-4 shadow-[0_16px_42px_rgba(2,6,23,0.28)]">
+  <article class="rounded-[22px] border border-emerald-100/90 bg-white/70 p-4 shadow-[0_16px_42px_rgba(16,185,129,0.12)]">
     <div class="flex flex-col gap-4">
       <div class="min-w-0 space-y-3">
         <div class="flex flex-wrap items-center gap-2">
           <a
             :href="`https://x.com/${String(item.handle || '').replace('@', '')}/with_replies`"
             target="_blank"
-            class="font-mono text-sm font-semibold text-sky-300 hover:text-sky-200"
+            class="font-mono text-sm font-semibold text-emerald-600 hover:text-emerald-700"
           >
             {{ item.handle || '-' }}
           </a>
-          <span class="rounded-full border border-slate-800 bg-slate-950/80 px-2.5 py-1 font-mono text-[11px] text-slate-400">{{ item.time || '-' }}</span>
+          <span class="rounded-full border border-emerald-100/90 bg-white/80 px-2.5 py-1 font-mono text-[11px] text-emerald-700/80">{{ item.time || '-' }}</span>
         </div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-4 text-sm leading-7 text-slate-200">
+        <div class="rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-4 text-sm leading-7 text-emerald-800">
           {{ item.content || '-' }}
         </div>
-        <div class="flex flex-wrap gap-2 text-[11px] text-slate-500">
-          <span v-if="item.status_id" class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 font-mono text-emerald-200">已关联状态</span>
-          <span v-if="item.status_url" class="rounded-full border border-slate-800 bg-slate-950/70 px-2.5 py-1 font-mono">可打开来源</span>
+        <div class="flex flex-wrap gap-2 text-[11px] text-emerald-700/60">
+          <span v-if="item.status_id" class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 font-mono text-emerald-700">已关联状态</span>
+          <span v-if="item.status_url" class="rounded-full border border-emerald-100/90 bg-white/70 px-2.5 py-1 font-mono">可打开来源</span>
         </div>
       </div>
 
@@ -79,8 +79,8 @@ const detailRows = computed(() => [
         </div>
 
         <div class="grid gap-2">
-          <button type="button" class="rounded-2xl bg-emerald-400 px-4 py-2.5 text-xs font-semibold text-slate-950" @click="emit('open')">打开来源</button>
-          <button type="button" class="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-2.5 text-xs font-semibold text-slate-200" @click="emit('mark-done')">已处理</button>
+          <button type="button" class="rounded-2xl bg-emerald-400 px-4 py-2.5 text-xs font-semibold text-emerald-950" @click="emit('open')">打开来源</button>
+          <button type="button" class="rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-2.5 text-xs font-semibold text-emerald-800" @click="emit('mark-done')">已处理</button>
         </div>
       </div>
 
@@ -88,10 +88,10 @@ const detailRows = computed(() => [
         <div
           v-for="row in detailRows"
           :key="row.label"
-          class="rounded-2xl border border-slate-800 bg-slate-950/80 px-4 py-3"
+          class="rounded-2xl border border-emerald-100/90 bg-white/80 px-4 py-3"
         >
-          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">{{ row.label }}</div>
-          <div class="mt-2 break-all text-sm text-slate-200">{{ row.value }}</div>
+          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-700/60">{{ row.label }}</div>
+          <div class="mt-2 break-all text-sm text-emerald-800">{{ row.value }}</div>
         </div>
       </div>
     </div>

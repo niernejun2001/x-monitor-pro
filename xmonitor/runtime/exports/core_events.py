@@ -9,9 +9,11 @@ from xmonitor.runtime.logging_support import (
     log_to_ui as _log_to_ui_impl,
 )
 from xmonitor.runtime.timing_helpers import (
+    format_notification_schedule_snapshot as _format_notification_schedule_snapshot_impl,
     get_random_maintenance_interval as _get_random_maintenance_interval_impl,
     get_random_notification_interval as _get_random_notification_interval_impl,
     get_random_notification_refresh_interval as _get_random_notification_refresh_interval_impl,
+    get_notification_schedule_snapshot as _get_notification_schedule_snapshot_impl,
     get_random_task_parallel as _get_random_task_parallel_impl,
     schedule_next_notification_refresh_interval as _schedule_next_notification_refresh_interval_impl,
 )
@@ -88,6 +90,12 @@ def build_core_event_exports(
     def get_random_notification_refresh_interval():
         return _get_random_notification_refresh_interval_impl(deps)
 
+    def get_notification_schedule_snapshot(now_ts=None):
+        return _get_notification_schedule_snapshot_impl(deps, now_ts=now_ts)
+
+    def format_notification_schedule_snapshot(snapshot):
+        return _format_notification_schedule_snapshot_impl(snapshot)
+
     def _schedule_next_notification_refresh_interval(previous_interval=None):
         return _schedule_next_notification_refresh_interval_impl(previous_interval, deps)
 
@@ -113,6 +121,8 @@ def build_core_event_exports(
         '_capture_runtime_diagnostic': _capture_runtime_diagnostic,
         'get_random_notification_interval': get_random_notification_interval,
         'get_random_notification_refresh_interval': get_random_notification_refresh_interval,
+        'get_notification_schedule_snapshot': get_notification_schedule_snapshot,
+        'format_notification_schedule_snapshot': format_notification_schedule_snapshot,
         '_schedule_next_notification_refresh_interval': _schedule_next_notification_refresh_interval,
         'get_random_maintenance_interval': get_random_maintenance_interval,
         'get_random_task_parallel': get_random_task_parallel,

@@ -30,6 +30,8 @@ def build_common_state_payload(deps, *, include_secrets):
         'llm_filter_base_url': str(deps.LLM_FILTER_BASE_URL or ''),
         'llm_filter_model': str(deps.LLM_FILTER_MODEL or ''),
         'llm_filter_timeout_sec': float(deps.LLM_FILTER_TIMEOUT_SEC),
+        'llm_filter_retry_count': int(getattr(deps, 'LLM_FILTER_RETRY_COUNT', 2) or 2),
+        'llm_filter_retry_backoff_sec': float(getattr(deps, 'LLM_FILTER_RETRY_BACKOFF_SEC', 0.35) or 0.35),
         'llm_filter_prompt_template': str(deps.LLM_FILTER_PROMPT_TEMPLATE or ''),
         'llm_intent_prompt_template': str(deps.LLM_INTENT_PROMPT_TEMPLATE or ''),
         'dm_llm_rewrite_enabled': bool(deps.DM_LLM_REWRITE_ENABLED),
@@ -56,6 +58,34 @@ def build_common_state_payload(deps, *, include_secrets):
             }
         )
     return payload
+
+
+def _build_notification_schedule_payload(deps):
+    snapshot = {}
+    formatted = ''
+    try:
+        snapshot = dict(deps.get_notification_schedule_snapshot() or {})
+    except Exception:
+        snapshot = {}
+    try:
+        formatted = str(deps.format_notification_schedule_snapshot(snapshot) or '') if snapshot else ''
+    except Exception:
+        formatted = ''
+    return {
+        'notification_schedule_snapshot': snapshot,
+        'notification_schedule_text': formatted,
+        'notification_refresh_interval': float(getattr(deps, 'notification_refresh_interval', 0.0) or 0.0),
+        'notification_last_refresh_at': float(getattr(deps, 'notification_last_refresh_at', 0.0) or 0.0),
+        'notification_next_refresh_at': float(getattr(deps, 'notification_next_refresh_at', 0.0) or 0.0),
+        'notification_scan_interval': float(getattr(deps, 'notification_scan_interval', 0.0) or 0.0),
+        'notification_last_scan_at': float(getattr(deps, 'notification_last_scan_at', 0.0) or 0.0),
+        'notification_next_scan_at': float(getattr(deps, 'notification_next_scan_at', 0.0) or 0.0),
+        'notification_last_new_item_at': float(getattr(deps, 'notification_last_new_item_at', 0.0) or 0.0),
+        'notification_idle_scan_streak': int(getattr(deps, 'notification_idle_scan_streak', 0) or 0),
+        'notification_full_refresh_pending': bool(getattr(deps, 'notification_full_refresh_pending', False)),
+        'notification_full_refresh_reason': str(getattr(deps, 'notification_full_refresh_reason', '') or ''),
+        'notification_dm_light_scan_count': int(getattr(deps, 'notification_dm_light_scan_count', 0) or 0),
+    }
 
 
 def build_storage_state_payload(deps):
@@ -93,6 +123,7 @@ def build_api_state_payload(deps):
                 'headless_mode': deps.headless_mode,
                 'llm_filter_timeout_max_sec': float(deps.LLM_FILTER_TIMEOUT_MAX_SEC),
                 'notification_reply_only_mode': bool(deps.NOTIFICATION_REPLY_ONLY_MODE),
+                **_build_notification_schedule_payload(deps),
             }
         )
     payload.update(

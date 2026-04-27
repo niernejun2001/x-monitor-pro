@@ -1,3 +1,5 @@
+import os
+
 from flask import jsonify, render_template, request
 
 from xmonitor.services.support.state_payload import build_api_state_payload
@@ -6,7 +8,18 @@ from xmonitor.services.support.state_payload import build_api_state_payload
 def register_state_routes(app, deps):
     @app.route('/')
     def index():
-        return render_template('index.html')
+        asset_version = 'dev'
+        try:
+            candidates = [
+                os.path.join(deps.BASE_DIR, 'static', 'app', 'app.js'),
+                os.path.join(deps.BASE_DIR, 'static', 'app', 'app.css'),
+            ]
+            mtimes = [int(os.path.getmtime(path)) for path in candidates if os.path.exists(path)]
+            if mtimes:
+                asset_version = str(max(mtimes))
+        except Exception:
+            asset_version = 'dev'
+        return render_template('index.html', asset_version=asset_version)
 
     @app.route('/api/state')
     def state():

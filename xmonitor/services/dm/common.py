@@ -1,6 +1,11 @@
 import re
 import time
 
+from xmonitor.services.support.status_links import (
+    canonical_status_url,
+    extract_status_id_candidates as _extract_status_id_candidates_impl,
+)
+
 
 def normalize_handle(handle):
     if not handle:
@@ -47,7 +52,12 @@ def is_link_only_message(text):
     if not value:
         return False
     value = value.replace("https://", "").replace("http://", "")
-    return bool(re.fullmatch(r'(x\.com/[^\s]+|www\.x\.com/[^\s]+|[^\s]+/status/\d+)', value))
+    return bool(
+        re.fullmatch(
+            r'((?:www\.|mobile\.)?(?:x|twitter)\.com/[^\s]+|[^\s]+/(?:status|statuses)/\d+)',
+            value,
+        )
+    )
 
 
 def normalize_status_id_digits(digits):
@@ -64,16 +74,10 @@ def normalize_status_id_digits(digits):
 
 
 def extract_status_id_candidates_from_text(text):
-    raw = str(text or "")
-    if not raw:
-        return []
-    candidates = []
-    for pattern in (r'/status/(\d{8,80})', r'conversation_id=(\d{8,80})', r'(?<!\d)(\d{15,80})(?!\d)'):
-        for match in re.findall(pattern, raw):
-            sid = normalize_status_id_digits(match)
-            if sid:
-                candidates.append(sid)
-    return candidates
+    return _extract_status_id_candidates_impl(
+        text,
+        normalize_status_id_digits_fn=normalize_status_id_digits,
+    )
 
 
 def pick_best_status_id(*parts):
@@ -90,40 +94,40 @@ def pick_best_status_id(*parts):
 def normalize_dm_share_link(raw_link, status_id="", status_handle="", fallback_url=""):
     raw_link = str(raw_link or "").strip()
     fallback_url = str(fallback_url or "").strip()
-    handle_norm = normalize_handle(status_handle)
     if raw_link:
         sid_raw = pick_best_status_id(raw_link)
         if sid_raw:
-            match = re.search(r'(?:https?://)?(?:www\.)?x\.com/([A-Za-z0-9_]+)/status/\d+', raw_link, flags=re.IGNORECASE)
-            if match:
-                return f"https://x.com/{match.group(1)}/status/{sid_raw}"
-            path_match = re.search(r'^/([A-Za-z0-9_]+)/status/\d+', raw_link)
-            if path_match:
-                return f"https://x.com/{path_match.group(1)}/status/{sid_raw}"
-            if handle_norm:
-                return f"https://x.com/{handle_norm}/status/{sid_raw}"
-            return f"https://x.com/i/status/{sid_raw}"
+            return canonical_status_url(
+                raw_link,
+                status_id=sid_raw,
+                status_handle=status_handle,
+                normalize_handle_fn=normalize_handle,
+                pick_best_status_id_fn=pick_best_status_id,
+            )
         http_match = re.search(r'https?://[^\s<>"\']+', raw_link)
         if http_match:
             return http_match.group(0).strip()
     if fallback_url:
         sid_fb = pick_best_status_id(fallback_url)
         if sid_fb:
-            match = re.search(r'(?:https?://)?(?:www\.)?x\.com/([A-Za-z0-9_]+)/status/\d+', fallback_url, flags=re.IGNORECASE)
-            if match:
-                return f"https://x.com/{match.group(1)}/status/{sid_fb}"
-            if handle_norm:
-                return f"https://x.com/{handle_norm}/status/{sid_fb}"
-            return f"https://x.com/i/status/{sid_fb}"
+            return canonical_status_url(
+                fallback_url,
+                status_id=sid_fb,
+                status_handle=status_handle,
+                normalize_handle_fn=normalize_handle,
+                pick_best_status_id_fn=pick_best_status_id,
+            )
         http_match = re.search(r'https?://[^\s<>"\']+', fallback_url)
         if http_match:
             return http_match.group(0).strip()
     sid = pick_best_status_id(status_id)
-    if sid and handle_norm:
-        return f"https://x.com/{handle_norm}/status/{sid}"
-    if sid:
-        return f"https://x.com/i/status/{sid}"
-    return ""
+    return canonical_status_url(
+        '',
+        status_id=sid,
+        status_handle=status_handle,
+        normalize_handle_fn=normalize_handle,
+        pick_best_status_id_fn=pick_best_status_id,
+    )
 
 
 def build_dm_message_probes(text):

@@ -40,6 +40,16 @@ def register_config_routes(app, deps):
             timeout_sec = deps.clamp_llm_timeout(payload.get('timeout_sec', deps.LLM_FILTER_TIMEOUT_SEC))
         except Exception:
             timeout_sec = deps.LLM_FILTER_TIMEOUT_SEC
+        try:
+            retry_count = int(payload.get('retry_count', deps.LLM_FILTER_RETRY_COUNT))
+        except Exception:
+            retry_count = deps.LLM_FILTER_RETRY_COUNT
+        retry_count = max(0, min(4, retry_count))
+        try:
+            retry_backoff_sec = float(payload.get('retry_backoff_sec', deps.LLM_FILTER_RETRY_BACKOFF_SEC))
+        except Exception:
+            retry_backoff_sec = deps.LLM_FILTER_RETRY_BACKOFF_SEC
+        retry_backoff_sec = max(0.05, min(5.0, retry_backoff_sec))
         if enabled and (not base_url or not model):
             return jsonify({'status': 'err', 'msg': '启用 LLM 过滤时，Base URL 和模型名不能为空'}), 400
         notify_voice_block_keywords = deps._normalize_keyword_lines(notify_voice_block_keywords_text)
@@ -49,6 +59,8 @@ def register_config_routes(app, deps):
             deps.LLM_FILTER_API_KEY = api_key
             deps.LLM_FILTER_MODEL = model
             deps.LLM_FILTER_TIMEOUT_SEC = timeout_sec
+            deps.LLM_FILTER_RETRY_COUNT = retry_count
+            deps.LLM_FILTER_RETRY_BACKOFF_SEC = retry_backoff_sec
             deps.LLM_FILTER_PROMPT_TEMPLATE = filter_prompt_template
             deps.LLM_INTENT_PROMPT_TEMPLATE = intent_prompt_template
             deps.DM_LLM_REWRITE_ENABLED = dm_llm_rewrite_enabled
@@ -81,6 +93,8 @@ def register_config_routes(app, deps):
             'llm_filter_model': str(deps.LLM_FILTER_MODEL or ''),
             'llm_filter_timeout_sec': float(deps.LLM_FILTER_TIMEOUT_SEC),
             'llm_filter_timeout_max_sec': float(deps.LLM_FILTER_TIMEOUT_MAX_SEC),
+            'llm_filter_retry_count': int(deps.LLM_FILTER_RETRY_COUNT),
+            'llm_filter_retry_backoff_sec': float(deps.LLM_FILTER_RETRY_BACKOFF_SEC),
             'llm_filter_prompt_template': str(deps.LLM_FILTER_PROMPT_TEMPLATE or ''),
             'llm_intent_prompt_template': str(deps.LLM_INTENT_PROMPT_TEMPLATE or ''),
             'dm_llm_rewrite_enabled': bool(deps.DM_LLM_REWRITE_ENABLED),

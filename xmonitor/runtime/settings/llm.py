@@ -82,6 +82,16 @@ def load_llm_runtime_settings(env):
         cache_max_entries = int(env.get('XMONITOR_LLM_CACHE_MAX', '5000'))
     except Exception:
         cache_max_entries = 5000
+    try:
+        retry_count = int(env.get('XMONITOR_LLM_RETRY_COUNT', '2'))
+    except Exception:
+        retry_count = 2
+    retry_count = max(0, min(4, retry_count))
+    try:
+        retry_backoff_sec = float(env.get('XMONITOR_LLM_RETRY_BACKOFF_SEC', '0.35'))
+    except Exception:
+        retry_backoff_sec = 0.35
+    retry_backoff_sec = max(0.05, min(5.0, retry_backoff_sec))
 
     notify_voice_block_keywords_text = str(env.get('XMONITOR_NOTIFY_VOICE_BLOCK_KEYWORDS', '') or '').strip()
 
@@ -103,6 +113,8 @@ def load_llm_runtime_settings(env):
         'NOTIFY_VOICE_BLOCK_KEYWORDS': normalize_notify_voice_block_keywords(notify_voice_block_keywords_text),
         'LLM_FILTER_TIMEOUT_SEC': timeout_val,
         'LLM_FILTER_TIMEOUT_MAX_SEC': timeout_max,
+        'LLM_FILTER_RETRY_COUNT': retry_count,
+        'LLM_FILTER_RETRY_BACKOFF_SEC': retry_backoff_sec,
         'LLM_FILTER_CACHE_TTL_SEC': cache_ttl_sec,
         'LLM_FILTER_CACHE_MAX_ENTRIES': cache_max_entries,
         'LLM_HARD_FILTER_ENABLED': str(env.get('XMONITOR_LLM_HARD_FILTER_ENABLED', '0') or '').strip().lower() in {'1', 'true', 'yes', 'on'},

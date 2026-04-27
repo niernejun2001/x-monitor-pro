@@ -33,9 +33,9 @@ describe('NotifyResultCard', () => {
         expanded: true,
         isReplied: false,
         flowLabel: '等待重试',
-        flowTone: 'border-amber-400/20 bg-amber-400/10 text-amber-200',
+        flowTone: 'border-amber-400/20 bg-amber-400/10 text-amber-700',
         intentLabel: 'HIGH 88',
-        intentTone: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200',
+        intentTone: 'border-emerald-400/20 bg-emerald-400/10 text-emerald-700',
         replyTemplates: ['老板我私信您了'],
         dmTemplates: ['您好，欢迎了解更多产品信息'],
         selectedReply: '老板我私信您了',
@@ -43,10 +43,10 @@ describe('NotifyResultCard', () => {
       },
     })
 
-    expect(wrapper.text()).toContain('意向')
-    expect(wrapper.text()).toContain('流程')
-    expect(wrapper.text()).toContain('状态链接')
+    expect(wrapper.text()).toContain('回复并私信')
+    expect(wrapper.text()).toContain('详情')
     expect(wrapper.text()).toContain('最近私信文案')
+    expect(wrapper.text()).toContain('状态链接')
     expect(wrapper.text()).toContain('E_DM_EDITOR_NOT_FOUND')
     expect(wrapper.text()).toContain('这是一条生成后的私信文案')
 

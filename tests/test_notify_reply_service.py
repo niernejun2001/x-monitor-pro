@@ -145,6 +145,106 @@ class NotifyReplyServiceTests(unittest.TestCase):
         self.assertIn('boom', err)
         self.assertIn(('tab_get', 'https://x.com/notifications'), logs)
 
+    def test_handles_unhandled_prompt_error_via_recovery_branch(self):
+        logs = []
+        tab = types.SimpleNamespace(url='https://x.com/notifications', get=lambda url: logs.append(('tab_get', url)))
+
+        class FakeNotifyFacade:
+            def find_pending_item_by_key(self, key):
+                return 0, {'key': key, 'source': '通知页面', 'handle': '@demo', 'notify_flow_stage': 'reply_pending'}
+
+            def update_flow_state(self, key, stage='', error='', retry_at=0.0, extra=None, save=False):
+                return True
+
+        def fake_capture_runtime_diagnostic(*args, **kwargs):
+            phase = ((kwargs.get('extra') or {}).get('phase') or '')
+            return '/tmp/diag.json' if phase == 'before_clear' else ''
+
+        deps = types.SimpleNamespace(
+            global_token='token',
+            extract_status_id_from_notification_item=lambda item: '1234567890123456789',
+            reply_action_lock=threading.Lock(),
+            _throttle_reply_action_if_needed=lambda: None,
+            _set_reply_flow_active=lambda active: logs.append(('flow_active', bool(active))),
+            notify_state_facade=FakeNotifyFacade(),
+            ensure_reply_work_tab=lambda: tab,
+            _prepare_reply_prompt_guard=lambda tab_obj, stage='': logs.append(('guard', stage)),
+            log_to_ui=lambda level, msg: logs.append((level, msg)),
+            _resolve_notify_resume_stage=lambda row: 'reply_pending',
+            _normalize_dm_share_link=lambda raw, status_id='', status_handle='', fallback_url='': '',
+            _get_status_link_from_item=lambda item, matched_handle='', matched_status_id='': '',
+            _notify_stage_at_least=lambda current, target: False,
+            _reply_humanized_idle=lambda tab_obj, low=0.0, high=0.0, stage='': None,
+            _prepare_notifications_view_impl=lambda tab_obj, deps_obj, force_refresh=False: None,
+            _match_target_card_impl=lambda tab_obj, item, status_id, deps_obj: (_ for _ in ()).throw(RuntimeError('prompt modal')),
+            _send_reply_from_button_impl=lambda *args, **kwargs: (True, ''),
+            _sanitize_dm_message_text=lambda text: str(text or '').strip(),
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            DM_CLOSED_FALLBACK_REPLY_TEXT='fallback',
+            _wait_document_ready=lambda tab_obj, timeout=5.0: None,
+            _is_unhandled_prompt_error=lambda err: True,
+            _capture_runtime_diagnostic=fake_capture_runtime_diagnostic,
+        )
+
+        ok, err = send_notification_reply({'key': 'n1', 'handle': '@demo'}, '公开回复', deps, dm_message='模板')
+
+        self.assertFalse(ok)
+        self.assertIn('/tmp/diag.json', err)
+        self.assertIn(('flow_active', False), logs)
+
+    def test_dm_closed_flow_sends_fallback_reply_and_succeeds(self):
+        logs = []
+        flow_updates = []
+        tab = types.SimpleNamespace(url='https://x.com/notifications', get=lambda url: logs.append(('tab_get', url)))
+
+        class FakeNotifyFacade:
+            def find_pending_item_by_key(self, key):
+                return 0, {'key': key, 'source': '通知页面', 'handle': '@demo', 'notify_flow_stage': 'reply_pending'}
+
+            def update_flow_state(self, key, stage='', error='', retry_at=0.0, extra=None, save=False):
+                flow_updates.append((key, stage, extra or {}, save))
+                return True
+
+        deps = types.SimpleNamespace(
+            global_token='token',
+            extract_status_id_from_notification_item=lambda item: '1234567890123456789',
+            reply_action_lock=threading.Lock(),
+            _throttle_reply_action_if_needed=lambda: None,
+            _set_reply_flow_active=lambda active: logs.append(('flow_active', bool(active))),
+            notify_state_facade=FakeNotifyFacade(),
+            ensure_reply_work_tab=lambda: tab,
+            _prepare_reply_prompt_guard=lambda tab_obj, stage='': None,
+            log_to_ui=lambda level, msg: logs.append((level, msg)),
+            _resolve_notify_resume_stage=lambda row: 'reply_pending',
+            _normalize_dm_share_link=lambda raw, status_id='', status_handle='', fallback_url='': 'https://x.com/demo/status/1',
+            _get_status_link_from_item=lambda item, matched_handle='', matched_status_id='': 'https://x.com/demo/status/1',
+            _notify_stage_at_least=lambda current, target: False,
+            _reply_humanized_idle=lambda tab_obj, low=0.0, high=0.0, stage='': None,
+            _prepare_notifications_view_impl=lambda tab_obj, deps_obj, force_refresh=False: None,
+            _match_target_card_impl=lambda tab_obj, item, status_id, deps_obj: ('article', 'reply_btn', 320, '@demo', '1234567890123456789', ''),
+            _send_reply_from_button_impl=lambda tab_obj, target_reply_btn, target_score, reply_text, status_id, handle_hint, deps_obj: (True, ''),
+            _sanitize_dm_message_text=lambda text: str(text or '').strip(),
+            dm_message_templates=[],
+            DM_FOLLOWUP_TEXT='模板文案',
+            DM_LLM_REWRITE_ENABLED=False,
+            _should_use_share_link_quick_path=lambda: True,
+            _reserve_notify_dm_user_slot=lambda handle, task_key='': (True, 0.0),
+            normalize_handle=lambda h: str(h or '').strip().lstrip('@').lower(),
+            _run_dm_send_with_recovery=lambda *args, **kwargs: (False, 'closed', True, tab),
+            DM_CLOSED_FALLBACK_REPLY_TEXT='fallback',
+            _wait_document_ready=lambda tab_obj, timeout=5.0: None,
+            _is_unhandled_prompt_error=lambda err: False,
+            _capture_runtime_diagnostic=lambda *args, **kwargs: '',
+        )
+
+        ok, err = send_notification_reply({'key': 'n1', 'handle': '@demo', 'status_handle': '@demo'}, '公开回复', deps, dm_message='模板')
+
+        self.assertTrue(ok)
+        self.assertEqual(err, '')
+        self.assertTrue(any(stage == 'dm_closed_confirmed' for _, stage, _, _ in flow_updates))
+        self.assertTrue(any(stage == 'done' for _, stage, _, _ in flow_updates))
+        self.assertTrue(any('用户私信关闭' in msg for _, msg in logs if isinstance(msg, str)))
+
 
 if __name__ == '__main__':
     unittest.main()

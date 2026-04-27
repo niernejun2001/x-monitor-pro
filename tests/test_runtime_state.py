@@ -19,7 +19,16 @@ class RuntimeStateTests(unittest.TestCase):
             delegated_switch_ok=True,
             notification_refresh_interval=12.5,
             notification_last_refresh_at=34.5,
+            notification_next_refresh_at=47.0,
+            notification_scan_interval=7.8,
+            notification_last_scan_at=44.0,
+            notification_next_scan_at=51.8,
             notification_empty_article_streak=2,
+            notification_last_new_item_at=56.7,
+            notification_idle_scan_streak=4,
+            notification_full_refresh_pending=True,
+            notification_full_refresh_reason='dm_critical_scan',
+            notification_dm_light_scan_count=3,
             llm_filter_cache={'a': 1},
             dm_llm_rewrite_history=['x'],
             content_dedupe={'sig': 1.0},
@@ -32,6 +41,15 @@ class RuntimeStateTests(unittest.TestCase):
         self.assertEqual(state.global_browser, 'browser')
         self.assertEqual(state.delegated_account_active, 'demo')
         self.assertEqual(state.notification_refresh_interval, 12.5)
+        self.assertEqual(state.notification_next_refresh_at, 47.0)
+        self.assertEqual(state.notification_scan_interval, 7.8)
+        self.assertEqual(state.notification_last_scan_at, 44.0)
+        self.assertEqual(state.notification_next_scan_at, 51.8)
+        self.assertEqual(state.notification_last_new_item_at, 56.7)
+        self.assertEqual(state.notification_idle_scan_streak, 4)
+        self.assertTrue(state.notification_full_refresh_pending)
+        self.assertEqual(state.notification_full_refresh_reason, 'dm_critical_scan')
+        self.assertEqual(state.notification_dm_light_scan_count, 3)
         self.assertEqual(state.pending_results, [{'k': 1}])
 
     def test_set_runtime_attr_updates_module_and_state(self):

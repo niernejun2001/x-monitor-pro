@@ -11,6 +11,7 @@ from xmonitor.services.platform.delegation_helpers import (
     log_available_user_cells,
     safe_click_target,
 )
+from xmonitor.services.support.error_format import format_runtime_error
 
 
 def switch_to_delegated_account(page, target_account, deps):
@@ -56,7 +57,7 @@ def switch_to_delegated_account(page, target_account, deps):
             time.sleep(4)  # 保持较长等待，确保菜单完全渲染
             log_to_ui("success", "✅ 菜单已打开，继续扫描...")
         except Exception as e:
-            log_to_ui("error", f"❌ 点击菜单失败: {str(e)}")
+            log_to_ui("error", f"❌ 点击菜单失败: {format_runtime_error(e)}")
             return False
 
         # 步骤2: 在菜单中查找匹配的账户
@@ -74,7 +75,7 @@ def switch_to_delegated_account(page, target_account, deps):
                 return False
 
         except Exception as e:
-            log_to_ui("error", f"❌ 查找 UserCell 失败: {str(e)}")
+            log_to_ui("error", f"❌ 查找 UserCell 失败: {format_runtime_error(e)}")
             return False
 
         # 步骤3: 点击委派账户div
@@ -87,7 +88,7 @@ def switch_to_delegated_account(page, target_account, deps):
             log_to_ui("info", "⏳ 等待弹窗出现...")
             time.sleep(3.5)  # 增加到3.5秒，等待弹窗加载
         except Exception as e:
-            log_to_ui("error", f"❌ 点击委派账户失败: {str(e)}")
+            log_to_ui("error", f"❌ 点击委派账户失败: {format_runtime_error(e)}")
             return False
 
         # 步骤4: 处理弹窗
@@ -110,7 +111,7 @@ def switch_to_delegated_account(page, target_account, deps):
 
     except Exception as e:
         log_to_ui("error", "=" * 60)
-        log_to_ui("error", f"❌ 切换过程异常: {str(e)}")
+        log_to_ui("error", f"❌ 切换过程异常: {format_runtime_error(e)}")
         log_to_ui("error", "=" * 60)
         return False
 

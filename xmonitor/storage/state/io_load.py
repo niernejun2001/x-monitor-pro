@@ -1,6 +1,7 @@
 import logging
 from collections import deque
 
+from xmonitor.services.support.error_format import format_runtime_error
 from xmonitor.services.support.state_payload import build_storage_state_payload
 from xmonitor.storage.state.io_common import load_json_snapshot, set_dep_attr
 from xmonitor.storage.state.sqlite import (
@@ -35,6 +36,14 @@ def _apply_state_payload(deps, data):
     deps.LLM_FILTER_MODEL = str(data.get('llm_filter_model', deps.LLM_FILTER_MODEL) or '').strip()
     try:
         deps.LLM_FILTER_TIMEOUT_SEC = deps.clamp_llm_timeout(data.get('llm_filter_timeout_sec', deps.LLM_FILTER_TIMEOUT_SEC))
+    except Exception:
+        pass
+    try:
+        deps.LLM_FILTER_RETRY_COUNT = max(0, min(4, int(data.get('llm_filter_retry_count', deps.LLM_FILTER_RETRY_COUNT))))
+    except Exception:
+        pass
+    try:
+        deps.LLM_FILTER_RETRY_BACKOFF_SEC = max(0.05, min(5.0, float(data.get('llm_filter_retry_backoff_sec', deps.LLM_FILTER_RETRY_BACKOFF_SEC))))
     except Exception:
         pass
     deps.LLM_FILTER_PROMPT_TEMPLATE = str(data.get('llm_filter_prompt_template', deps.LLM_FILTER_PROMPT_TEMPLATE) or '').strip()
@@ -185,7 +194,7 @@ def _load_state_payload(deps):
             if isinstance(data, dict):
                 source = 'sqlite'
     except Exception as e:
-        logging.error(f'读取SQLite状态失败: {e}')
+        logging.error(f'读取SQLite状态失败: {format_runtime_error(e)}')
 
     if not isinstance(data, dict):
         if deps.os.path.exists(deps.STATE_FILE):
@@ -194,7 +203,7 @@ def _load_state_payload(deps):
                 if isinstance(data, dict):
                     source = 'json'
             except Exception as e:
-                logging.error(f'加载JSON状态失败: {e}')
+                logging.error(f'加载JSON状态失败: {format_runtime_error(e)}')
         else:
             logging.warning(f'⚠️ 状态文件不存在: {deps.STATE_FILE}')
     return data if isinstance(data, dict) else None, source
@@ -213,7 +222,7 @@ def _load_processed_users_payload(deps):
             if isinstance(users, list):
                 source = 'sqlite_blob'
     except Exception as e:
-        logging.error(f'读取SQLite黑名单失败: {e}')
+        logging.error(f'读取SQLite黑名单失败: {format_runtime_error(e)}')
 
     if not isinstance(users, list):
         if deps.os.path.exists(deps.PROCESSED_FILE):
@@ -222,7 +231,7 @@ def _load_processed_users_payload(deps):
                 if isinstance(users, list):
                     source = 'json'
             except Exception as e:
-                logging.error(f'加载黑名单失败: {e}')
+                logging.error(f'加载黑名单失败: {format_runtime_error(e)}')
         else:
             logging.warning(f'⚠️ 黑名单文件不存在: {deps.PROCESSED_FILE}')
     return users if isinstance(users, list) else [], source
@@ -242,7 +251,7 @@ def load_state(deps):
                 if structured_loaded:
                     logging.info('🗄️ 已从SQLite结构化表恢复 pending/history/content_dedupe')
         except Exception as e:
-            logging.error(f'读取SQLite结构化状态失败: {e}')
+            logging.error(f'读取SQLite结构化状态失败: {format_runtime_error(e)}')
 
         if state_source == 'json':
             try:
@@ -250,13 +259,13 @@ def load_state(deps):
                 _save_structured_state(deps, deps.pending_results, deps.history_ids, deps.content_dedupe)
                 logging.info(f'🗄️ 已将JSON状态迁移到SQLite: {_sqlite_state_file(deps)}')
             except Exception as e:
-                logging.error(f'迁移状态到SQLite失败: {e}')
+                logging.error(f'迁移状态到SQLite失败: {format_runtime_error(e)}')
         elif (state_source == 'sqlite') and (not structured_loaded):
             try:
                 _save_structured_state(deps, deps.pending_results, deps.history_ids, deps.content_dedupe)
                 logging.info('🗄️ 已补写SQLite结构化状态表')
             except Exception as e:
-                logging.error(f'补写结构化状态表失败: {e}')
+                logging.error(f'补写结构化状态表失败: {format_runtime_error(e)}')
 
         if pending_changed:
             deps.save_state()
@@ -274,4 +283,4 @@ def load_state(deps):
                 _save_processed_users_set(deps, deps.processed_users)
                 logging.info(f'🗄️ 已将黑名单迁移到SQLite实表: {_sqlite_state_file(deps)}')
             except Exception as e:
-                logging.error(f'迁移黑名单到SQLite失败: {e}')
+                logging.error(f'迁移黑名单到SQLite失败: {format_runtime_error(e)}')

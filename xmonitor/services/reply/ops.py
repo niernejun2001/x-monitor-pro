@@ -5,6 +5,44 @@ import time
 from xmonitor.services.reply.submit_service import send_reply_from_button
 
 
+def _build_status_fallback_urls(item, status_id, deps):
+    fallback_urls = []
+    raw_candidates = [
+        str(item.get('status_url', '') or '').strip(),
+        deps._get_status_link_from_item(item),
+    ]
+    status_id_text = str(status_id or '').strip()
+    status_handle = str(item.get('status_handle', '') or item.get('handle', '') or '').strip()
+    status_handle_norm = deps.normalize_handle(status_handle)
+    if status_id_text and status_handle_norm:
+        raw_candidates.append(f'https://x.com/{status_handle_norm}/status/{status_id_text}')
+    if status_id_text:
+        raw_candidates.append(f'https://x.com/i/status/{status_id_text}')
+
+    seen = set()
+    for cand in raw_candidates:
+        url = str(cand or '').strip()
+        if not url:
+            continue
+        if url.startswith('/'):
+            url = f'https://x.com{url}'
+        elif url.startswith('x.com/'):
+            url = f'https://{url}'
+        normalized = str(
+            deps._normalize_dm_share_link(
+                url,
+                status_id=status_id_text,
+                status_handle=status_handle,
+                fallback_url=url,
+            ) or url
+        ).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        fallback_urls.append(normalized)
+    return fallback_urls
+
+
 def prepare_notifications_view(tab, deps, *, force_refresh=False):
     did_refresh = False
     deps._prepare_reply_prompt_guard(tab, '准备通知视图')
@@ -90,25 +128,7 @@ def match_target_card(tab, item, status_id, deps):
         return False, f"policy=high_priority_only, unmet (force={force_notify}, level={intent_level or '-'}, score={intent_score})"
 
     def fallback_match_on_status_page():
-        fallback_urls = []
-        for cand in [
-            str(item.get('status_url', '') or '').strip(),
-            deps._get_status_link_from_item(item),
-            (
-                f"https://x.com/{deps.normalize_handle(item.get('status_handle', ''))}/status/{status_id}"
-                if status_id and deps.normalize_handle(item.get('status_handle', '')) else ''
-            ),
-            (f'https://x.com/i/status/{status_id}' if status_id else ''),
-        ]:
-            url = str(cand or '').strip()
-            if not url:
-                continue
-            if url.startswith('/'):
-                url = f'https://x.com{url}'
-            elif url.startswith('x.com/'):
-                url = f'https://{url}'
-            if url not in fallback_urls:
-                fallback_urls.append(url)
+        fallback_urls = _build_status_fallback_urls(item, status_id, deps)
         if not fallback_urls:
             return None, None, 0, None, None, '通知页未命中，且缺少可用 status 链接兜底'
         for idx, url in enumerate(fallback_urls, start=1):

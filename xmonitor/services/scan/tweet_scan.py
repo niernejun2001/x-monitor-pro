@@ -3,6 +3,8 @@ import random
 import re
 import time
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 
 def scan_page_content(page, url, blocked_list, deps):
     history_ids = deps.history_ids
@@ -272,7 +274,8 @@ def scan_page_content(page, url, blocked_list, deps):
         log_to_ui("success", f"✨ 扫描完成: 捕获 {len(results)} 条评论")
 
     except Exception as e:
-        log_to_ui("error", f"扫描异常: {str(e)}")
-        return [], str(e)
+        err_text = format_runtime_error(e)
+        log_to_ui("error", f"扫描异常: {err_text}")
+        return [], err_text
 
     return results, None

@@ -8,15 +8,18 @@ import { useResultsActions } from '../../composables/useResultsActions'
 import { useResultsHotkeys } from '../../composables/useResultsHotkeys'
 import { useSelectableQueue } from '../../composables/useSelectableQueue'
 import { useVisibleSelection } from '../../composables/useVisibleSelection'
+import { useAppStore } from '../../stores/app'
 import { useResultsStore } from '../../stores/results'
 import { useTemplatesStore } from '../../stores/templates'
 import { useToastStore } from '../../stores/toast'
 import type { PendingItem } from '../../types'
 
+const app = useAppStore()
 const results = useResultsStore()
 const templates = useTemplatesStore()
 const toast = useToastStore()
 
+const { delegatedAccount } = storeToRefs(app)
 const { notifyItems, tweetItems, filterText, selectedReplyByKey, selectedDmByKey } = storeToRefs(results)
 const { replyTemplates, dmTemplates } = storeToRefs(templates)
 
@@ -41,6 +44,7 @@ const notifyStatusFilter = ref<'all' | 'todo' | 'retry' | 'done'>('all')
 const expandedNotifyKeys = ref<Record<string, boolean>>({})
 const notifyWorkbenchRef = ref<{ focusSearch: () => void } | null>(null)
 const tweetWorkbenchRef = ref<{ focusSearch: () => void } | null>(null)
+const jumpHandle = ref('')
 
 const notifyMetrics = computed(() => {
   const total = notifyItems.value.length
@@ -140,17 +144,17 @@ const {
 const activeOverview = computed(() => {
   if (activeTab.value === 'notify') {
     return [
-      { label: '当前可见', value: String(filteredNotifyItems.value.length), tone: 'text-sky-200 border-sky-400/20 bg-sky-400/8' },
-      { label: '已选', value: String(selectedVisibleNotifyCount.value), tone: 'text-slate-100 border-slate-800 bg-slate-950/80' },
-      { label: '待处理', value: String(notifyMetrics.value.todo), tone: 'text-amber-200 border-amber-400/20 bg-amber-400/8' },
-      { label: '重试', value: String(notifyMetrics.value.retry), tone: 'text-rose-200 border-rose-400/20 bg-rose-400/8' },
+      { label: '当前可见', value: String(filteredNotifyItems.value.length), tone: 'text-emerald-700 border-emerald-400/30 bg-emerald-400/10' },
+      { label: '已选', value: String(selectedVisibleNotifyCount.value), tone: 'text-emerald-950 border-emerald-100/90 bg-white/80' },
+      { label: '待处理', value: String(notifyMetrics.value.todo), tone: 'text-amber-700 border-amber-400/20 bg-amber-400/10' },
+      { label: '重试', value: String(notifyMetrics.value.retry), tone: 'text-rose-700 border-rose-400/20 bg-rose-400/10' },
     ]
   }
   return [
-    { label: '当前可见', value: String(filteredTweetItems.value.length), tone: 'text-emerald-200 border-emerald-400/20 bg-emerald-400/8' },
-    { label: '已选', value: String(selectedVisibleTweetCount.value), tone: 'text-slate-100 border-slate-800 bg-slate-950/80' },
-    { label: '用户数', value: String(tweetMetrics.value.uniqueHandles), tone: 'text-sky-200 border-sky-400/20 bg-sky-400/8' },
-    { label: '已关联', value: String(tweetMetrics.value.withStatus), tone: 'text-emerald-200 border-emerald-400/20 bg-emerald-400/8' },
+    { label: '当前可见', value: String(filteredTweetItems.value.length), tone: 'text-emerald-700 border-emerald-400/20 bg-emerald-400/10' },
+    { label: '已选', value: String(selectedVisibleTweetCount.value), tone: 'text-emerald-950 border-emerald-100/90 bg-white/80' },
+    { label: '用户数', value: String(tweetMetrics.value.uniqueHandles), tone: 'text-emerald-700 border-emerald-400/30 bg-emerald-400/10' },
+    { label: '已关联', value: String(tweetMetrics.value.withStatus), tone: 'text-emerald-700 border-emerald-400/20 bg-emerald-400/10' },
   ]
 })
 
@@ -161,6 +165,24 @@ function isReplied(item: PendingItem) {
 function flowLabel(item: PendingItem) {
   const key = String(item.notify_flow_stage || '').trim().toLowerCase()
   return flowLabels[key] || (key || '未开始')
+}
+
+async function handleDelegationSave() {
+  try {
+    await app.saveDelegation()
+  } catch (error: any) {
+    toast.push(error?.message || '保存委派账户失败', 'error', 4200)
+  }
+}
+
+async function handleJump() {
+  const handle = jumpHandle.value.trim()
+  if (!handle) return
+  try {
+    await app.jumpToReplies(handle)
+  } catch (error: any) {
+    toast.push(error?.message || '打开用户回复页失败', 'error', 4200)
+  }
 }
 
 function toggleNotifyDetails(key: string) {
@@ -236,22 +258,22 @@ function intentLabel(item: PendingItem) {
 
 function intentTone(item: PendingItem) {
   const level = String(item.intent_level || '').trim().toLowerCase()
-  if (level === 'high' || level === 'medium') return 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200'
-  if (level === 'low') return 'border-amber-400/20 bg-amber-400/10 text-amber-200'
-  return 'border-slate-800 bg-slate-950/70 text-slate-400'
+  if (level === 'high' || level === 'medium') return 'border-emerald-400/20 bg-emerald-400/10 text-emerald-700'
+  if (level === 'low') return 'border-amber-400/20 bg-amber-400/10 text-amber-700'
+  return 'border-emerald-100/90 bg-white/70 text-emerald-700/80'
 }
 
 function flowTone(item: PendingItem) {
   if (item.notify_flow_error_code || item.notify_flow_error_detail || item.notify_flow_error) {
-    return 'border-rose-400/20 bg-rose-400/10 text-rose-200'
+    return 'border-rose-400/20 bg-rose-400/10 text-rose-700'
   }
   if (item.notify_retry_time) {
-    return 'border-amber-400/20 bg-amber-400/10 text-amber-200'
+    return 'border-amber-400/20 bg-amber-400/10 text-amber-700'
   }
   if (isReplied(item)) {
-    return 'border-emerald-400/20 bg-emerald-400/10 text-emerald-200'
+    return 'border-emerald-400/20 bg-emerald-400/10 text-emerald-700'
   }
-  return 'border-slate-800 bg-slate-950/70 text-slate-400'
+  return 'border-emerald-100/90 bg-white/70 text-emerald-700/80'
 }
 
 const {
@@ -300,6 +322,58 @@ useResultsHotkeys({
 
 <template>
   <section class="space-y-6">
+    <div class="rounded-3xl border border-emerald-300/50 bg-gradient-to-br from-white/95 via-emerald-50/95 to-lime-100/80 p-4 shadow-[0_18px_46px_rgba(16,185,129,0.12)]">
+      <div class="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+        <div class="min-w-0">
+          <div class="flex flex-wrap items-center gap-2">
+            <div class="font-mono text-[11px] uppercase tracking-[0.12em] text-emerald-600">Account</div>
+            <span class="rounded-full border border-emerald-300/40 bg-white/80 px-3 py-1 text-xs font-semibold text-emerald-700">
+              当前 {{ delegatedAccount?.trim() || '未绑定' }}
+            </span>
+          </div>
+          <h2 class="mt-2 text-lg font-semibold text-emerald-950">账号与跳转</h2>
+          <p class="mt-1 text-xs leading-5 text-emerald-700/70">常用账户和跳转入口放在捕获列表上方，处理通知前先确认身份。</p>
+        </div>
+
+        <div class="grid min-w-0 flex-1 gap-3 lg:grid-cols-[minmax(180px,0.85fr)_minmax(240px,1fr)] xl:max-w-3xl">
+          <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_96px]">
+            <input
+              v-model="delegatedAccount"
+              type="text"
+              aria-label="委派账户"
+              placeholder="@username"
+              class="w-full rounded-2xl border border-emerald-100/90 bg-white/85 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15"
+            />
+            <button
+              type="button"
+              class="rounded-2xl bg-gradient-to-r from-emerald-400 to-lime-300 px-4 py-3 text-sm font-semibold text-emerald-950 shadow-[0_12px_24px_rgba(16,185,129,0.14)] transition hover:brightness-105"
+              @click="handleDelegationSave"
+            >
+              保存
+            </button>
+          </div>
+
+          <div class="grid gap-2 sm:grid-cols-[minmax(0,1fr)_96px]">
+            <input
+              v-model="jumpHandle"
+              type="text"
+              aria-label="推特用户 ID"
+              placeholder="输入 @ID，回车打开回复页"
+              class="w-full rounded-2xl border border-emerald-100/90 bg-white/85 px-4 py-3 text-sm text-emerald-950 outline-none transition focus:border-emerald-400/60 focus:ring-4 focus:ring-emerald-400/15"
+              @keydown.enter.prevent="handleJump"
+            />
+            <button
+              type="button"
+              class="rounded-2xl border border-emerald-200/90 bg-white/85 px-4 py-3 text-sm font-semibold text-emerald-800 transition hover:border-emerald-400 hover:bg-emerald-50"
+              @click="handleJump"
+            >
+              打开
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <ResultsTabSwitch
       :active-tab="activeTab"
       :notify-count="notifyCount"

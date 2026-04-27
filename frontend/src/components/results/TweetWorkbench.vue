@@ -54,7 +54,7 @@ defineExpose({ focusSearch })
 </script>
 
 <template>
-  <div ref="containerRef" class="rounded-[24px] border border-slate-800 bg-slate-950/80 shadow-[0_24px_80px_rgba(2,6,23,0.42)]">
+  <div ref="containerRef" class="rounded-[24px] border border-emerald-100/90 bg-white/80 shadow-[0_24px_80px_rgba(16,185,129,0.16)]">
     <ResultsSectionHeader
       tone="emerald"
       code="TW"
@@ -68,25 +68,25 @@ defineExpose({ focusSearch })
     >
       <template #actions>
         <div class="flex flex-col gap-3 sm:flex-row">
-          <button type="button" class="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="emit('clear')">清空</button>
-          <button type="button" class="rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-3 text-sm font-semibold text-slate-200" @click="emit('clear-blocklist')">清空黑名单</button>
+          <button type="button" class="rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3 text-sm font-semibold text-emerald-800" @click="emit('clear')">清空</button>
+          <button type="button" class="rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-3 text-sm font-semibold text-emerald-800" @click="emit('clear-blocklist')">清空黑名单</button>
         </div>
       </template>
     </ResultsSectionHeader>
 
     <div class="space-y-3 p-4">
       <div class="grid gap-3 lg:grid-cols-3">
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/55 px-4 py-3">
-          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">Visible</div>
-          <div class="mt-2 font-mono text-2xl font-semibold text-slate-50">{{ metrics.total }}</div>
+        <div class="rounded-2xl border border-emerald-100/90 bg-white/70 px-4 py-3">
+          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-700/60">Visible</div>
+          <div class="mt-2 font-mono text-2xl font-semibold text-emerald-950">{{ metrics.total }}</div>
         </div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/55 px-4 py-3">
-          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">Handles</div>
-          <div class="mt-2 font-mono text-2xl font-semibold text-slate-50">{{ metrics.uniqueHandles }}</div>
+        <div class="rounded-2xl border border-emerald-100/90 bg-white/70 px-4 py-3">
+          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-700/60">Handles</div>
+          <div class="mt-2 font-mono text-2xl font-semibold text-emerald-950">{{ metrics.uniqueHandles }}</div>
         </div>
-        <div class="rounded-2xl border border-slate-800 bg-slate-950/55 px-4 py-3">
-          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-slate-500">Status Linked</div>
-          <div class="mt-2 font-mono text-2xl font-semibold text-slate-50">{{ metrics.withStatus }}</div>
+        <div class="rounded-2xl border border-emerald-100/90 bg-white/70 px-4 py-3">
+          <div class="font-mono text-[10px] uppercase tracking-[0.12em] text-emerald-700/60">Status Linked</div>
+          <div class="mt-2 font-mono text-2xl font-semibold text-emerald-950">{{ metrics.withStatus }}</div>
         </div>
       </div>
 
@@ -124,10 +124,10 @@ defineExpose({ focusSearch })
         </div>
       </div>
 
-      <div v-if="allItemsCount && !filteredItems.length" class="grid min-h-[180px] place-items-center rounded-[22px] border border-dashed border-slate-800 bg-slate-950/40 text-center">
+      <div v-if="allItemsCount && !filteredItems.length" class="grid min-h-[180px] place-items-center rounded-[22px] border border-dashed border-emerald-100/90 bg-white/60 text-center">
         <div>
-          <div class="text-sm text-slate-400">当前筛选下没有匹配的推文</div>
-          <button type="button" class="mt-4 rounded-2xl border border-slate-700 bg-slate-900/70 px-4 py-2 text-xs font-semibold text-slate-200" @click="emit('update:searchText', '')">
+          <div class="text-sm text-emerald-700/80">当前筛选下没有匹配的推文</div>
+          <button type="button" class="mt-4 rounded-2xl border border-emerald-200/90 bg-emerald-50/80 px-4 py-2 text-xs font-semibold text-emerald-800" @click="emit('update:searchText', '')">
             清空筛选
           </button>
         </div>
@@ -135,8 +135,8 @@ defineExpose({ focusSearch })
 
       <div v-else-if="!allItemsCount" class="grid min-h-[220px] place-items-center text-center">
         <div>
-          <div class="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl border border-emerald-400/20 bg-emerald-400/10 text-2xl text-emerald-300">💬</div>
-          <div class="text-sm text-slate-400">暂无推文捕获</div>
+          <div class="mx-auto mb-4 grid h-16 w-16 place-items-center rounded-2xl border border-emerald-400/20 bg-emerald-400/10 text-2xl text-emerald-600">💬</div>
+          <div class="text-sm text-emerald-700/80">暂无推文捕获</div>
         </div>
       </div>
     </div>

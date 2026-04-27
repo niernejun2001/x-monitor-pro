@@ -5,6 +5,8 @@ import random
 import re
 import time
 
+from xmonitor.services.support.error_format import format_runtime_error
+
 
 def as_json_safe(obj):
     """将对象转换为可 JSON 序列化内容。"""
@@ -55,7 +57,7 @@ def probe_selectors_snapshot(tab, selectors):
                 except Exception:
                     item['disabled'] = False
         except Exception as e:
-            item['error'] = str(e)
+            item['error'] = format_runtime_error(e)
         snapshot.append(item)
     return snapshot
 
@@ -76,7 +78,7 @@ def capture_runtime_diagnostic(tab, stage, deps, err=None, selectors=None, extra
     payload = {
         'time': datetime.datetime.now().isoformat(),
         'stage': str(stage or ''),
-        'error': str(err or ''),
+        'error': format_runtime_error(err) if err is not None else '',
         'headless_mode': bool(deps.headless_mode),
         'selectors': probe_selectors_snapshot(tab, selectors),
         'extra': as_json_safe(extra or {}),
@@ -113,7 +115,7 @@ def capture_runtime_diagnostic(tab, stage, deps, err=None, selectors=None, extra
         except Exception as e:
             payload['html_head'] = ''
             payload['html_len'] = -1
-            payload['html_error'] = str(e)
+            payload['html_error'] = format_runtime_error(e)
 
         def _try_capture_screenshot_once():
             local_saved = False
@@ -134,7 +136,7 @@ def capture_runtime_diagnostic(tab, stage, deps, err=None, selectors=None, extra
                     if local_saved:
                         break
                 except Exception as e:
-                    local_err = str(e)
+                    local_err = format_runtime_error(e)
             return local_saved, local_err
 
         shot_saved, shot_err = _try_capture_screenshot_once()
@@ -152,6 +154,6 @@ def capture_runtime_diagnostic(tab, stage, deps, err=None, selectors=None, extra
         if payload.get('screenshot_saved'):
             deps.log_to_ui('warn', f'🧪 失败截图已保存: {png_path}')
     except Exception as e:
-        deps.log_to_ui('warn', f'⚠️ 写入失败诊断文件失败: {e}')
+        deps.log_to_ui('warn', f'⚠️ 写入失败诊断文件失败: {format_runtime_error(e)}')
         return ''
     return json_path

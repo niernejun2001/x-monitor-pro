@@ -22,3 +22,11 @@ run.log
 *.lpk
 xmonitor-qt6
 debug_view.jpg
+
+# Local Codex / debugging artifacts
+.agents/
+.codex/
+skills-lock.json
+out.wav
+屏幕截图_*.png
+金币掉落音效-*.wav

@@ -5,6 +5,7 @@ import time
 import types
 import unittest
 from collections import deque
+from unittest import mock
 
 from xmonitor.storage.state import io as state_io
 from xmonitor.runtime.runtime_state import build_runtime_state, set_runtime_attr
@@ -44,6 +45,8 @@ class StateIOTests(unittest.TestCase):
         deps.LLM_FILTER_API_KEY = 'EMPTY'
         deps.LLM_FILTER_MODEL = 'qwen3.5:4b'
         deps.LLM_FILTER_TIMEOUT_SEC = 12.0
+        deps.LLM_FILTER_RETRY_COUNT = 2
+        deps.LLM_FILTER_RETRY_BACKOFF_SEC = 0.35
         deps.LLM_FILTER_PROMPT_TEMPLATE = 'prompt'
         deps.LLM_INTENT_PROMPT_TEMPLATE = 'intent prompt'
         deps.DM_LLM_REWRITE_ENABLED = True
@@ -125,6 +128,8 @@ class StateIOTests(unittest.TestCase):
                 'llm_filter_api_key': '',
                 'llm_filter_model': '',
                 'llm_filter_timeout_sec': 10.0,
+                'llm_filter_retry_count': 3,
+                'llm_filter_retry_backoff_sec': 0.4,
                 'llm_filter_prompt_template': '',
                 'llm_intent_prompt_template': '',
                 'dm_llm_rewrite_enabled': False,
@@ -153,6 +158,8 @@ class StateIOTests(unittest.TestCase):
 
             self.assertEqual(deps.global_token, 'legacy-token')
             self.assertEqual(deps.monitor_tasks[0]['url'], 'https://x.com/legacy')
+            self.assertEqual(deps.LLM_FILTER_RETRY_COUNT, 3)
+            self.assertEqual(deps.LLM_FILTER_RETRY_BACKOFF_SEC, 0.4)
             self.assertIn('legacy_hist', deps.history_ids)
             self.assertIn('@legacy_user', deps.processed_users)
             self.assertTrue(has_blob(deps, APP_STATE_KEY))
@@ -164,6 +171,21 @@ class StateIOTests(unittest.TestCase):
             self.assertEqual(structured['pending_results'][0]['key'], 'legacy_1')
             self.assertIn('legacy_hist', structured['history_ids'])
             self.assertIn('legacy_sig', structured['content_dedupe'])
+
+    def test_save_state_formats_blank_sqlite_error(self):
+        class _BlankError(Exception):
+            def __str__(self):
+                return ''
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            deps = self._make_deps(tmpdir)
+            with mock.patch('xmonitor.storage.state.io_save._save_sqlite_blob', side_effect=_BlankError()), \
+                 mock.patch('xmonitor.storage.state.io_save._save_structured_state', side_effect=_BlankError()), \
+                 mock.patch('xmonitor.storage.state.io_save.logging.error') as mocked_error:
+                state_io.save_state(deps)
+
+        error_texts = [' '.join(str(arg) for arg in call.args) for call in mocked_error.call_args_list]
+        self.assertTrue(any('_BlankError' in text for text in error_texts))
 
 
 if __name__ == '__main__':

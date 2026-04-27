@@ -3,6 +3,8 @@ import re
 import threading
 import time
 
+from xmonitor.services.support.error_format import format_runtime_error
+from xmonitor.services.support.status_links import canonical_status_url
 
 _IMPORT_LOCK = threading.Lock()
 _IMPORT_STATE = {
@@ -84,7 +86,7 @@ def _load_twitter_cli_modules():
             _IMPORT_STATE.update({
                 'checked': True,
                 'ok': False,
-                'error': str(exc),
+                'error': format_runtime_error(exc),
                 'client_cls': None,
                 'auth_mod': None,
             })
@@ -209,14 +211,17 @@ def _tweet_to_payload(tweet):
     author = getattr(tweet, 'author', None)
     screen_name = str(getattr(author, 'screen_name', '') or '').strip()
     tweet_id = str(getattr(tweet, 'id', '') or '').strip()
+    raw_url = str(getattr(tweet, 'url', '') or '').strip()
     return {
         'id': tweet_id,
         'text': str(getattr(tweet, 'text', '') or '').strip(),
         'created_at': str(getattr(tweet, 'created_at', '') or '').strip(),
-        'url': (
-            f'https://x.com/{screen_name}/status/{tweet_id}'
-            if screen_name and tweet_id else
-            (f'https://x.com/i/status/{tweet_id}' if tweet_id else '')
+        'url': canonical_status_url(
+            raw_url,
+            status_id=tweet_id,
+            status_handle=screen_name,
+            normalize_handle_fn=_normalize_handle,
+            pick_best_status_id_fn=_pick_status_id,
         ),
         'author': {
             'id': str(getattr(author, 'id', '') or '').strip(),
@@ -292,12 +297,13 @@ def get_twitter_cli_status(deps, verify=False):
     except Exception as exc:
         _RUNTIME_META['last_verify_at'] = time.time()
         _RUNTIME_META['last_verify_ok'] = False
-        _RUNTIME_META['last_error'] = str(exc)
+        err_text = format_runtime_error(exc)
+        _RUNTIME_META['last_error'] = err_text
         payload.update({
             'status': 'err',
             'authenticated': False,
-            'msg': str(exc),
-            'twitter_cli_last_error': str(exc),
+            'msg': err_text,
+            'twitter_cli_last_error': err_text,
             'twitter_cli_last_verify_at': float(_RUNTIME_META['last_verify_at']),
             'twitter_cli_last_verify_ok': False,
         })
@@ -362,9 +368,10 @@ def fetch_twitter_cli_tweet_detail(deps, tweet_id, max_count=8, force_refresh=Fa
         _RUNTIME_META['last_error'] = ''
         return payload
     except Exception as exc:
-        _RUNTIME_META['last_error'] = str(exc)
-        result['msg'] = str(exc)
-        result['twitter_cli_last_error'] = str(exc)
+        err_text = format_runtime_error(exc)
+        _RUNTIME_META['last_error'] = err_text
+        result['msg'] = err_text
+        result['twitter_cli_last_error'] = err_text
         return result
 
 
@@ -419,9 +426,10 @@ def fetch_twitter_cli_user(deps, screen_name, force_refresh=False):
         _RUNTIME_META['last_error'] = ''
         return payload
     except Exception as exc:
-        _RUNTIME_META['last_error'] = str(exc)
-        result['msg'] = str(exc)
-        result['twitter_cli_last_error'] = str(exc)
+        err_text = format_runtime_error(exc)
+        _RUNTIME_META['last_error'] = err_text
+        result['msg'] = err_text
+        result['twitter_cli_last_error'] = err_text
         return result
 
 
@@ -446,13 +454,13 @@ def enrich_notification_from_twitter_cli(deps, status_id, handle_hint='', conten
     text = str(tweet.get('text', '') or '').strip()
     author = tweet.get('author') or {}
     screen_name = _normalize_handle(author.get('screen_name', '') or handle_hint)
-    status_url = str(tweet.get('url', '') or '').strip()
-    if not status_url and tweet_id:
-        status_url = (
-            f'https://x.com/{screen_name}/status/{tweet_id}'
-            if screen_name else
-            f'https://x.com/i/status/{tweet_id}'
-        )
+    status_url = canonical_status_url(
+        str(tweet.get('url', '') or '').strip(),
+        status_id=tweet_id,
+        status_handle=screen_name,
+        normalize_handle_fn=_normalize_handle,
+        pick_best_status_id_fn=_pick_status_id,
+    )
     out.update({
         'status': 'ok',
         'content': text[:280] if text else str(content_hint or '').strip()[:280],

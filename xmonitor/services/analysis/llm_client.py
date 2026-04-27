@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import urllib.error
 import urllib.request
 
@@ -39,6 +40,43 @@ def guess_ollama_native_endpoint(base_url, deps):
     return f'{base}/api/chat'
 
 
+def _llm_retry_count(deps):
+    try:
+        val = int(getattr(deps, 'LLM_FILTER_RETRY_COUNT', 2) or 2)
+    except Exception:
+        val = 2
+    return max(0, min(4, val))
+
+
+def _llm_retry_backoff_sec(deps):
+    try:
+        val = float(getattr(deps, 'LLM_FILTER_RETRY_BACKOFF_SEC', 0.35) or 0.35)
+    except Exception:
+        val = 0.35
+    return max(0.05, min(5.0, val))
+
+
+def _is_retryable_llm_error_message(message):
+    text = str(message or '').strip().lower()
+    if not text:
+        return False
+    retryable_hints = (
+        'timed out',
+        'timeout',
+        'unexpected eof',
+        'ssl',
+        'temporarily unavailable',
+        'connection reset',
+        'connection aborted',
+        'remote end closed connection',
+        'service unavailable',
+        'bad gateway',
+        'gateway timeout',
+        'eof occurred in violation of protocol',
+    )
+    return any(hint in text for hint in retryable_hints)
+
+
 def call_ollama_native_json(system_prompt, user_prompt, deps, *, base_url=None, model=None, timeout_sec=None):
     endpoint = guess_ollama_native_endpoint(base_url, deps)
     model_name = str(model if model is not None else deps.LLM_FILTER_MODEL or '').strip()
@@ -63,8 +101,32 @@ def call_ollama_native_json(system_prompt, user_prompt, deps, *, base_url=None, 
         headers={'Content-Type': 'application/json'},
         method='POST',
     )
-    with urllib.request.urlopen(req, timeout=timeout_val) as resp:
-        raw_resp = resp.read().decode('utf-8', errors='ignore')
+    retries = _llm_retry_count(deps)
+    backoff = _llm_retry_backoff_sec(deps)
+    last_err = None
+    raw_resp = ''
+    for attempt in range(1, retries + 2):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+                raw_resp = resp.read().decode('utf-8', errors='ignore')
+            last_err = None
+            break
+        except urllib.error.URLError as e:
+            err = RuntimeError(f'URLError: {e}')
+            if attempt <= retries and _is_retryable_llm_error_message(err):
+                time.sleep(backoff * attempt)
+                last_err = err
+                continue
+            raise err from e
+        except Exception as e:
+            err = RuntimeError(type(e).__name__ + f': {e}')
+            if attempt <= retries and _is_retryable_llm_error_message(err):
+                time.sleep(backoff * attempt)
+                last_err = err
+                continue
+            raise err from e
+    if last_err is not None:
+        raise last_err
 
     data = json.loads(raw_resp or '{}')
     msg = data.get('message') or {}
@@ -94,10 +156,13 @@ def call_openai_compatible_json(
     api_key_val = str(api_key if api_key is not None else deps.LLM_FILTER_API_KEY or 'EMPTY').strip() or 'EMPTY'
     timeout_val = deps.clamp_llm_timeout(timeout_sec if timeout_sec is not None else deps.LLM_FILTER_TIMEOUT_SEC)
 
+    safe_temperature = 0.0 if temperature is None else temperature
+    safe_max_tokens = 120 if max_tokens is None else max_tokens
+
     base_payload = {
         'model': model_name,
-        'temperature': max(0.0, min(1.2, float(temperature))),
-        'max_tokens': int(max(32, min(512, int(max_tokens)))),
+        'temperature': max(0.0, min(1.2, float(safe_temperature))),
+        'max_tokens': int(max(32, min(512, int(safe_max_tokens)))),
         'messages': [
             {'role': 'system', 'content': str(system_prompt or '').strip()},
             {'role': 'user', 'content': str(user_prompt or '').strip()},
@@ -111,28 +176,49 @@ def call_openai_compatible_json(
     data = {}
     last_err = None
     last_err_body = ''
+    retries = _llm_retry_count(deps)
+    backoff = _llm_retry_backoff_sec(deps)
     payload_variants = [
         {**base_payload, 'response_format': {'type': 'json_object'}},
         dict(base_payload),
     ]
     for payload in payload_variants:
-        try:
-            body = json.dumps(payload).encode('utf-8')
-            req = urllib.request.Request(endpoint, data=body, headers=headers, method='POST')
-            with urllib.request.urlopen(req, timeout=timeout_val) as resp:
-                raw_resp = resp.read().decode('utf-8', errors='ignore')
-            data = json.loads(raw_resp or '{}')
-            last_err = None
-            break
-        except urllib.error.HTTPError as e:
-            last_err = e
+        body = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(endpoint, data=body, headers=headers, method='POST')
+        for attempt in range(1, retries + 2):
             try:
-                last_err_body = e.read().decode('utf-8', errors='ignore')
-            except Exception:
-                last_err_body = ''
-            continue
+                with urllib.request.urlopen(req, timeout=timeout_val) as resp:
+                    raw_resp = resp.read().decode('utf-8', errors='ignore')
+                data = json.loads(raw_resp or '{}')
+                last_err = None
+                break
+            except urllib.error.HTTPError as e:
+                last_err = e
+                try:
+                    last_err_body = e.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    last_err_body = ''
+                break
+            except urllib.error.URLError as e:
+                err = RuntimeError(f'URLError: {e}')
+                last_err = err
+                if attempt <= retries and _is_retryable_llm_error_message(err):
+                    time.sleep(backoff * attempt)
+                    continue
+                break
+            except Exception as e:
+                err = RuntimeError(type(e).__name__ + f': {e}')
+                last_err = err
+                if attempt <= retries and _is_retryable_llm_error_message(err):
+                    time.sleep(backoff * attempt)
+                    continue
+                break
+        if data:
+            break
 
     if last_err is not None and not data:
+        if not isinstance(last_err, urllib.error.HTTPError):
+            raise last_err
         fallback_allowed = (
             int(getattr(last_err, 'code', 0) or 0) == 404
             or ('404 page not found' in str(last_err_body or '').lower())
