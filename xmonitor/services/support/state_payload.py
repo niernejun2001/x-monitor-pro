@@ -98,10 +98,12 @@ def build_storage_state_payload(deps):
             'notification_monitoring': deps.notification_monitoring,
             'delegated_account': deps.delegated_account,
             'delegated_enabled': deps.delegated_enabled,
+            'enterprise_wechat_webhook_url': str(getattr(deps, 'enterprise_wechat_webhook_url', '') or ''),
             'headless_mode': deps.headless_mode,
             'history_ids': list(deps.history_ids),
             'content_dedupe': deps.content_dedupe,
             'dm_llm_rewrite_history': list(deps.dm_llm_rewrite_history),
+            'dm_recent_contacts': _safe_runtime_payload(getattr(deps, 'get_recent_dm_contacts_result', None)),
         }
     )
     return payload
@@ -120,6 +122,7 @@ def build_api_state_payload(deps):
                 'notification_monitoring': deps.notification_monitoring,
                 'delegated_account': deps.delegated_account,
                 'delegated_enabled': deps.delegated_enabled,
+                'enterprise_wechat_webhook_url': str(getattr(deps, 'enterprise_wechat_webhook_url', '') or ''),
                 'headless_mode': deps.headless_mode,
                 'llm_filter_timeout_max_sec': float(deps.LLM_FILTER_TIMEOUT_MAX_SEC),
                 'notification_reply_only_mode': bool(deps.NOTIFICATION_REPLY_ONLY_MODE),
@@ -138,4 +141,5 @@ def build_api_state_payload(deps):
     payload.update(
         _safe_runtime_payload(getattr(deps, 'build_browser_proxy_runtime_payload', None)),
     )
+    payload['dm_recent_contacts'] = _safe_runtime_payload(getattr(deps, 'get_recent_dm_contacts_result', None))
     return payload

@@ -25,11 +25,22 @@ class SupportSystemProxyTests(unittest.TestCase):
         self.assertEqual(value, 'http://127.0.0.1:7897')
         self.assertEqual(source, 'gsettings_http')
 
-    def test_resolve_browser_proxy_falls_back_to_local_candidates(self):
+    def test_resolve_browser_proxy_does_not_guess_local_candidates_by_default(self):
         probe = lambda host, port: port == 7890
         value, source = support_system._resolve_browser_proxy(
             ('XMONITOR_PROXY', 'ALL_PROXY'),
             environ={},
+            gsettings_reader=lambda schema, key: "'none'" if key == 'mode' else '',
+            local_port_probe=probe,
+        )
+        self.assertEqual(value, '')
+        self.assertEqual(source, '')
+
+    def test_resolve_browser_proxy_can_opt_in_to_local_candidates(self):
+        probe = lambda host, port: port == 7890
+        value, source = support_system._resolve_browser_proxy(
+            ('XMONITOR_PROXY', 'ALL_PROXY'),
+            environ={'XMONITOR_AUTO_DETECT_LOCAL_PROXY': '1'},
             gsettings_reader=lambda schema, key: "'none'" if key == 'mode' else '',
             local_port_probe=probe,
         )

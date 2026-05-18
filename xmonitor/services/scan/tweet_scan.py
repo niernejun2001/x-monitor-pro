@@ -1,9 +1,48 @@
 import datetime
+import os
 import random
 import re
 import time
 
 from xmonitor.services.support.error_format import format_runtime_error
+
+
+def _append_unique_handle(handles, handle):
+    if handle and handle not in handles:
+        handles.append(handle)
+
+
+def _save_comment_ids_with_one(handles, deps, log_to_ui):
+    current_handles = list(handles or [])
+
+    data_dir = str(getattr(deps, "DATA_DIR", "") or "").strip()
+    if not data_dir:
+        log_to_ui("info", f"🔢 本轮评论内容含 1 的ID: {len(current_handles)} 个")
+        return
+    try:
+        os.makedirs(data_dir, exist_ok=True)
+        output_path = os.path.join(data_dir, "comment_ids_with_1.txt")
+        merged_handles = []
+        if os.path.exists(output_path):
+            with open(output_path, encoding="utf-8") as f:
+                for line in f:
+                    _append_unique_handle(merged_handles, line.strip())
+        before_count = len(merged_handles)
+        added_handles = []
+        for handle in current_handles:
+            before_handle_count = len(merged_handles)
+            _append_unique_handle(merged_handles, handle)
+            if len(merged_handles) > before_handle_count:
+                added_handles.append(handle)
+        added_count = len(merged_handles) - before_count
+        with open(output_path, "w", encoding="utf-8") as f:
+            if merged_handles:
+                f.write("\n".join(merged_handles) + "\n")
+        if added_handles:
+            log_to_ui("success", "📋 本轮新增ID:\n" + "\n".join(added_handles))
+        log_to_ui("success" if added_count else "info", f"💾 已增量保存ID列表: 本轮新增 {added_count} 个，累计 {len(merged_handles)} 个 -> {output_path}")
+    except Exception as err:
+        log_to_ui("warn", f"⚠️ 保存含 1 的ID列表失败: {err}")
 
 
 def scan_page_content(page, url, blocked_list, deps):
@@ -21,6 +60,7 @@ def scan_page_content(page, url, blocked_list, deps):
     results = []
     seen_in_page = set()
     processed_article_hashes = set()  # 记录已处理的article
+    comment_ids_with_one = []
 
     try:
         tweet_id_match = re.search(r'status/(\d+)', url)
@@ -140,6 +180,8 @@ def scan_page_content(page, url, blocked_list, deps):
                     if not content:
                         debug_skipped["no_content"] += 1
                         continue
+                    if "1" in content:
+                        _append_unique_handle(comment_ids_with_one, handle)
                     should_skip_policy, skip_reason = should_skip_content_by_policy(content)
                     if should_skip_policy:
                         if skip_reason == "emoji_only":
@@ -271,6 +313,7 @@ def scan_page_content(page, url, blocked_list, deps):
         log_to_ui("info", f"   跳过: 无user({debug_skipped['no_user']}), 无handle({debug_skipped['no_handle']}), 无内容({debug_skipped['no_content']})")
         log_to_ui("info", f"   跳过: 保护名单({debug_skipped['blacklist']}), 重复({debug_skipped['duplicate']}), 有回复({debug_skipped['has_reply']})")
         log_to_ui("info", f"   跳过: 纯表情({debug_skipped['emoji_only']}), 指定@过滤({debug_skipped['blocked_mention']})")
+        _save_comment_ids_with_one(comment_ids_with_one, deps, log_to_ui)
         log_to_ui("success", f"✨ 扫描完成: 捕获 {len(results)} 条评论")
 
     except Exception as e:

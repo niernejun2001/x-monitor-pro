@@ -21,6 +21,14 @@ from xmonitor.services.support.template_utils import (
     render_llm_prompt_template as _render_llm_prompt_template_impl,
     sanitize_template_list as _sanitize_template_list_impl,
 )
+from xmonitor.services.dm.recent_contacts import (
+    get_recent_dm_contacts_result as _get_recent_dm_contacts_result_impl,
+    push_daily_dm_contacts_report as _push_daily_dm_contacts_report_impl,
+    scan_recent_dm_contacts_with_browser as _scan_recent_dm_contacts_with_browser_impl,
+    set_recent_dm_contacts_result as _set_recent_dm_contacts_result_impl,
+    start_daily_dm_contacts_scheduler as _start_daily_dm_contacts_scheduler_impl,
+    stop_daily_dm_contacts_scheduler as _stop_daily_dm_contacts_scheduler_impl,
+)
 from xmonitor.storage.notify.facade import NotifyStateFacade
 from xmonitor.storage.repositories import MonitorTasksRepository, PendingResultsRepository, ProcessedUsersRepository
 from xmonitor.storage.state.io import (
@@ -83,6 +91,29 @@ def build_core_runtime_exports(deps):
     def save_processed_users():
         return _save_processed_users_impl(deps)
 
+    def scan_recent_dm_contacts_with_browser(window_hours=24, max_scrolls=8, run_type='manual'):
+        return _scan_recent_dm_contacts_with_browser_impl(
+            deps,
+            window_hours=window_hours,
+            max_scrolls=max_scrolls,
+            run_type=run_type,
+        )
+
+    def get_recent_dm_contacts_result():
+        return _get_recent_dm_contacts_result_impl(deps)
+
+    def set_recent_dm_contacts_result(result, save=True):
+        return _set_recent_dm_contacts_result_impl(deps, result, save=save)
+
+    def push_daily_dm_contacts_report(run_type='manual_test', title='测试'):
+        return _push_daily_dm_contacts_report_impl(deps, run_type=run_type, title=title)
+
+    def start_daily_dm_contacts_scheduler():
+        return _start_daily_dm_contacts_scheduler_impl(deps)
+
+    def stop_daily_dm_contacts_scheduler(timeout=2.0):
+        return _stop_daily_dm_contacts_scheduler_impl(deps, timeout=timeout)
+
     def _sanitize_template_list(raw_list, fallback_list):
         return _sanitize_template_list_impl(raw_list, fallback_list)
 
@@ -107,6 +138,12 @@ def build_core_runtime_exports(deps):
         'save_state': save_state,
         'load_state': load_state,
         'save_processed_users': save_processed_users,
+        'scan_recent_dm_contacts_with_browser': scan_recent_dm_contacts_with_browser,
+        'get_recent_dm_contacts_result': get_recent_dm_contacts_result,
+        'set_recent_dm_contacts_result': set_recent_dm_contacts_result,
+        'push_daily_dm_contacts_report': push_daily_dm_contacts_report,
+        'start_daily_dm_contacts_scheduler': start_daily_dm_contacts_scheduler,
+        'stop_daily_dm_contacts_scheduler': stop_daily_dm_contacts_scheduler,
         '_sanitize_template_list': _sanitize_template_list,
         '_normalize_keyword_lines': _normalize_keyword_lines,
         '_render_llm_prompt_template': _render_llm_prompt_template,

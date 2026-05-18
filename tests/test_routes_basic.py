@@ -95,6 +95,7 @@ class RoutesBasicTests(unittest.TestCase):
         deps.notification_monitoring = True
         deps.delegated_account = ''
         deps.delegated_enabled = False
+        deps.enterprise_wechat_webhook_url = ''
         deps.headless_mode = True
         deps.notify_reply_templates = ['r1']
         deps.dm_message_templates = ['d1']
@@ -163,6 +164,36 @@ class RoutesBasicTests(unittest.TestCase):
         deps.pending_results_repo = FakePendingRepo()
         deps.processed_users_repo = types.SimpleNamespace(clear=lambda: None)
         deps.processed_users = set()
+        deps.dm_recent_contacts_result = {}
+        deps.get_recent_dm_contacts_result = lambda: {
+            'status': 'ok',
+            'msg': 'cached',
+            'contacts': [{'name': '张三', 'handle': '@demo'}],
+            'count': 1,
+            'copy_text': '@demo',
+            'scanned_rows': 1,
+        }
+        deps.scan_recent_dm_contacts_with_browser = lambda window_hours=24, max_scrolls=8, run_type='manual': {
+            'status': 'ok',
+            'msg': 'fresh',
+            'contacts': [{'name': '李四', 'handle': '@fresh'}],
+            'count': 1,
+            'copy_text': '@fresh',
+            'scanned_rows': 2,
+            'window_hours': window_hours,
+            'last_run_type': run_type,
+        }
+        deps.push_daily_dm_contacts_report = lambda run_type='manual_test', title='测试': {
+            'status': 'ok',
+            'msg': '企业微信推送成功',
+            'contacts': [{'name': '李四', 'handle': '@fresh'}],
+            'count': 1,
+            'copy_text': '@fresh',
+            'window_start': '2026-05-11 09:00:00',
+            'window_end': '2026-05-12 09:00:00',
+            'last_run_type': run_type,
+            'title': title,
+        }
         deps.save_processed_users = lambda: None
         deps.save_state = lambda: None
         deps.log_to_ui = lambda level, msg: None
@@ -251,6 +282,7 @@ class RoutesBasicTests(unittest.TestCase):
         self.assertEqual(data['browser_proxy_display'], 'socks5://127.0.0.1:1080')
         self.assertTrue(data['twitter_cli_enabled'])
         self.assertTrue(data['twitter_cli_available'])
+        self.assertEqual(data['enterprise_wechat_webhook_url'], '')
         self.assertEqual(data['llm_filter_retry_count'], 2)
         self.assertEqual(data['llm_filter_retry_backoff_sec'], 0.35)
         self.assertEqual(data['notification_schedule_snapshot']['period_label'], 'active')
@@ -261,6 +293,7 @@ class RoutesBasicTests(unittest.TestCase):
         self.assertEqual(data['notification_last_scan_at'], 456.0)
         self.assertEqual(data['notification_next_scan_at'], 465.5)
         self.assertFalse(data['notification_full_refresh_pending'])
+        self.assertEqual(data['dm_recent_contacts']['copy_text'], '@demo')
 
     def test_start_route_reuses_saved_token_when_payload_missing(self):
         client, deps = self._client()
@@ -347,6 +380,23 @@ class RoutesBasicTests(unittest.TestCase):
         self.assertEqual(deps.delegated_account_active, '')
         self.assertFalse(deps.delegated_switch_ok)
 
+    def test_set_enterprise_wechat_webhook_route(self):
+        client, deps = self._client()
+        saved = {'called': False}
+        deps.save_state = lambda: saved.__setitem__('called', True)
+        url = 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=abc'
+
+        resp = client.post('/api/set_enterprise_wechat_webhook', json={'webhook_url': url})
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data['enterprise_wechat_webhook_url'], url)
+        self.assertEqual(deps.enterprise_wechat_webhook_url, url)
+        self.assertTrue(saved['called'])
+
+        bad = client.post('/api/set_enterprise_wechat_webhook', json={'webhook_url': 'https://example.com/hook'})
+        self.assertEqual(bad.status_code, 400)
+
     def test_open_user_replies_page_opens_new_tab(self):
         client, deps = self._client()
         resp = client.post('/api/open_user_replies_page', json={'handle': '@Demo_User'})
@@ -361,6 +411,32 @@ class RoutesBasicTests(unittest.TestCase):
         resp = client.post('/api/open_user_replies_page', json={'handle': '@bad-handle'})
         self.assertEqual(resp.status_code, 400)
         self.assertIn('推特ID格式不合法', resp.get_json()['msg'])
+
+    def test_dm_recent_contacts_routes(self):
+        client, _ = self._client()
+
+        cached = client.get('/api/dm/recent_contacts')
+        self.assertEqual(cached.status_code, 200)
+        self.assertEqual(cached.get_json()['copy_text'], '@demo')
+
+        fresh = client.post('/api/dm/recent_contacts', json={'window_hours': 24, 'max_scrolls': 3})
+        data = fresh.get_json()
+        self.assertEqual(fresh.status_code, 200)
+        self.assertEqual(data['copy_text'], '@fresh')
+        self.assertEqual(data['window_hours'], 24)
+        self.assertEqual(data['last_run_type'], 'manual')
+
+    def test_dm_recent_contacts_push_daily_test_route(self):
+        client, _ = self._client()
+
+        resp = client.post('/api/dm/recent_contacts/push_daily_test', json={})
+        data = resp.get_json()
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(data['count'], 1)
+        self.assertEqual(data['copy_text'], '@fresh')
+        self.assertEqual(data['last_run_type'], 'manual_test')
+        self.assertEqual(data['window_start'], '2026-05-11 09:00:00')
 
 
 if __name__ == '__main__':

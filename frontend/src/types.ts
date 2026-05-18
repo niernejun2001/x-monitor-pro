@@ -42,6 +42,32 @@ export interface PendingItem {
   [key: string]: unknown
 }
 
+export interface DmRecentContact {
+  name: string
+  handle: string
+  raw_text?: string
+  age_seconds?: number | null
+  age_text?: string
+  captured_at?: string
+}
+
+export interface DmRecentContactsPayload {
+  status: string
+  msg?: string
+  contacts: DmRecentContact[]
+  count: number
+  copy_text: string
+  scanned_rows?: number
+  stale_rows?: number
+  unknown_time_rows?: number
+  window_hours?: number
+  source_url?: string
+  captured_at?: string
+  next_run_at?: number
+  last_error?: string
+  last_run_type?: string
+}
+
 export interface NotificationScheduleSnapshot {
   period_label?: string
   boost_active?: boolean
@@ -74,8 +100,10 @@ export interface StatePayload {
   notification_full_refresh_pending?: boolean
   notification_full_refresh_reason?: string
   notification_dm_light_scan_count?: number
+  dm_recent_contacts?: DmRecentContactsPayload
   delegated_account: string
   delegated_enabled: boolean
+  enterprise_wechat_webhook_url?: string
   headless_mode: boolean
   notify_reply_templates: string[]
   dm_message_templates: string[]

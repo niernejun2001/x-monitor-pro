@@ -1,4 +1,5 @@
 from .management import register_management_routes
+from .dm_stats import register_dm_stats_routes
 from .results_management import register_results_management_routes
 from .runtime import register_runtime_routes
 from .runtime_control import register_runtime_control_routes
@@ -12,10 +13,12 @@ def register_basic_routes(app, deps):
     register_state_routes(app, deps)
     register_management_routes(app, deps)
     register_runtime_routes(app, deps)
+    register_dm_stats_routes(app, deps)
 
 
 __all__ = [
     'register_basic_routes',
+    'register_dm_stats_routes',
     'register_management_routes',
     'register_results_management_routes',
     'register_runtime_routes',

@@ -1,7 +1,7 @@
 import { computed, ref } from 'vue'
 import { defineStore } from 'pinia'
 import * as api from '../api/services'
-import type { StatePayload } from '../types'
+import type { DmRecentContactsPayload, StatePayload } from '../types'
 import { useTasksStore } from './tasks'
 import { useTemplatesStore } from './templates'
 import { useResultsStore } from './results'
@@ -39,6 +39,7 @@ export const useAppStore = defineStore('app', () => {
   const notificationMonitoring = ref(false)
   const headlessMode = ref(true)
   const delegatedAccount = ref('')
+  const enterpriseWechatWebhookUrl = ref('')
 
   const notifyTtsEnabled = ref(false)
   const notifyTtsAppId = ref('')
@@ -67,6 +68,9 @@ export const useAppStore = defineStore('app', () => {
   const llmIntentResult = ref('等待测试或分析...')
   const notificationToggleBusy = ref(false)
   const llmTestBusy = ref(false)
+  const dmStatsBusy = ref(false)
+  const dmDailyPushBusy = ref(false)
+  const dmRecentContacts = ref<DmRecentContactsPayload | null>(null)
   const clockNowSec = ref(Date.now() / 1000)
   const clockTimer = ref<number | null>(null)
 
@@ -128,6 +132,7 @@ export const useAppStore = defineStore('app', () => {
     notificationMonitoring.value = !!payload.notification_monitoring
     headlessMode.value = payload.headless_mode !== false
     delegatedAccount.value = payload.delegated_account || ''
+    enterpriseWechatWebhookUrl.value = payload.enterprise_wechat_webhook_url || ''
 
     notifyTtsEnabled.value = !!payload.notify_tts_enabled
     notifyTtsAppId.value = payload.notify_tts_app_id || ''
@@ -152,6 +157,7 @@ export const useAppStore = defineStore('app', () => {
     dmLlmRewriteEnabled.value = payload.dm_llm_rewrite_enabled !== false
     dmLlmRewritePromptTemplate.value = payload.dm_llm_rewrite_prompt_template || ''
     notifyVoiceBlockKeywords.value = payload.notify_voice_block_keywords_text || ''
+    dmRecentContacts.value = payload.dm_recent_contacts || dmRecentContacts.value
 
     tasksStore.hydrate(payload.tasks || [])
     templatesStore.hydrate(payload)
@@ -205,6 +211,13 @@ export const useAppStore = defineStore('app', () => {
     const data = await api.setDelegatedAccount(delegatedAccount.value)
     delegatedAccount.value = String(data.delegated_account || '')
     toast.push(data.delegated_enabled ? '委派账户已保存' : '委派账户已清除', 'success')
+  }
+
+  async function saveEnterpriseWechatWebhook() {
+    const data = await api.setEnterpriseWechatWebhook(enterpriseWechatWebhookUrl.value.trim())
+    enterpriseWechatWebhookUrl.value = String((data as any).enterprise_wechat_webhook_url || '')
+    if (state.value) state.value.enterprise_wechat_webhook_url = enterpriseWechatWebhookUrl.value
+    toast.push(enterpriseWechatWebhookUrl.value ? '企业微信 Webhook 已保存' : '企业微信 Webhook 已清空', 'success')
   }
 
   async function jumpToReplies(handle: string) {
@@ -288,6 +301,36 @@ export const useAppStore = defineStore('app', () => {
     llmIntentResult.value = buildIntentLines((data as any).analysis || {})
   }
 
+  async function fetchDmRecentContacts() {
+    dmStatsBusy.value = true
+    try {
+      const data = await api.fetchRecentDmContacts(24)
+      dmRecentContacts.value = data
+      if (data.status !== 'ok') throw new Error(data.msg || '私信统计失败')
+      toast.push(`已统计最近24小时私信联系人 ${data.count || 0} 个`, 'success')
+      return data
+    } finally {
+      dmStatsBusy.value = false
+    }
+  }
+
+  async function refreshDmRecentContacts() {
+    const data = await api.getRecentDmContacts()
+    dmRecentContacts.value = data
+    return data
+  }
+
+  async function pushDailyDmContactsTest() {
+    dmDailyPushBusy.value = true
+    try {
+      const data = await api.pushDailyDmContactsTest()
+      toast.push(`企业微信测试推送成功，人数 ${Number((data as any).count || 0)} 个`, 'success')
+      return data
+    } finally {
+      dmDailyPushBusy.value = false
+    }
+  }
+
   function startClock() {
     if (clockTimer.value !== null) return
     clockNowSec.value = Date.now() / 1000
@@ -312,6 +355,7 @@ export const useAppStore = defineStore('app', () => {
     notificationMonitoring,
     headlessMode,
     delegatedAccount,
+    enterpriseWechatWebhookUrl,
     notifyTtsEnabled,
     notifyTtsAppId,
     notifyTtsAccessToken,
@@ -338,6 +382,9 @@ export const useAppStore = defineStore('app', () => {
     llmIntentResult,
     notificationToggleBusy,
     llmTestBusy,
+    dmStatsBusy,
+    dmDailyPushBusy,
+    dmRecentContacts,
     clockNowSec,
     statusText,
     serverAudioMeta,
@@ -350,12 +397,16 @@ export const useAppStore = defineStore('app', () => {
     saveNotificationSwitch,
     saveHeadlessSwitch,
     saveDelegation,
+    saveEnterpriseWechatWebhook,
     jumpToReplies,
     saveNotifyTts,
     testNotifyVoice,
     saveLlmConfig,
     testLlm,
     analyzeIntentInput,
+    fetchDmRecentContacts,
+    refreshDmRecentContacts,
+    pushDailyDmContactsTest,
     startClock,
     stopClock,
   }

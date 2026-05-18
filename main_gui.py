@@ -20,7 +20,14 @@ from PyQt6.QtCore import Qt, QTimer, QUrl, pyqtSignal, QObject
 from PyQt6.QtGui import QIcon, QFont, QDesktopServices
 
 # 导入Flask应用和监控状态
-from app import app as flask_app, save_state, save_processed_users, monitor_active, load_state
+from app import (
+    app as flask_app,
+    load_state,
+    save_processed_users,
+    save_state,
+    start_daily_dm_contacts_scheduler,
+    stop_daily_dm_contacts_scheduler,
+)
 
 
 class SignalEmitter(QObject):
@@ -47,10 +54,16 @@ class FlaskServer(threading.Thread):
 
             # 使用 werkzeug 的 make_server 以便可以关闭
             from werkzeug.serving import make_server
+            start_daily_dm_contacts_scheduler()
             self.server = make_server('127.0.0.1', 5000, flask_app, threaded=True)
             self.server.serve_forever()
         except Exception as e:
             self.signal_emitter.error.emit(f"Flask启动失败: {str(e)}")
+        finally:
+            try:
+                stop_daily_dm_contacts_scheduler()
+            except Exception:
+                pass
 
     def stop(self):
         """停止服务器"""

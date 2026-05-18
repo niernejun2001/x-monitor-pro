@@ -33,6 +33,10 @@ def run_app_entry(app, deps, *, os_module, print_fn, logging_module):
     try:
         werkzeug_log = logging_module.getLogger('werkzeug')
         werkzeug_log.setLevel(logging_module.ERROR)
+        try:
+            deps.start_daily_dm_contacts_scheduler()
+        except Exception as schedule_err:
+            logging_module.error(f'启动私信联系人定时统计失败: {schedule_err}')
         app.run(host='0.0.0.0', port=server_port, debug=False)
     except KeyboardInterrupt:
         print_fn('\n🛑 正在停止服务...')
@@ -40,3 +44,8 @@ def run_app_entry(app, deps, *, os_module, print_fn, logging_module):
         deps.save_processed_users()
         print_fn('💾 数据已保存')
         print_fn('👋 再见！')
+    finally:
+        try:
+            deps.stop_daily_dm_contacts_scheduler()
+        except Exception:
+            pass

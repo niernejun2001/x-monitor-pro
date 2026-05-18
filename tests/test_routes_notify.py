@@ -59,6 +59,8 @@ class RoutesNotifyTests(unittest.TestCase):
         deps.DM_LLM_REWRITE_ENABLED = False
         deps.UNHANDLED_PROMPT_AUTO_RETRY = 0
         deps.headless_mode = True
+        deps.notify_reply_templates = ['默认回复']
+        deps.dm_message_templates = ['默认私信']
         deps._check_reply_failure_budget = lambda handle: (True, '')
         deps.save_state = lambda: None
         deps.log_to_ui = lambda level, msg: None
@@ -92,6 +94,17 @@ class RoutesNotifyTests(unittest.TestCase):
         resp = client.post('/api/notify_retry', json={'key': 'n1'})
         self.assertEqual(resp.status_code, 202)
         self.assertEqual(resp.get_json()['status'], 'retry_waiting')
+
+    def test_notify_retry_uses_default_templates_when_row_missing_templates(self):
+        client, deps = self._client(send_ok=True)
+        deps.notify_state_facade.rows['n1'].pop('notify_reply_text', None)
+        deps.notify_state_facade.rows['n1'].pop('notify_dm_text', None)
+
+        resp = client.post('/api/notify_retry', json={'key': 'n1'})
+
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.get_json()['status'], 'ok')
+        self.assertEqual(deps.notify_state_facade.marked[-1], ('n1', '默认回复', '默认私信'))
 
     def test_notify_reply_budget_block_returns_429(self):
         client, deps = self._client(send_ok=True)

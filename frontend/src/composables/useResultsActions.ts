@@ -4,7 +4,7 @@ import type { PendingItem } from '../types'
 interface UseResultsActionsOptions {
   results: {
     markDone: (key: string, handle?: string) => Promise<void>
-    retryNotify: (key: string) => Promise<any>
+    retryNotify: (key: string, message?: string, dmMessage?: string) => Promise<any>
     sendReply: (key: string, message: string, dmMessage: string) => Promise<any>
     syncNotifyFlow: () => Promise<void>
     clear: (kind: 'notify' | 'tweet') => Promise<void>
@@ -109,8 +109,10 @@ export function useResultsActions(options: UseResultsActionsOptions) {
   }
 
   async function handleRetry(item: PendingItem) {
+    const replyText = options.selectedReplyByKey.value[item.key] || String(item.notify_reply_text || options.replyTemplates.value[0] || '')
+    const dmText = options.selectedDmByKey.value[item.key] || String(item.notify_dm_text || options.dmTemplates.value[0] || '')
     try {
-      const data = await options.results.retryNotify(item.key)
+      const data = await options.results.retryNotify(item.key, replyText, dmText)
       options.toast.push(data.msg || '重试已触发', data.status === 'ok' ? 'success' : 'info', 4200)
       await options.results.syncNotifyFlow()
     } catch (error: any) {

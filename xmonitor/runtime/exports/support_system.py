@@ -16,7 +16,6 @@ LOCAL_PROXY_CANDIDATES = (
     ('socks5', '127.0.0.1', 7891, 'auto_local_socks5_7891'),
     ('socks5', '127.0.0.1', 7898, 'auto_local_socks5_7898'),
     ('socks5', '127.0.0.1', 1080, 'auto_local_socks5_1080'),
-    ('http', '127.0.0.1', 8080, 'auto_local_http_8080'),
 )
 
 
@@ -96,6 +95,8 @@ def _resolve_browser_proxy(proxy_env_keys, environ=None, gsettings_reader=None, 
     value, source = _read_proxy_from_gsettings(reader=gsettings_reader)
     if value:
         return value, source
+    if str((environ or os.environ).get('XMONITOR_AUTO_DETECT_LOCAL_PROXY', '') or '').strip().lower() not in {'1', 'true', 'yes', 'on'}:
+        return '', ''
     return _read_proxy_from_local_candidates(port_probe=local_port_probe)
 
 

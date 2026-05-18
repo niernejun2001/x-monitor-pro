@@ -5,10 +5,27 @@ from flask import jsonify, request
 from .helpers import build_retry_payload
 
 
+def _first_text(*values):
+    for value in values:
+        text = str(value or '').strip()
+        if text:
+            return text
+    return ''
+
+
+def _first_template(templates):
+    for template in list(templates or []):
+        text = str(template or '').strip()
+        if text:
+            return text
+    return ''
+
+
 def register_notify_retry_routes(app, deps):
     @app.route('/api/notify_retry', methods=['POST'])
     def notify_retry():
-        key = str(request.json.get('key', '') or '').strip()
+        payload = request.get_json(silent=True) or {}
+        key = str(payload.get('key', '') or '').strip()
         if not key:
             return jsonify({'status': 'err', 'msg': 'missing key'}), 400
         _, row = deps.notify_state_facade.find_pending_item_by_key(key)
@@ -19,10 +36,20 @@ def register_notify_retry_routes(app, deps):
         if bool(item.get('notify_replied', False)):
             return jsonify({'status': 'ok', 'msg': '该任务已完成', 'flow_stage': 'done'})
 
-        reply_text = str(item.get('notify_reply_text', '') or '').strip()
-        dm_text = str(item.get('notify_dm_text', '') or '').strip()
+        reply_text = _first_text(
+            payload.get('message', ''),
+            item.get('notify_reply_text', ''),
+            _first_template(getattr(deps, 'notify_reply_templates', [])),
+        )
+        dm_text = _first_text(
+            payload.get('dm_message', ''),
+            item.get('notify_dm_text', ''),
+            _first_template(getattr(deps, 'dm_message_templates', [])),
+        )
         if not reply_text or not dm_text:
             return jsonify({'status': 'err', 'msg': '缺少回复或私信模板，请先在该行重新选择后点击回复'}), 400
+        item['notify_reply_text'] = reply_text
+        item['notify_dm_text'] = dm_text
 
         try:
             attempt = int(item.get('notify_flow_attempt', 0) or 0) + 1
@@ -38,6 +65,9 @@ def register_notify_retry_routes(app, deps):
             extra={
                 'notify_resume_stage': resume_stage,
                 'notify_retry_reason': 'manual_retry_execute',
+                'notify_reply_text': reply_text,
+                'notify_dm_text': dm_text,
+                'notify_dm_text_generated': '',
             },
             save=True,
         )

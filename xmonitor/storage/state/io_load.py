@@ -27,6 +27,7 @@ def _apply_state_payload(deps, data):
     deps.notification_monitoring = data.get('notification_monitoring', False)
     deps.delegated_account = str(data.get('delegated_account', '') or '').strip()
     deps.delegated_enabled = bool(data.get('delegated_enabled', bool(deps.delegated_account)))
+    deps.enterprise_wechat_webhook_url = str(data.get('enterprise_wechat_webhook_url', getattr(deps, 'enterprise_wechat_webhook_url', '')) or '').strip()
     deps.headless_mode = data.get('headless_mode', True)
     deps.notify_reply_templates = deps._sanitize_template_list(data.get('notify_reply_templates', []), deps.DEFAULT_NOTIFY_REPLY_TEMPLATES)
     deps.dm_message_templates = deps._sanitize_template_list(data.get('dm_message_templates', []), deps.DEFAULT_DM_TEMPLATES)
@@ -94,6 +95,13 @@ def _apply_state_payload(deps, data):
     )
     deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT = str(data.get('notify_voice_block_keywords_text', deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT) or '').strip()
     deps.NOTIFY_VOICE_BLOCK_KEYWORDS = tuple(dict.fromkeys(list(deps.NOTIFY_VOICE_BLOCK_KEYWORDS_BUILTIN) + [kw.lower() for kw in deps._normalize_keyword_lines(deps.NOTIFY_VOICE_BLOCK_KEYWORDS_TEXT)]))
+    saved_dm_contacts = data.get('dm_recent_contacts', {})
+    if isinstance(saved_dm_contacts, dict):
+        setter = getattr(deps, 'set_recent_dm_contacts_result', None)
+        if callable(setter):
+            setter(saved_dm_contacts, save=False)
+        else:
+            set_dep_attr(deps, 'dm_recent_contacts_result', saved_dm_contacts)
     set_dep_attr(deps, 'history_ids', set(data.get('history_ids', [])))
     set_dep_attr(deps, 'content_dedupe', {})
     saved_content_dedupe = data.get('content_dedupe', {})

@@ -1,6 +1,6 @@
 lzc-sdk-version: 0.1
 package: cloud.lazycat.app.xmonitor-vnc
-version: 1.0.11
+version: 1.0.13
 name: X Monitor Pro VNC
 description: X/Twitter 评论监控工具（VNC桌面版）
 author: shou
@@ -30,7 +30,7 @@ application:
 
 services:
   xmonitor-vnc:
-    image: registry.lazycat.cloud/nierenjun/shoxk8s/x-monitor-pro-vnc:c0e1b3359ac72aeb
+    image: registry.lazycat.cloud/nierenjun/shoxk8s/x-monitor-pro-vnc:a03d834b4329d1cd
     labels:
       io.kubernetes.service.name: xmonitor-vnc
     environment:

@@ -31,6 +31,21 @@ def register_runtime_control_routes(app, deps):
             deps.log_to_ui('info', '👤 已清除委派账户')
         return jsonify({'status': 'ok', 'delegated_account': deps.delegated_account, 'delegated_enabled': deps.delegated_enabled})
 
+    @app.route('/api/set_enterprise_wechat_webhook', methods=['POST'])
+    def set_enterprise_wechat_webhook():
+        payload = request.get_json(silent=True) or {}
+        webhook_url = str(payload.get('webhook_url', '') or '').strip()
+        if webhook_url and not webhook_url.startswith('https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key='):
+            return jsonify({'status': 'err', 'msg': '企业微信 Webhook 地址格式不正确'}), 400
+        with deps.data_lock:
+            deps.enterprise_wechat_webhook_url = webhook_url
+        deps.save_state()
+        if webhook_url:
+            deps.log_to_ui('info', '📣 企业微信 Webhook 已保存')
+        else:
+            deps.log_to_ui('info', '📣 企业微信 Webhook 已清空')
+        return jsonify({'status': 'ok', 'enterprise_wechat_webhook_url': webhook_url})
+
     @app.route('/api/open_user_replies_page', methods=['POST'])
     def open_user_replies_page():
         payload = request.get_json(silent=True) or {}

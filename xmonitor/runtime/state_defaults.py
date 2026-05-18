@@ -30,6 +30,7 @@ def build_initial_runtime_objects(
         'global_token': '',
         'delegated_account': '',
         'delegated_enabled': False,
+        'enterprise_wechat_webhook_url': '',
         'delegated_account_active': '',
         'delegated_switch_ok': False,
         'headless_mode': True,
@@ -98,4 +99,7 @@ def build_initial_runtime_objects(
         'notification_full_refresh_pending': False,
         'notification_full_refresh_reason': '',
         'notification_dm_light_scan_count': 0,
+        'dm_recent_contacts_result': {},
+        'dm_recent_contacts_thread': None,
+        'dm_recent_contacts_stop_event': threading_module.Event(),
     }

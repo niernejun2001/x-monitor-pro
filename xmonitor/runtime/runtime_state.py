@@ -29,6 +29,9 @@ class RuntimeState:
     notification_full_refresh_pending: bool = False
     notification_full_refresh_reason: str = ''
     notification_dm_light_scan_count: int = 0
+    dm_recent_contacts_result: Any = None
+    dm_recent_contacts_thread: Any = None
+    dm_recent_contacts_stop_event: Any = None
     llm_filter_cache: Any = None
     dm_llm_rewrite_history: Any = None
     content_dedupe: Any = None
@@ -69,6 +72,9 @@ def build_runtime_state(module):
         notification_full_refresh_pending=bool(getattr(module, 'notification_full_refresh_pending', False)),
         notification_full_refresh_reason=str(getattr(module, 'notification_full_refresh_reason', '') or ''),
         notification_dm_light_scan_count=int(getattr(module, 'notification_dm_light_scan_count', 0) or 0),
+        dm_recent_contacts_result=getattr(module, 'dm_recent_contacts_result', None),
+        dm_recent_contacts_thread=getattr(module, 'dm_recent_contacts_thread', None),
+        dm_recent_contacts_stop_event=getattr(module, 'dm_recent_contacts_stop_event', None),
         llm_filter_cache=getattr(module, 'llm_filter_cache', None),
         dm_llm_rewrite_history=getattr(module, 'dm_llm_rewrite_history', None),
         content_dedupe=getattr(module, 'content_dedupe', None),

@@ -117,6 +117,16 @@ describe('useResultsActions', () => {
     expect(toast.push).toHaveBeenCalledWith('请先选择评论回复和私信模板', 'error', 4200)
   })
 
+  it('passes current templates when retrying notify flow', async () => {
+    const { actions, results, notifyItem, selectedReplyByKey, selectedDmByKey } = makeOptions()
+    selectedReplyByKey.value[notifyItem.key] = '当前回复'
+    selectedDmByKey.value[notifyItem.key] = '当前私信'
+
+    await actions.handleRetry(notifyItem)
+
+    expect(results.retryNotify).toHaveBeenCalledWith('n1', '当前回复', '当前私信')
+  })
+
   it('does not clear blocklist when confirmation is rejected', async () => {
     const { actions, results } = makeOptions()
     confirmSpy.mockReturnValue(false)

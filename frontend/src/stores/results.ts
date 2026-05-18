@@ -127,8 +127,8 @@ export const useResultsStore = defineStore('results', () => {
     removeByKey(key)
   }
 
-  async function retryNotify(key: string) {
-    const data = await api.retryNotifyReply(key)
+  async function retryNotify(key: string, message = '', dmMessage = '') {
+    const data = await api.retryNotifyReply(key, message, dmMessage)
     const target = data.key ? data : { key, ...data }
     mergeItem(target as PendingItem)
     return data
